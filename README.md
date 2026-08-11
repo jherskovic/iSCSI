@@ -15,7 +15,7 @@ software-controller throughput limit (see `docs/architecture.md`).
 | 1 | PDU codec (all 17 PDU types), framer, CRC32C | ✅ done |
 | 2 | Negotiation engine, login state machine, CHAP | ✅ done |
 | 3 | Session/connection engine, scriptable MockTarget, hostile-script suite | ✅ done |
-| 4 | `NetworkTransport` (TCP), `iscsictl` discover/verify | ✅ **verified vs real TrueNAS**; daemon/XPC pending |
+| 4 | `NetworkTransport` (TCP), `iscsictl`, iscsid daemon (BlockDevice + XPC) | ✅ **verified vs real TrueNAS**; daemon built + tested |
 | 5 | FSKit + `hdiutil` block-device backend | 🚧 skeleton scaffolded (needs Xcode signing + API reconciliation) |
 | 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **builds vs DriverKit 27 SDK**; data-path bridge + VM activation pending |
 | 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
