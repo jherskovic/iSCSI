@@ -1,0 +1,668 @@
+import Foundation
+
+public enum ConnectionError: Error, Sendable {
+    case closed
+    case connectionLost(String)
+    case protocolError(String)
+    case loginFailed(NegotiationError)
+    case redirected(address: String, permanent: Bool)
+    case taskRejected(RejectPDU.Reason)
+    case targetRequestedLogout
+}
+
+/// One iSCSI connection in one session: login, then full-feature-phase task
+/// execution. Free of retry/recovery policy — that lives in `ISCSISession`.
+public actor ISCSIConnection {
+    private enum State: Equatable {
+        case idle
+        case fullFeature
+        case closed
+    }
+
+    /// Completion holder: the responder side may complete before the
+    /// requester suspends, so results are buffered. @unchecked Sendable is
+    /// sound because every access happens on this actor — cancellation
+    /// handlers hop back via `Task { await self... }`.
+    private final class Awaitable<Value: Sendable>: @unchecked Sendable {
+        var buffered: Result<Value, any Error>?
+        var continuation: CheckedContinuation<Value, any Error>?
+
+        func complete(_ result: Result<Value, any Error>) {
+            if let c = continuation {
+                continuation = nil
+                c.resume(with: result)
+            } else if buffered == nil {
+                buffered = result
+            }
+        }
+    }
+
+    private final class PendingTask {
+        let task: SCSITask
+        var readBuffer: Data
+        let completion = Awaitable<SCSITaskResult>()
+
+        init(task: SCSITask) {
+            self.task = task
+            if case .read(let expected) = task.direction {
+                readBuffer = Data(count: Int(expected))
+            } else {
+                readBuffer = Data()
+            }
+        }
+    }
+
+    private let transport: any ConnectionTransport
+    private let loginConfig: LoginConfig
+    private var serializer = PDUSerializer()
+    private var deframer = PDUDeframer()
+    public private(set) var parameters = OperationalParameters()
+
+    private var state: State = .idle
+    private var closeReason: ConnectionError?
+
+    // Sequence numbers (RFC 7143 §10.1)
+    private var cmdSN: UInt32
+    private var maxCmdSN: UInt32
+    private var expCmdSNSeen: UInt32 = 0
+    private var expStatSN: UInt32 = 0
+
+    // Outstanding operations by ITT
+    private var pendingTasks: [UInt32: PendingTask] = [:]
+    private var pendingPings: [UInt32: Awaitable<Void>] = [:]
+    private var pendingTMFs: [UInt32: Awaitable<TMFResponsePDU.Response>] = [:]
+    private var pendingText: [UInt32: (buffer: Data, completion: Awaitable<TextParameters>)] = [:]
+    private var pendingLogout: Awaitable<LogoutResponsePDU>?
+    private var nextITT: UInt32 = 1
+    private var windowWaiters: [Awaitable<Void>] = []
+    private var closeWaiters: [CheckedContinuation<ConnectionError, Never>] = []
+
+    private var readLoop: Task<Void, Never>?
+
+    public init(transport: any ConnectionTransport, login: LoginConfig, initialCmdSN: UInt32 = 1) {
+        self.transport = transport
+        self.loginConfig = login
+        self.cmdSN = initialCmdSN
+        self.maxCmdSN = initialCmdSN
+    }
+
+    // MARK: - Login
+
+    /// Run the login exchange. On success the connection enters full-feature
+    /// phase and the receive loop starts.
+    public func login() async throws -> LoginResult {
+        guard state == .idle else { throw ConnectionError.protocolError("login on used connection") }
+
+        var machine = LoginStateMachine(config: loginConfig, cmdSN: cmdSN)
+        var request = machine.start()
+        while true {
+            try await sendRaw(serializer.serialize(request))
+            let response = try await receiveLoginResponse()
+            let outcome: LoginStateMachine.Outcome
+            do {
+                outcome = try machine.receive(response)
+            } catch let error as NegotiationError {
+                await close(reason: .loginFailed(error))
+                throw ConnectionError.loginFailed(error)
+            }
+            switch outcome {
+            case .send(let next):
+                request = next
+            case .redirect(let address, let permanent):
+                await close(reason: .redirected(address: address, permanent: permanent))
+                throw ConnectionError.redirected(address: address, permanent: permanent)
+            case .success(let result):
+                parameters = result.parameters
+                expStatSN = result.expStatSN
+                maxCmdSN = result.maxCmdSN
+                expCmdSNSeen = result.expCmdSN
+                // Login is always digest-free; digests turn on now.
+                let digests = DigestConfig(
+                    headerDigest: parameters.headerDigest,
+                    dataDigest: parameters.dataDigest
+                )
+                serializer = PDUSerializer(digests: digests)
+                deframer = PDUDeframer(
+                    digests: digests,
+                    maxDataSegmentLength: Int(parameters.initiatorMaxRecvDataSegmentLength)
+                )
+                state = .fullFeature
+                startReadLoop()
+                return result
+            }
+        }
+    }
+
+    /// Synchronous-style PDU pull used only during login (no read loop yet).
+    private func receiveLoginResponse() async throws -> LoginResponsePDU {
+        while true {
+            if let raw = try deframer.next() {
+                guard case .loginResponse(let resp) = try AnyPDU.decode(raw) else {
+                    throw ConnectionError.protocolError("non-login PDU during login")
+                }
+                return resp
+            }
+            guard let chunk = try await transport.receive() else {
+                await close(reason: .connectionLost("EOF during login"))
+                throw ConnectionError.connectionLost("EOF during login")
+            }
+            deframer.append(chunk)
+        }
+    }
+
+    // MARK: - Full-feature phase API
+
+    /// Execute one SCSI task to completion.
+    public func execute(_ task: SCSITask) async throws -> SCSITaskResult {
+        try ensureOpen()
+        try await waitForWindow()
+
+        let itt = allocateITT()
+        let pending = PendingTask(task: task)
+        pendingTasks[itt] = pending
+
+        var command = SCSICommandPDU()
+        command.lun = task.lun
+        command.initiatorTaskTag = itt
+        command.cdb = task.cdb
+        command.attribute = task.attribute
+        command.cmdSN = cmdSN
+        command.expStatSN = expStatSN
+
+        var unsolicitedTail = Data()
+        switch task.direction {
+        case .none:
+            break
+        case .read(let expected):
+            command.read = expected > 0
+            command.expectedDataTransferLength = expected
+        case .write(let data):
+            command.write = true
+            command.expectedDataTransferLength = UInt32(data.count)
+            // Unsolicited data: immediate payload in the command PDU, then
+            // Data-Out PDUs, together capped at FirstBurstLength.
+            let firstBurst = Int(parameters.firstBurstLength)
+            let targetMRDSL = Int(parameters.targetMaxRecvDataSegmentLength)
+            var offset = 0
+            if parameters.immediateData && !data.isEmpty {
+                let n = min(firstBurst, targetMRDSL, data.count)
+                command.dataSegment = data.prefix(n)
+                offset = n
+            }
+            if parameters.canSendUnsolicitedDataOut && offset < min(firstBurst, data.count) {
+                unsolicitedTail = data.subdata(in: offset ..< min(firstBurst, data.count))
+            }
+            command.final = unsolicitedTail.isEmpty
+        }
+
+        cmdSN &+= 1
+        try await sendRaw(serializer.serialize(command))
+
+        if !unsolicitedTail.isEmpty {
+            try await sendDataOutSequence(
+                itt: itt,
+                lun: task.lun,
+                ttt: 0xFFFF_FFFF,
+                data: unsolicitedTail,
+                bufferOffsetBase: UInt32(command.dataSegment.count)
+            )
+        }
+
+        return try await withTaskCancellationHandler {
+            try await suspend(pending.completion)
+        } onCancel: {
+            Task { await self.abortOnCancel(itt: itt) }
+        }
+    }
+
+    /// NOP-Out ping; resolves when the echo NOP-In arrives.
+    public func ping(payload: Data = Data()) async throws {
+        try ensureOpen()
+        let itt = allocateITT()
+        let completion = Awaitable<Void>()
+        pendingPings[itt] = completion
+
+        var nop = NopOutPDU()
+        nop.immediate = true
+        nop.initiatorTaskTag = itt
+        nop.targetTransferTag = 0xFFFF_FFFF
+        nop.cmdSN = cmdSN // immediate: window not consumed
+        nop.expStatSN = expStatSN
+        nop.dataSegment = payload
+        try await sendRaw(serializer.serialize(nop))
+        try await withTaskCancellationHandler {
+            try await suspend(completion)
+        } onCancel: {
+            Task { await self.cancelPing(itt: itt) }
+        }
+    }
+
+    private func cancelPing(itt: UInt32) {
+        pendingPings.removeValue(forKey: itt)?.complete(.failure(CancellationError()))
+    }
+
+    /// Issue a task management function and await the target's response.
+    public func taskManagement(
+        _ function: TMFRequestPDU.Function,
+        lun: UInt64,
+        referencedTaskTag: UInt32 = 0xFFFF_FFFF
+    ) async throws -> TMFResponsePDU.Response {
+        try ensureOpen()
+        let itt = allocateITT()
+        let completion = Awaitable<TMFResponsePDU.Response>()
+        pendingTMFs[itt] = completion
+
+        var tmf = TMFRequestPDU()
+        tmf.immediate = true
+        tmf.function = function
+        tmf.lun = lun
+        tmf.initiatorTaskTag = itt
+        tmf.referencedTaskTag = referencedTaskTag
+        tmf.cmdSN = cmdSN
+        tmf.expStatSN = expStatSN
+        try await sendRaw(serializer.serialize(tmf))
+        return try await suspend(completion)
+    }
+
+    /// Text negotiation exchange (SendTargets etc.), reassembling C-bit
+    /// continuations from the target.
+    public func textExchange(_ params: TextParameters) async throws -> TextParameters {
+        try ensureOpen()
+        try await waitForWindow()
+        let itt = allocateITT()
+        let completion = Awaitable<TextParameters>()
+        pendingText[itt] = (Data(), completion)
+
+        var req = TextRequestPDU()
+        req.initiatorTaskTag = itt
+        req.targetTransferTag = 0xFFFF_FFFF
+        req.cmdSN = cmdSN
+        req.expStatSN = expStatSN
+        req.dataSegment = params.encode()
+        cmdSN &+= 1
+        try await sendRaw(serializer.serialize(req))
+        return try await suspend(completion)
+    }
+
+    /// Clean logout. Returns Time2Wait/Time2Retain from the target.
+    public func logout(reason: LogoutRequestPDU.Reason = .closeSession) async throws -> LogoutResponsePDU {
+        try ensureOpen()
+        let completion = Awaitable<LogoutResponsePDU>()
+        pendingLogout = completion
+
+        var req = LogoutRequestPDU()
+        req.immediate = true
+        req.reason = reason
+        req.initiatorTaskTag = allocateITT()
+        req.cid = loginConfig.cid
+        req.cmdSN = cmdSN
+        req.expStatSN = expStatSN
+        try await sendRaw(serializer.serialize(req))
+        let response = try await suspend(completion)
+        await close(reason: .closed)
+        return response
+    }
+
+    /// Await connection teardown (the session layer's recovery trigger).
+    public func waitClosed() async -> ConnectionError {
+        if state == .closed { return closeReason ?? .closed }
+        return await withCheckedContinuation { c in
+            closeWaiters.append(c)
+        }
+    }
+
+    public func close() async {
+        await close(reason: .closed)
+    }
+
+    // MARK: - Internals
+
+    private func suspend<V: Sendable>(_ box: Awaitable<V>) async throws -> V {
+        if let buffered = box.buffered {
+            box.buffered = nil
+            return try buffered.get()
+        }
+        return try await withCheckedThrowingContinuation { box.continuation = $0 }
+    }
+
+    private func ensureOpen() throws {
+        guard state == .fullFeature else {
+            throw closeReason ?? ConnectionError.closed
+        }
+    }
+
+    private func allocateITT() -> UInt32 {
+        defer {
+            nextITT &+= 1
+            if nextITT == 0xFFFF_FFFF { nextITT = 1 }
+        }
+        return nextITT
+    }
+
+    /// Block until the CmdSN window admits a new non-immediate command.
+    /// Cancellation-aware: a cancelled waiter unblocks with CancellationError.
+    private func waitForWindow() async throws {
+        while state == .fullFeature && Serial.lt(maxCmdSN, cmdSN) {
+            let waiter = Awaitable<Void>()
+            windowWaiters.append(waiter)
+            try await withTaskCancellationHandler {
+                try await suspend(waiter)
+            } onCancel: {
+                Task { await self.cancelWindowWaiter(waiter) }
+            }
+        }
+        try ensureOpen()
+    }
+
+    private func cancelWindowWaiter(_ waiter: Awaitable<Void>) {
+        windowWaiters.removeAll { $0 === waiter }
+        waiter.complete(.failure(CancellationError()))
+    }
+
+    private func sendRaw(_ bytes: Data) async throws {
+        do {
+            try await transport.send(bytes)
+        } catch {
+            await close(reason: .connectionLost("send failed: \(error)"))
+            throw closeReason ?? ConnectionError.closed
+        }
+    }
+
+    private func startReadLoop() {
+        readLoop = Task { [weak self] in
+            await self?.runReadLoop()
+        }
+    }
+
+    private func runReadLoop() async {
+        do {
+            while state == .fullFeature {
+                guard let chunk = try await transport.receive() else {
+                    await close(reason: .connectionLost("EOF"))
+                    return
+                }
+                deframer.append(chunk)
+                while let raw = try deframer.next() {
+                    try await handle(raw)
+                }
+            }
+        } catch let error as PDUError {
+            await close(reason: .protocolError("\(error)"))
+        } catch let error as ConnectionError {
+            await close(reason: error)
+        } catch {
+            await close(reason: .connectionLost("\(error)"))
+        }
+    }
+
+    private func handle(_ raw: RawPDU) async throws {
+        let pdu = try AnyPDU.decode(raw)
+        switch pdu {
+        case .scsiResponse(let resp):
+            try advanceStatSN(resp.statSN)
+            updateWindow(expCmdSN: resp.expCmdSN, maxCmdSN: resp.maxCmdSN)
+            try completeTask(resp)
+        case .scsiDataIn(let dataIn):
+            updateWindow(expCmdSN: dataIn.expCmdSN, maxCmdSN: dataIn.maxCmdSN)
+            if dataIn.statusPresent { try advanceStatSN(dataIn.statSN) }
+            try handleDataIn(dataIn)
+        case .r2t(let r2t):
+            updateWindow(expCmdSN: r2t.expCmdSN, maxCmdSN: r2t.maxCmdSN)
+            try await handleR2T(r2t)
+        case .nopIn(let nop):
+            updateWindow(expCmdSN: nop.expCmdSN, maxCmdSN: nop.maxCmdSN)
+            try await handleNopIn(nop)
+        case .tmfResponse(let resp):
+            try advanceStatSN(resp.statSN)
+            updateWindow(expCmdSN: resp.expCmdSN, maxCmdSN: resp.maxCmdSN)
+            guard let completion = pendingTMFs.removeValue(forKey: resp.initiatorTaskTag) else {
+                throw ConnectionError.protocolError("TMF response for unknown ITT")
+            }
+            completion.complete(.success(resp.response))
+        case .textResponse(let resp):
+            try advanceStatSN(resp.statSN)
+            updateWindow(expCmdSN: resp.expCmdSN, maxCmdSN: resp.maxCmdSN)
+            try await handleTextResponse(resp)
+        case .logoutResponse(let resp):
+            try advanceStatSN(resp.statSN)
+            updateWindow(expCmdSN: resp.expCmdSN, maxCmdSN: resp.maxCmdSN)
+            guard let completion = pendingLogout else {
+                throw ConnectionError.protocolError("unsolicited logout response")
+            }
+            pendingLogout = nil
+            completion.complete(.success(resp))
+        case .asyncMessage(let msg):
+            try advanceStatSN(msg.statSN)
+            updateWindow(expCmdSN: msg.expCmdSN, maxCmdSN: msg.maxCmdSN)
+            if msg.event == .logoutRequest || msg.event == .sessionDropNotification
+                || msg.event == .connectionDropNotification {
+                throw ConnectionError.targetRequestedLogout
+            }
+        case .reject(let reject):
+            try advanceStatSN(reject.statSN)
+            updateWindow(expCmdSN: reject.expCmdSN, maxCmdSN: reject.maxCmdSN)
+            try handleReject(reject)
+        case .loginResponse:
+            throw ConnectionError.protocolError("login response in full-feature phase")
+        default:
+            throw ConnectionError.protocolError("unexpected initiator-opcode PDU from target")
+        }
+    }
+
+    /// Status-bearing PDUs must carry exactly the next StatSN (at ERL0 a gap
+    /// or regression means lost/replayed status — fatal for the connection).
+    private func advanceStatSN(_ statSN: UInt32) throws {
+        guard statSN == expStatSN else {
+            throw ConnectionError.protocolError("StatSN \(statSN), expected \(expStatSN)")
+        }
+        expStatSN &+= 1
+    }
+
+    private func updateWindow(expCmdSN: UInt32, maxCmdSN newMax: UInt32) {
+        if Serial.lt(expCmdSNSeen, expCmdSN) { expCmdSNSeen = expCmdSN }
+        if Serial.lt(maxCmdSN, newMax) {
+            maxCmdSN = newMax
+            let waiters = windowWaiters
+            windowWaiters = []
+            for w in waiters { w.complete(.success(())) }
+        }
+    }
+
+    private func completeTask(_ resp: SCSIResponsePDU) throws {
+        guard let pending = pendingTasks.removeValue(forKey: resp.initiatorTaskTag) else {
+            throw ConnectionError.protocolError("SCSI response for unknown ITT \(resp.initiatorTaskTag)")
+        }
+        guard resp.response == .commandCompleted else {
+            pending.completion.complete(.failure(ConnectionError.protocolError("target failure response")))
+            return
+        }
+        var result = SCSITaskResult(status: resp.status)
+        result.data = pending.readBuffer
+        result.residualCount = resp.residualCount
+        result.residualIsOverflow = resp.residualOverflow
+        if resp.residualUnderflow, case .read = pending.task.direction {
+            let valid = pending.readBuffer.count - Int(min(resp.residualCount, UInt32(pending.readBuffer.count)))
+            result.data = pending.readBuffer.prefix(valid)
+        }
+        if resp.status == 0x02 { result.sense = resp.senseData }
+        pending.completion.complete(.success(result))
+    }
+
+    private func handleDataIn(_ dataIn: DataInPDU) throws {
+        guard let pending = pendingTasks[dataIn.initiatorTaskTag] else {
+            throw ConnectionError.protocolError("Data-In for unknown ITT \(dataIn.initiatorTaskTag)")
+        }
+        guard case .read(let expected) = pending.task.direction else {
+            throw ConnectionError.protocolError("Data-In for non-read task")
+        }
+        let offset = Int(dataIn.bufferOffset)
+        let end = offset + dataIn.dataSegment.count
+        guard end <= Int(expected) else {
+            throw ConnectionError.protocolError(
+                "Data-In outside read buffer (offset \(offset), \(dataIn.dataSegment.count) bytes)"
+            )
+        }
+        pending.readBuffer.setSub(dataIn.dataSegment, offset)
+
+        if dataIn.statusPresent {
+            // Phase-collapsed completion: no separate SCSI Response follows.
+            pendingTasks.removeValue(forKey: dataIn.initiatorTaskTag)
+            var result = SCSITaskResult(status: dataIn.status)
+            result.data = pending.readBuffer
+            if dataIn.residualUnderflow {
+                let valid = pending.readBuffer.count - Int(min(dataIn.residualCount, UInt32(pending.readBuffer.count)))
+                result.data = pending.readBuffer.prefix(valid)
+                result.residualCount = dataIn.residualCount
+            }
+            pending.completion.complete(.success(result))
+        }
+    }
+
+    private func handleR2T(_ r2t: R2TPDU) async throws {
+        guard let pending = pendingTasks[r2t.initiatorTaskTag] else {
+            throw ConnectionError.protocolError("R2T for unknown ITT \(r2t.initiatorTaskTag)")
+        }
+        guard case .write(let data) = pending.task.direction else {
+            throw ConnectionError.protocolError("R2T for non-write task")
+        }
+        let start = Int(r2t.bufferOffset)
+        let length = Int(r2t.desiredDataTransferLength)
+        guard start + length <= data.count else {
+            throw ConnectionError.protocolError("R2T requests bytes beyond write buffer")
+        }
+        try await sendDataOutSequence(
+            itt: r2t.initiatorTaskTag,
+            lun: pending.task.lun,
+            ttt: r2t.targetTransferTag,
+            data: data.subdata(in: start ..< start + length),
+            bufferOffsetBase: r2t.bufferOffset
+        )
+    }
+
+    /// One Data-Out sequence (unsolicited tail or an R2T answer), chunked to
+    /// the target's MaxRecvDataSegmentLength, DataSN starting at 0.
+    private func sendDataOutSequence(
+        itt: UInt32,
+        lun: UInt64,
+        ttt: UInt32,
+        data: Data,
+        bufferOffsetBase: UInt32
+    ) async throws {
+        let chunkSize = max(1, Int(parameters.targetMaxRecvDataSegmentLength))
+        var dataSN: UInt32 = 0
+        var offset = 0
+        while offset < data.count {
+            let end = min(offset + chunkSize, data.count)
+            var out = DataOutPDU()
+            out.lun = lun
+            out.initiatorTaskTag = itt
+            out.targetTransferTag = ttt
+            out.expStatSN = expStatSN
+            out.dataSN = dataSN
+            out.bufferOffset = bufferOffsetBase + UInt32(offset)
+            out.dataSegment = data.subdata(in: offset ..< end)
+            out.final = end == data.count
+            try await sendRaw(serializer.serialize(out))
+            dataSN &+= 1
+            offset = end
+        }
+    }
+
+    private func handleNopIn(_ nop: NopInPDU) async throws {
+        if nop.initiatorTaskTag != 0xFFFF_FFFF {
+            // Echo of one of our pings — but only if we actually sent one.
+            guard let completion = pendingPings.removeValue(forKey: nop.initiatorTaskTag) else {
+                throw ConnectionError.protocolError("NOP-In echo for unknown ITT")
+            }
+            try advanceStatSN(nop.statSN)
+            completion.complete(.success(()))
+        } else if nop.isPing {
+            // Target-initiated ping: MUST echo the TTT and its payload.
+            var reply = NopOutPDU()
+            reply.immediate = true
+            reply.initiatorTaskTag = 0xFFFF_FFFF
+            reply.targetTransferTag = nop.targetTransferTag
+            reply.lun = nop.lun
+            reply.cmdSN = cmdSN
+            reply.expStatSN = expStatSN
+            reply.dataSegment = nop.dataSegment
+            try await sendRaw(serializer.serialize(reply))
+        }
+    }
+
+    private func handleTextResponse(_ resp: TextResponsePDU) async throws {
+        guard var entry = pendingText[resp.initiatorTaskTag] else {
+            throw ConnectionError.protocolError("text response for unknown ITT")
+        }
+        entry.buffer.append(resp.dataSegment)
+        if resp.continued {
+            pendingText[resp.initiatorTaskTag] = entry
+            // Ask for the rest: empty text request, same ITT, target's TTT.
+            var req = TextRequestPDU()
+            req.initiatorTaskTag = resp.initiatorTaskTag
+            req.targetTransferTag = resp.targetTransferTag
+            req.cmdSN = cmdSN
+            req.expStatSN = expStatSN
+            cmdSN &+= 1
+            try await sendRaw(serializer.serialize(req))
+        } else {
+            pendingText.removeValue(forKey: resp.initiatorTaskTag)
+            do {
+                let params = try TextParameters.decode(entry.buffer)
+                entry.completion.complete(.success(params))
+            } catch {
+                entry.completion.complete(.failure(error))
+            }
+        }
+    }
+
+    private func handleReject(_ reject: RejectPDU) throws {
+        // The rejected PDU's header rides in the data segment; fail that
+        // operation if identifiable, otherwise the connection is unusable.
+        if reject.dataSegment.count >= 48 {
+            let itt = reject.dataSegment.beU32(16)
+            if let pending = pendingTasks.removeValue(forKey: itt) {
+                pending.completion.complete(.failure(ConnectionError.taskRejected(reject.reason)))
+                return
+            }
+            if let ping = pendingPings.removeValue(forKey: itt) {
+                ping.complete(.failure(ConnectionError.taskRejected(reject.reason)))
+                return
+            }
+        }
+        throw ConnectionError.protocolError("Reject (\(reject.reason)) for unidentifiable PDU")
+    }
+
+    private func abortOnCancel(itt: UInt32) async {
+        guard state == .fullFeature, let pending = pendingTasks[itt] else { return }
+        _ = try? await taskManagement(.abortTask, lun: pending.task.lun, referencedTaskTag: itt)
+        if let removed = pendingTasks.removeValue(forKey: itt) {
+            removed.completion.complete(.failure(CancellationError()))
+        }
+    }
+
+    private func close(reason: ConnectionError) async {
+        guard state != .closed else { return }
+        state = .closed
+        closeReason = reason
+        readLoop?.cancel()
+        await transport.close()
+
+        for (_, pending) in pendingTasks {
+            pending.completion.complete(.failure(reason))
+        }
+        pendingTasks = [:]
+        for (_, c) in pendingPings { c.complete(.failure(reason)) }
+        pendingPings = [:]
+        for (_, c) in pendingTMFs { c.complete(.failure(reason)) }
+        pendingTMFs = [:]
+        for (_, entry) in pendingText { entry.completion.complete(.failure(reason)) }
+        pendingText = [:]
+        pendingLogout?.complete(.failure(reason))
+        pendingLogout = nil
+        for w in windowWaiters { w.complete(.failure(reason)) }
+        windowWaiters = []
+        for w in closeWaiters { w.resume(returning: reason) }
+        closeWaiters = []
+    }
+}
