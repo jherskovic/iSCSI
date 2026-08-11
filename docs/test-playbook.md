@@ -1,0 +1,70 @@
+# Test playbook
+
+Four layers, from pure logic up to a mounted disk under fault injection.
+
+## Layer 1 — unit (`iSCSIKitTests`, 86 tests, runs anywhere)
+
+- PDU golden byte vectors + encode/decode round-trips for every PDU type.
+- Framing: byte-at-a-time feed, multi-PDU chunks, digest round-trips, header
+  and data digest **corruption detection**, oversized-segment rejection, AHS
+  passthrough, padding.
+- CRC32C against RFC 7143 test vectors.
+- Negotiation matrix: ImmediateData×InitialR2T (all four), MRDSL asymmetry,
+  burst-length boundaries (incl. FirstBurst>MaxBurst rejection), digest
+  selection, ERL negotiate-down, absent-key defaults, Reject/NotUnderstood.
+- CHAP forward + mutual, hex/base64/decimal codecs, vectors vs Python hashlib.
+- Login state machine: None + CHAP happy paths, redirect, reject status,
+  StatSN regression, C-bit continuation both directions, TSIH rules.
+- Serial (RFC 1982) arithmetic incl. wraparound.
+
+Run: `swift test --filter iSCSIKitTests`
+
+## Layer 2 — protocol integration vs scriptable MockTarget (43 tests)
+
+The `MockTarget` speaks real iSCSI over `MemoryPipe` (in-memory) or a real TCP
+socket (`MockTargetServer`), with 20+ switchable faults.
+
+- **Happy paths**: login/inquiry/logout, read/write round-trips, large writes
+  exercising immediate+unsolicited+R2T bursts, solicited-only path, digests on,
+  READ CAPACITY, SYNCHRONIZE CACHE, NOP ping + target-initiated ping echo,
+  CHAP + mutual CHAP, discovery (incl. C-bit continuation), concurrent tasks.
+- **Hostile scripts**: login reject/redirect/wrong-target; StatSN jump and
+  duplicate; Data/Header digest corruption (caught → connection dies, *never*
+  returns corrupt bytes) with a control test showing why digests matter;
+  unexpected R2T on read; oversized Data-In; Reject-per-task; CHECK CONDITION
+  with sense; command stall + auto-abort on cancel; LUN RESET; write stall
+  after R2T; frozen command window; mid-read drop; abrupt drop fails all
+  in-flight ops (no hangs).
+- **Session recovery (ERL0)**: recover after target drop, data survives target
+  reboot, recovery exhaustion surfaces, keepalive detects a dead-but-connected
+  peer, logout stops recovery, CHAP re-runs on recovery, bounded retry.
+- **Real TCP loopback**: login/write/flush/read/verify with CRC32C over an
+  actual socket; discovery; session recovery — validates `NetworkTransport`.
+
+Run: `swift test --filter IntegrationTests`
+
+## Layer 3 — end-to-end on real hardware (needs a NAS; Phase 4+)
+
+- `iscsictl discover <nas>` then `iscsictl verify <nas> --target <iqn> --write`
+  against a **scratch LUN** for an on-the-wire login + read/write/verify.
+- Capture with Wireshark's iSCSI dissector; assert clean dissection and that
+  APFS barriers become SYNCHRONIZE CACHE / FUA on the wire.
+- `fio --verify=crc32c` across block sizes and queue depths once a block device
+  is mounted (Backend A / B).
+- Fault injection with `dnctl`/`pfctl` on port 3260 (latency, loss, black-hole
+  then heal) under sustained load — see `scripts/fault-inject.sh` (Phase 7).
+- Crash consistency: cut transport mid-write, reconnect, `diskutil
+  verifyVolume` / `fsck_apfs -n`.
+
+## Layer 4 — soak / performance (Phase 7)
+
+Multi-hour `fio` soak with periodic fault injection; track daemon RSS (leaks),
+dext health, latency percentiles; lifecycle churn (login/logout, dext
+activate/teardown cycles).
+
+## Fuzzing
+
+`scripts/fuzz.sh [seconds]` builds `pdu-fuzz` with AddressSanitizer and runs a
+deterministic structure-aware mutation engine over the PDU decoder, login
+parser, and text codec. Any crash reproduces from `pdu-fuzz derive <seed>
+<iteration>`. Millions of inputs clean to date.

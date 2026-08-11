@@ -215,6 +215,13 @@ public actor ISCSIConnection {
         }
     }
 
+    /// Execute a task and require GOOD status, else throw with sense attached.
+    public func executeChecked(_ task: SCSITask) async throws -> SCSITaskResult {
+        let result = try await execute(task)
+        guard result.isGood else { throw SessionError.taskFailed(result) }
+        return result
+    }
+
     /// NOP-Out ping; resolves when the echo NOP-In arrives.
     public func ping(payload: Data = Data()) async throws {
         try ensureOpen()
