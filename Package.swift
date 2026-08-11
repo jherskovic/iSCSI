@@ -20,9 +20,16 @@ let package = Package(
             dependencies: ["iSCSIKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // Daemon core as a library so it can be unit-tested; the executable is
+        // a thin XPC/launchd launcher on top.
+        .target(
+            name: "iSCSIDaemon",
+            dependencies: ["iSCSIKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         .executableTarget(
             name: "iscsid",
-            dependencies: ["iSCSIKit"],
+            dependencies: ["iSCSIKit", "iSCSIDaemon"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(
@@ -47,7 +54,7 @@ let package = Package(
         ),
         .testTarget(
             name: "IntegrationTests",
-            dependencies: ["iSCSIKit", "MockTarget"],
+            dependencies: ["iSCSIKit", "MockTarget", "iSCSIDaemon"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]
