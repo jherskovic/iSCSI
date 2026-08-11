@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      DriverKit dext entitlements. All are RESTRICTED and must be granted by
+      Apple (request at developer.apple.com/system-extensions). For local
+      development before the grant: `systemextensionsctl developer on` + SIP
+      disabled inside the test VM lets you self-assert these.
+    -->
+    <key>com.apple.developer.driverkit</key>
+    <true/>
+    <key>com.apple.developer.driverkit.family.scsicontroller</key>
+    <true/>
+    <!-- Allow the daemon (by bundle id) to open our user client. -->
+    <key>com.apple.developer.driverkit.allow-any-userclient-access</key>
+    <true/>
+</dict>
+</plist>

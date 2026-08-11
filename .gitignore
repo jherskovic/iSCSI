@@ -5,3 +5,6 @@
 DerivedData/
 .DS_Store
 Fuzz/corpus-findings/
+apps/build/
+apps/*.xcodeproj/project.xcworkspace/
+apps/*.xcodeproj/xcuserdata/

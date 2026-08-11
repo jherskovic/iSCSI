@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>iSCSIFSExtension</string>
+    <key>CFBundleIdentifier</key>
+    <string>me.herko.iSCSIInitiator.fsext</string>
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>EXAppExtensionAttributes</key>
+    <dict>
+        <key>EXExtensionPointIdentifier</key>
+        <string>com.apple.fskit.fsmodule</string>
+    </dict>
+    <key>FSSupportsBlockResources</key>
+    <true/>
+    <key>FSShortName</key>
+    <string>iSCSI</string>
+</dict>
+</plist>

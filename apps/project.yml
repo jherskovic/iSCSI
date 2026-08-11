@@ -1,0 +1,85 @@
+# XcodeGen project for the iSCSI Initiator app + extensions.
+# Regenerate with:  cd apps && xcodegen generate
+# Then open iSCSIInitiator.xcodeproj, set your signing team, and build.
+#
+# The protocol engine (iSCSIKit) lives in the parent SwiftPM package and is
+# referenced as a local package so the app/extensions share the exact code
+# that the 129-test suite and real-NAS verification exercise.
+
+name: iSCSIInitiator
+options:
+  bundleIdPrefix: me.herko.iSCSIInitiator
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+packages:
+  iSCSIKit:
+    path: ..
+
+settings:
+  base:
+    # Fill in your Apple Developer team, or set it in Xcode's Signing pane.
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  # ---- Container app ----
+  iSCSIApp:
+    type: application
+    platform: macOS
+    sources:
+      - iSCSIApp
+    dependencies:
+      - package: iSCSIKit
+        product: iSCSIKit
+      - target: iSCSIDext
+        embed: true
+      - target: iSCSIFSExtension
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.herko.iSCSIInitiator
+        INFOPLIST_FILE: iSCSIApp/Info.plist
+        CODE_SIGN_ENTITLEMENTS: iSCSIApp/iSCSIApp.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+
+  # ---- DriverKit extension (Backend B): virtual SCSI HBA ----
+  # DriverKit isn't a first-class XcodeGen platform; express it as a macOS
+  # target whose SDK/product-type are overridden to DriverKit.
+  iSCSIDext:
+    type: driver-extension            # com.apple.product-type.driver-extension
+    platform: macOS
+    sources:
+      - iSCSIDext
+      - path: Shared/iSCSIUserClientShared.h
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.herko.iSCSIInitiator.dext
+        INFOPLIST_FILE: iSCSIDext/Info.plist
+        CODE_SIGN_ENTITLEMENTS: iSCSIDext/iSCSIDext.entitlements
+        SDKROOT: driverkit
+        SUPPORTED_PLATFORMS: driverkit
+        DRIVERKIT_DEPLOYMENT_TARGET: "24.0"
+        PRODUCT_NAME: iSCSIDext
+        # iig compiles the .iig files; DriverKit + SCSIControllerDriverKit link.
+        OTHER_LDFLAGS: "-framework DriverKit -framework SCSIControllerDriverKit"
+
+  # ---- FSKit extension (Backend A): iSCSI-backed block-device file ----
+  iSCSIFSExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - iSCSIFSExtension
+    dependencies:
+      - package: iSCSIKit
+        product: iSCSIKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.herko.iSCSIInitiator.fsext
+        INFOPLIST_FILE: iSCSIFSExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: iSCSIFSExtension/iSCSIFSExtension.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
