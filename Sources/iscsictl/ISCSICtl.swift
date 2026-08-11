@@ -25,7 +25,9 @@ struct GlobalOptions: ParsableArguments {
     var port: UInt16 = 3260
 
     @Option(help: "Initiator IQN.")
-    var initiator = "iqn.2026-08.com.example:\(Host.current().localizedName ?? "mac")"
+    var initiator = IQN.defaultInitiatorName(
+        hostIdentifier: Host.current().localizedName ?? "mac"
+    )
 
     @Option(help: "CHAP username.")
     var chapUser: String?
@@ -33,10 +35,32 @@ struct GlobalOptions: ParsableArguments {
     @Option(help: "CHAP secret (prefer $ISCSI_CHAP_SECRET env var).")
     var chapSecret: String?
 
+    @Option(help: "Mutual CHAP username (target authenticates to us).")
+    var mutualUser: String?
+
+    @Option(help: "Mutual CHAP secret.")
+    var mutualSecret: String?
+
+    @Flag(help: "Trace every PDU on the wire to stderr.")
+    var debug = false
+
     func credentials() -> CHAP.Credentials? {
         guard let user = chapUser else { return nil }
         let secret = chapSecret ?? ProcessInfo.processInfo.environment["ISCSI_CHAP_SECRET"] ?? ""
-        return CHAP.Credentials(name: user, secret: secret)
+        return CHAP.Credentials(
+            name: user, secret: secret,
+            mutualName: mutualUser,
+            mutualSecret: mutualSecret ?? ProcessInfo.processInfo.environment["ISCSI_MUTUAL_SECRET"]
+        )
+    }
+
+    func openTransport() async throws -> any ConnectionTransport {
+        #if canImport(Network)
+        let tcp = try await NetworkTransport.connect(host: host, port: port)
+        return debug ? TracingTransport(tcp, label: host) : tcp
+        #else
+        throw ValidationError("Network.framework unavailable on this platform")
+        #endif
     }
 }
 
@@ -51,7 +75,7 @@ struct Discover: AsyncParsableCommand {
 
     func run() async throws {
         #if canImport(Network)
-        let transport = try await NetworkTransport.connect(host: options.host, port: options.port)
+        let transport = try await options.openTransport()
         let targets = try await Discovery.sendTargets(
             transport: transport,
             initiatorName: options.initiator,
@@ -98,7 +122,7 @@ struct Verify: AsyncParsableCommand {
 
     func run() async throws {
         #if canImport(Network)
-        let transport = try await NetworkTransport.connect(host: options.host, port: options.port)
+        let transport = try await options.openTransport()
         var config = LoginConfig(
             initiatorName: options.initiator,
             sessionType: .normal,

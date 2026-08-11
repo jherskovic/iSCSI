@@ -83,12 +83,13 @@ struct NegotiationTests {
     }
 
     @Test func firstBurstGreaterThanMaxBurstRejected() {
-        // A hostile/broken target folding to FirstBurst > MaxBurst must fail
-        // validation at the end of login.
+        // Even after safe min-folding, a target that pushes MaxBurst below
+        // FirstBurst must fail cross-key validation at the end of login.
+        // (default desired: FirstBurst 262144, MaxBurst 1 MiB)
         #expect(throws: NegotiationError.self) {
             try negotiate(answers: [
-                ("MaxBurstLength", "512"),
-                ("FirstBurstLength", "262144"), // min(ours=262144, theirs) folds > MaxBurst
+                ("MaxBurstLength", "512"), // folds MaxBurst to 512
+                ("FirstBurstLength", "262144"), // folds FirstBurst to 262144 > 512
             ])
         }
     }
@@ -130,12 +131,11 @@ struct NegotiationTests {
         #expect(p.errorRecoveryLevel == 0)
     }
 
-    @Test func erlAboveProposalRejected() {
-        // min(0, theirs) can never exceed 0 — a target answering 2 to our
-        // proposal of 0 violates the result function.
-        #expect(throws: NegotiationError.self) {
-            try negotiate(answers: [("ErrorRecoveryLevel", "2")])
-        }
+    @Test func erlAboveProposalClampedToZero() {
+        // A target answering ERL=2 to our proposal of 0 is safely min-folded
+        // back to 0 — we never silently operate above the ERL we support.
+        let p = try! negotiate(answers: [("ErrorRecoveryLevel", "2")])
+        #expect(p.errorRecoveryLevel == 0)
     }
 
     @Test func targetOfferedERLNegotiatedDown() throws {

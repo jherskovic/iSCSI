@@ -178,17 +178,13 @@ public struct NegotiationEngine: Sendable {
             try requireBool(key, theirs)
             return (ours == "Yes" || theirs == "Yes") ? "Yes" : "No"
         case .numericMin:
-            // The responder must answer with the min — a larger reply than our
-            // offer violates the result function.
-            let o = try num(key, ours)
-            let t = try num(key, theirs)
-            guard t <= o else { throw NegotiationError.invalidValue(key: key, value: theirs) }
-            return String(t)
+            // Compute the fold ourselves rather than trusting the target to
+            // return the correctly-folded value. Real targets (e.g. LIO)
+            // often just echo their own configured value; taking min(ours,
+            // theirs) keeps us safely within our own proposal either way.
+            return String(min(try num(key, ours), try num(key, theirs)))
         case .numericMax:
-            let o = try num(key, ours)
-            let t = try num(key, theirs)
-            guard t >= o else { throw NegotiationError.invalidValue(key: key, value: theirs) }
-            return String(t)
+            return String(max(try num(key, ours), try num(key, theirs)))
         case .declarative:
             return theirs
         case .listSelect:
