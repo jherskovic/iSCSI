@@ -15,13 +15,27 @@ software-controller throughput limit (see `docs/architecture.md`).
 | 1 | PDU codec (all 17 PDU types), framer, CRC32C | ✅ done |
 | 2 | Negotiation engine, login state machine, CHAP | ✅ done |
 | 3 | Session/connection engine, scriptable MockTarget, hostile-script suite | ✅ done |
-| 4 | `NetworkTransport` (TCP), `iscsictl` discover/verify; daemon | 🚧 CLI + TCP done; daemon pending |
-| 5 | FSKit + `hdiutil` block-device backend | ⬜ pending |
-| 6 | DriverKit dext (virtual SCSI HBA), in SIP-off VM | ⬜ pending |
-| 7 | Fault-injection / soak / e2e scripts | ⬜ pending |
+| 4 | `NetworkTransport` (TCP), `iscsictl` discover/verify | ✅ **verified vs real TrueNAS**; daemon/XPC pending |
+| 5 | FSKit + `hdiutil` block-device backend | 🚧 skeleton scaffolded (needs Xcode signing + API reconciliation) |
+| 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **builds vs DriverKit 27 SDK**; data-path bridge + VM activation pending |
+| 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
 
 129 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
-clean over millions of inputs.
+clean over millions of inputs. The full protocol stack is **verified end-to-end
+against a real TrueNAS target** (login negotiation → INQUIRY → READ CAPACITY →
+write + SYNCHRONIZE CACHE → read-back verify → logout). The DriverKit dext
+**compiles against the DriverKit 27 SDK**.
+
+## Building the app + extensions (Xcode)
+
+```sh
+cd apps
+xcodegen generate          # produces iSCSIInitiator.xcodeproj
+open iSCSIInitiator.xcodeproj
+# Set your signing Team in project.yml or the Signing pane, then build.
+```
+The DriverKit dext requires a SIP-off test VM to load — see `docs/vm-setup.md`
+and `docs/entitlements.md`.
 
 ## Layout
 
