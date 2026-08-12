@@ -1,6 +1,7 @@
 #if canImport(IOKit)
 import Foundation
 import IOKit
+import iSCSIKit
 
 // MARK: - Wire contract
 //
@@ -120,6 +121,10 @@ public enum DextBridgeError: Error, Sendable, CustomStringConvertible {
 private func dextLog(_ message: String) {
     FileHandle.standardError.write(Data("iscsid[dext]: \(message)\n".utf8))
 }
+
+/// Set ISCSI_TRACE_TASKS=1 to log every serviced READ/WRITE with its LBA —
+/// forensics for content-level bugs that per-PDU tracing can't see.
+private let traceTasks = ProcessInfo.processInfo.environment["ISCSI_TRACE_TASKS"] != nil
 
 // MARK: - Decoding helpers
 //
@@ -402,6 +407,107 @@ private final class InFlightTable: @unchecked Sendable {
     }
 }
 
+// MARK: - Overlap ordering
+
+/// Admission control that preserves submission order for OVERLAPPING block
+/// ranges while letting disjoint I/O run fully concurrent.
+///
+/// The kernel rewrites the same LBA back-to-back (superblocks, GPT headers,
+/// journal heads) trusting the device to apply them in submission order. With
+/// N concurrent servicers and no gate, the second write can reach the target
+/// first and the FINAL on-disk content is the older data — nondeterministic
+/// corruption that per-op CRC tracing can never see. Tickets are issued in
+/// fetch order (the pump loop is serial); a task waits until every in-flight
+/// or earlier-queued task whose range overlaps its own has released.
+///
+/// Lock-based rather than an actor so `release` is synchronous — it must run
+/// in a `defer` inside servicers that the timeout path may abandon, and an
+/// abandoned-but-stuck task legitimately HOLDS its range: its write may still
+/// be live on the wire, and admitting an overlapper would reorder it.
+private final class OrderingGate: @unchecked Sendable {
+    private struct Entry {
+        let id: UInt64
+        let range: Range<UInt64>
+        var continuation: CheckedContinuation<Void, Never>?
+        var admitted: Bool
+    }
+
+    private let lock = NSLock()
+    private var entries: [Entry] = []   // ticket order; small (≤ maxInFlight)
+    private var nextID: UInt64 = 0
+
+    /// Issue a ticket in submission order. Call from the (serial) pump loop.
+    func enqueue(_ range: Range<UInt64>) -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = nextID
+        nextID += 1
+        entries.append(Entry(id: id, range: range, continuation: nil, admitted: false))
+        return id
+    }
+
+    /// Suspend until every overlapping predecessor has released.
+    func admitted(_ id: UInt64) async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            guard let idx = entries.firstIndex(where: { $0.id == id }) else {
+                lock.unlock()
+                cont.resume()   // released before it ever waited (wind-down)
+                return
+            }
+            if clearAt(idx) {
+                entries[idx].admitted = true
+                lock.unlock()
+                cont.resume()
+            } else {
+                entries[idx].continuation = cont
+                lock.unlock()
+            }
+        }
+    }
+
+    /// Drop the ticket and admit any newly-eligible waiters. Synchronous and
+    /// idempotent; safe from `defer`.
+    func release(_ id: UInt64) {
+        lock.lock()
+        entries.removeAll { $0.id == id }
+        var resumable: [CheckedContinuation<Void, Never>] = []
+        for idx in entries.indices where entries[idx].continuation != nil && clearAt(idx) {
+            entries[idx].admitted = true
+            resumable.append(entries[idx].continuation!)
+            entries[idx].continuation = nil
+        }
+        lock.unlock()
+        for cont in resumable { cont.resume() }
+    }
+
+    /// True when nothing earlier in ticket order overlaps entries[idx].
+    /// Caller holds the lock.
+    private func clearAt(_ idx: Int) -> Bool {
+        let range = entries[idx].range
+        for j in 0 ..< idx where entries[j].range.overlaps(range) {
+            return false
+        }
+        return true
+    }
+}
+
+/// The block range a task touches, for overlap ordering. Flushes are a
+/// full-device barrier; non-I/O tasks need no ordering.
+private func taskRange(_ task: FetchedTask, blockSize: Int) -> Range<UInt64>? {
+    switch task.opcode {
+    case SCSIOpcode.read10, SCSIOpcode.read16, SCSIOpcode.write10, SCSIOpcode.write16:
+        guard blockSize > 0 else { return nil }
+        let sixteen = task.opcode == SCSIOpcode.read16 || task.opcode == SCSIOpcode.write16
+        let (lba, blocks) = cdbRange(cdb: task.cdb, sixteenByte: sixteen)
+        return lba ..< lba + UInt64(max(1, blocks))
+    case SCSIOpcode.synchronizeCache10, SCSIOpcode.synchronizeCache16:
+        return 0 ..< UInt64.max
+    default:
+        return nil
+    }
+}
+
 // MARK: - Bounded-time execution
 
 /// One-shot resolver shared by a unit of work and its watchdog.
@@ -575,13 +681,25 @@ private func serviceRead(_ task: FetchedTask,
         return
     }
     let (lba, blocks) = cdbRange(cdb: task.cdb, sixteenByte: task.opcode == SCSIOpcode.read16)
+    let byCDB = Int(blocks) * blockSize
     let length = transferBytes(blocks: blocks, requested: task.transferLength, blockSize: blockSize)
+    if length < byCDB {
+        // Same single-segment truncation hazard as writes: a short read would
+        // return a partial buffer the kernel treats as complete.
+        dextLog("SHORT READ lba=\(lba) cdb=\(byCDB)B mapped=\(task.transferLength)B — failing task \(task.taskTag)")
+        postFailure(link, table, task: task, key: SenseCode.illegalRequest,
+                    asc: SenseCode.ascInvalidOpcode, ascq: 0x00)
+        return
+    }
     guard length > 0 else {
         postCompletion(link, table, tag: task.taskTag, status: SAMStatus.good, dataLength: 0)
         return
     }
 
     let data = try await core.read(handle, offset: lba * UInt64(blockSize), length: length)
+    if traceTasks {
+        dextLog("R lba=\(lba) len=\(length) got=\(data.count) crc=\(String(format: "%08x", CRC32C.checksum(data))) tag=\(task.taskTag)")
+    }
     let copied = min(data.count, length)
     if copied > 0 {
         data.withUnsafeBytes { raw in
@@ -610,7 +728,17 @@ private func serviceWrite(_ task: FetchedTask,
         return
     }
     let (lba, blocks) = cdbRange(cdb: task.cdb, sixteenByte: task.opcode == SCSIOpcode.write16)
+    let byCDB = Int(blocks) * blockSize
     let length = transferBytes(blocks: blocks, requested: task.transferLength, blockSize: blockSize)
+    if length < byCDB {
+        // The CDB asks for more bytes than the dext could map from the task's
+        // buffer (the single-physical-segment framework limitation). Writing a
+        // truncated chunk would CORRUPT the LBA range silently — fail loudly.
+        dextLog("SHORT WRITE lba=\(lba) cdb=\(byCDB)B mapped=\(task.transferLength)B — failing task \(task.taskTag)")
+        postFailure(link, table, task: task, key: SenseCode.illegalRequest,
+                    asc: SenseCode.ascInvalidOpcode, ascq: 0x00)
+        return
+    }
     guard length > 0 else {
         postCompletion(link, table, tag: task.taskTag, status: SAMStatus.good, dataLength: 0)
         return
@@ -619,6 +747,15 @@ private func serviceWrite(_ task: FetchedTask,
     // The dext already staged the outgoing bytes in our slot.
     let data = Data(bytes: payload, count: length)
     try await core.write(handle, offset: lba * UInt64(blockSize), data: data)
+    // We advertise DPOFUA, so the kernel may set the FUA bit (journal
+    // commits, barriers) expecting the data on stable media at completion.
+    if task.cdb[1] & 0x08 != 0 {
+        try await core.flush(handle)
+    }
+    if traceTasks {
+        let fua = task.cdb[1] & 0x08 != 0 ? " FUA" : ""
+        dextLog("W lba=\(lba) len=\(length) crc=\(String(format: "%08x", CRC32C.checksum(data))) tag=\(task.taskTag)\(fua)")
+    }
     postCompletion(link, table, tag: task.taskTag, status: SAMStatus.good, dataLength: length)
 }
 
@@ -637,6 +774,7 @@ private func pump(link: DextLink,
                   maxInFlight: Int,
                   taskTimeout: Duration) async {
     let table = InFlightTable()
+    let gate = OrderingGate()
     var consecutiveFetchFailures = 0
 
     await withTaskGroup(of: Void.self) { group in
@@ -675,8 +813,16 @@ private func pump(link: DextLink,
 
             table.add(tag: task.taskTag, slot: task.slotIndex)
             inFlight += 1
+            // Ticket BEFORE addTask: the pump loop is the only place fetch
+            // order is still known, and overlapping ranges must be serviced in
+            // that order (see OrderingGate).
+            let ticket = taskRange(task, blockSize: blockSize).map { gate.enqueue($0) }
             group.addTask {
                 let completed = await withTimeout(taskTimeout) {
+                    if let ticket {
+                        await gate.admitted(ticket)
+                    }
+                    defer { if let ticket { gate.release(ticket) } }
                     await service(task, link: link, table: table,
                                   handle: handle, core: core, blockSize: blockSize)
                 }
@@ -750,6 +896,13 @@ public actor DextBridge {
     /// sustained load, while the bound keeps the CmdSN window sane.
     private let maxInFlight: Int
     /// How long a single task may take before we fail it back to the kernel.
+    ///
+    /// MUST stay comfortably below the dext watchdog (~16s,
+    /// kWatchdogTimeoutTicks × kWatchdogIntervalMs): the daemon failing first
+    /// produces a clean CHECK CONDITION through the normal completion path,
+    /// while the watchdog firing first zombie-quarantines the slot and can
+    /// only answer with a delivery failure. The watchdog is the backstop for a
+    /// wedged/dead daemon, not the routine timeout.
     private let taskTimeout: Duration
 
     private var link: DextLink?
@@ -758,7 +911,7 @@ public actor DextBridge {
     public init(serviceName: String = "iSCSIDext",
                 dataRegionOffset: Int = 0,
                 maxInFlight: Int = 16,
-                taskTimeout: Duration = .seconds(30)) {
+                taskTimeout: Duration = .seconds(10)) {
         self.serviceName = serviceName
         self.dataRegionOffset = dataRegionOffset
         self.maxInFlight = max(1, maxInFlight)

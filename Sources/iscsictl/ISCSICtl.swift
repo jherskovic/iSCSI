@@ -14,7 +14,7 @@ struct ISCSICtl: AsyncParsableCommand {
         commandName: "iscsictl",
         abstract: "Control the macOS iSCSI initiator.",
         version: "0.1.0",
-        subcommands: [Discover.self, Verify.self, DextAttach.self]
+        subcommands: [Discover.self, Verify.self, Wipe.self, DextAttach.self]
     )
 }
 
@@ -185,6 +185,102 @@ struct Verify: AsyncParsableCommand {
 
         _ = try await connection.logout()
         print("Logged out.")
+        #else
+        throw ValidationError("Network.framework unavailable on this platform")
+        #endif
+    }
+}
+
+// MARK: wipe
+
+struct Wipe: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Zero the partition-table regions of a scratch LUN so macOS sees a blank disk. DESTRUCTIVE."
+    )
+
+    @OptionGroup var options: GlobalOptions
+
+    @Option(help: "Target IQN to log into.")
+    var target: String
+
+    @Option(help: "LUN number.")
+    var lun: UInt64 = 0
+
+    @Option(help: "MiB to zero at the start of the LUN (GPT + filesystem superblocks).")
+    var headMiB: Int = 16
+
+    @Option(help: "MiB to zero at the end of the LUN (backup GPT).")
+    var tailMiB: Int = 1
+
+    func run() async throws {
+        #if canImport(Network)
+        let transport = try await options.openTransport()
+        let config = LoginConfig(
+            initiatorName: options.initiator,
+            sessionType: .normal,
+            targetName: target,
+            chap: options.credentials()
+        )
+        let connection = ISCSIConnection(transport: transport, login: config)
+        _ = try await connection.login()
+
+        let lunAddress = lun << 48
+
+        // A fresh I_T nexus answers its first non-INQUIRY command with UNIT
+        // ATTENTION (6/29/00, power-on/reset); absorb it and retry.
+        func checked(_ task: SCSITask) async throws -> SCSITaskResult {
+            for _ in 0 ..< 3 {
+                let result = try await connection.execute(task)
+                if result.isGood { return result }
+                let sense = result.sense.flatMap(SenseData.init)
+                if sense?.key == 0x06 { continue }
+                throw ValidationError("SCSI error: status \(result.status), sense \(sense.map(String.init(describing:)) ?? "none")")
+            }
+            throw ValidationError("persistent UNIT ATTENTION")
+        }
+
+        let capacity = try await checked(SCSITask(
+            lun: lunAddress, cdb: CDB.readCapacity16(), direction: .read(expectedLength: 32)
+        ))
+        guard capacity.data.count >= 12 else {
+            throw ValidationError("READ CAPACITY returned \(capacity.data.count) bytes")
+        }
+        let lastLBA = capacity.data.beU64(0)
+        let blockSize = Int(capacity.data.beU32(8))
+        let blockCount = lastLBA + 1
+        print("LUN: \(blockCount) x \(blockSize)-byte blocks")
+
+        // 256 KiB per WRITE(16) keeps each burst well inside any negotiated
+        // MaxBurstLength while still finishing a 17 MiB wipe in ~70 commands.
+        let chunkBlocks = max(1, (256 * 1024) / blockSize)
+        let zeros = Data(count: chunkBlocks * blockSize)
+
+        func zero(range: Range<UInt64>, label: String) async throws {
+            var lba = range.lowerBound
+            while lba < range.upperBound {
+                let blocks = min(UInt64(chunkBlocks), range.upperBound - lba)
+                let chunk = blocks == UInt64(chunkBlocks) ? zeros : Data(count: Int(blocks) * blockSize)
+                _ = try await checked(SCSITask(
+                    lun: lunAddress,
+                    cdb: CDB.write16(lba: lba, blocks: UInt32(blocks)),
+                    direction: .write(chunk)
+                ))
+                lba += blocks
+            }
+            print("  zeroed \(label): LBA \(range.lowerBound) ..< \(range.upperBound)")
+        }
+
+        let headBlocks = min(blockCount, UInt64((headMiB * 1_048_576) / blockSize))
+        try await zero(range: 0 ..< headBlocks, label: "head")
+        let tailBlocks = min(blockCount, UInt64((tailMiB * 1_048_576) / blockSize))
+        if tailBlocks > 0 && blockCount > headBlocks {
+            let start = max(headBlocks, blockCount - tailBlocks)
+            try await zero(range: start ..< blockCount, label: "tail")
+        }
+
+        _ = try await checked(SCSITask(lun: lunAddress, cdb: CDB.synchronizeCache16()))
+        _ = try await connection.logout()
+        print("Wipe complete; the LUN now presents as a blank disk.")
         #else
         throw ValidationError("Network.framework unavailable on this platform")
         #endif

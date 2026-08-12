@@ -83,6 +83,50 @@ sit on the identical iSCSIKit session engine.
   kScsiUserParallelTaskResponseCurrentVersion1` on every task response;
   the zero-filled-reused-WRITE-buffer bug.
 
+## Storage-stack contract lessons (learned the hard way on real macOS)
+
+Each of these produced a system-wide wedge or nondeterministic corruption
+with a perfectly healthy dext underneath. Recorded so they never get re-broken:
+
+1. **Model the LUN as REMOVABLE media** (INQUIRY RMB=1, sense `02/3A/00`
+   MEDIUM NOT PRESENT while the daemon is detached). A fixed disk that is
+   NOT READY at probe gets exactly 45 s of `ClearNotReadyStatus` polling from
+   `IOSCSIPeripheralDeviceType00::start`, then `InitializeDeviceSupport` fails
+   PERMANENTLY — and the daemon usually logs in much later than 45 s after
+   boot. Removable media attaches with "no medium" and polls forever; the disk
+   appears whenever the daemon publishes and detaches cleanly when it drops.
+2. **MODE SENSE must serve a WELL-FORMED caching page with WCE=0.** Two
+   failure modes bracket this: (a) the original garbage MODE SENSE (header
+   only, wrong lengths) left the block driver's cache state arbitrary; (b)
+   WCE=1 is actively harmful — the kernel STILL never emitted SYNCHRONIZE
+   CACHE, `DKIOCSYNCHRONIZECACHE` returned success in 83 µs without touching
+   the device, and the very next write (newfs_apfs's final superblock commit)
+   was rejected in-kernel with EIO in 24 µs: deterministic "failed to write
+   superblock to block 0", format impossible. WCE=0 is also the honest
+   report: the daemon completes a write only after the target acks it, so no
+   host-visible volatile cache exists. Keep SYNCHRONIZE CACHE parked-and-
+   forwarded and honor FUA with a post-write flush for whenever the kernel
+   does send them.
+3. **Preserve submission order for overlapping LBA ranges.** The kernel
+   rewrites the same block back-to-back (GPT headers, APFS superblocks,
+   journal heads) trusting device-order semantics. The dext hands tasks to
+   the daemon oldest-taskTag-first (parks are serialized, so tags are
+   submission-ordered) and the daemon's `OrderingGate` blocks a task until
+   every overlapping in-flight or earlier-fetched task releases; disjoint I/O
+   stays fully concurrent, flushes are whole-device barriers. Without this,
+   two same-LBA writes race on the wire and the OLDER data wins
+   nondeterministically — per-op CRC tracing shows nothing wrong.
+4. **Fire `UserCallMediaParametersHaveChanged` on BOTH publish and
+   unpublish.** Only firing on publish leaves the kernel's buffer cache
+   serving pre-swap content when the daemon bounces faster than the ~3 s TUR
+   poll (newfs/fsck then validate against stale pages and fail with EIO).
+5. Slot lifecycle in the dext is a per-slot atomic state machine
+   (Free→Parking→Parked→Fetched→Completing→Free, plus Zombie quarantine for
+   watchdog-failed fetched slots). Every completion path claims by CAS;
+   double completions and mid-park watchdog steals are structurally
+   impossible. The daemon's per-task timeout (10 s) sits BELOW the dext
+   watchdog (~16 s) so the clean CHECK CONDITION path fires first.
+
 Entitlements (all restricted, requested from Apple): `com.apple.developer.driverkit`,
 `.driverkit.family.scsicontroller`, `.driverkit.userclient-access` (daemon),
 `com.apple.developer.system-extension.install` (host app). For development

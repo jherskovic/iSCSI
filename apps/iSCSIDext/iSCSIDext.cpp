@@ -59,13 +59,40 @@ enum { kVirtualTargetID = 0, kInitiatorID = 7, kHighestTargetID = 7 };
 #define kLUNBlockCount (ivars->lunBlockCount)
 #endif
 
+// Lifecycle of one slot in the parked-task table. Four contexts touch the
+// table concurrently — the controller queue (park), the user client queue
+// (fetch/complete), the watchdog thread (timeout), and the stop/TMF paths
+// (abort) — so every transition is an atomic CAS on `state` and whoever wins
+// the CAS owns the slot until it stores the next state.
+//
+//   Free ──park──▶ Parking ──fields written──▶ Parked ──fetch──▶ Fetched
+//     ▲                                          │                  │
+//     │                              (completer or watchdog CAS) Completing
+//     │                                          │                  │
+//     ├──────────────◀── completion fired ───────┴──────────────────┤
+//     │                                                             │
+//     └──◀── late daemon completion / expiry / disconnect ── Zombie ┘
+//
+// Zombie: the watchdog failed a task the daemon had already fetched. The
+// kernel got its completion, but the daemon still holds the slot index and may
+// yet write into the slot's arena window — so the slot is quarantined (not
+// reusable) until the daemon's late completion arrives, the daemon
+// disconnects, or the quarantine expires.
+enum : uint32_t {
+    kSlotFree       = 0,
+    kSlotParking    = 1,
+    kSlotParked     = 2,
+    kSlotFetched    = 3,
+    kSlotCompleting = 4,
+    kSlotZombie     = 5,
+};
+
 // One outstanding SCSI task handed to the daemon. The task's data buffer is
 // only obtainable inside UserProcessParallelTask, so we retain the descriptor
 // here and copy into it when the daemon answers.
 struct ParkedTask
 {
-    bool       inUse;
-    bool       fetched;      // already handed to the daemon
+    uint32_t   state;        // kSlot*, mutated only via __atomic CAS/stores
     uint64_t   taskTag;
     OSAction * completion;
     IOBufferMemoryDescriptor * dataMD;
@@ -78,7 +105,25 @@ struct ParkedTask
     uint32_t   cdbLength;
     uint8_t    cdb[16];
     uint64_t   parkTick;     // watchdog tick when this slot was filled
+    uint64_t   zombieTick;   // watchdog tick when this slot was quarantined
 };
+
+// Slot state helpers. Plain __atomic builtins: DriverKit C++ has no <atomic>.
+static inline uint32_t SlotState(ParkedTask * t)
+{
+    return __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
+}
+
+static inline bool SlotCAS(ParkedTask * t, uint32_t from, uint32_t to)
+{
+    return __atomic_compare_exchange_n(&t->state, &from, to, false,
+                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+static inline void SlotStore(ParkedTask * t, uint32_t to)
+{
+    __atomic_store_n(&t->state, to, __ATOMIC_RELEASE);
+}
 
 // Watchdog cadence. Tasks are failed once they have been parked for roughly
 // kWatchdogTimeoutTicks * kWatchdogIntervalMs. Ticks avoid needing a clock.
@@ -111,8 +156,31 @@ struct iSCSIDext_IVars
     uint64_t nextTaskTag;
     bool watchdogStarted;
     bool watchdogRun;
+    // Read from the park path while the watchdog thread increments it; always
+    // accessed with __atomic (relaxed is fine — it only ages slots).
     uint64_t watchdogTick;
+    // The watchdog's IOSleep loop occupies its queue FOREVER, so it needs its
+    // own — anything else dispatched behind it (media-parameters-changed!)
+    // would never run.
+    IODispatchQueue * watchdogQueue;
+
+    // Instrumentation, all bumped with relaxed __atomic adds. Logged
+    // periodically by the watchdog so a stall can be diagnosed from the VM's
+    // log stream alone.
+    uint64_t cParked;        // tasks handed to the daemon path
+    uint64_t cParkFull;      // parks refused (no free slot -> TASK_SET_FULL)
+    uint64_t cFetched;       // tasks the daemon picked up
+    uint64_t cCompleted;     // clean daemon completions
+    uint64_t cWatchdogFail;  // tasks the watchdog had to fail
+    uint64_t cAborted;       // tasks failed by TMF/stop/disconnect paths
+    uint64_t cZombieLate;    // zombie slots freed by a late daemon completion
+    uint64_t cZombieExpired; // zombie slots freed by quarantine expiry
 };
+
+static inline void CountUp(uint64_t * counter)
+{
+    __atomic_fetch_add(counter, 1, __ATOMIC_RELAXED);
+}
 
 // Helper: set an OSNumber into the constraints dictionary.
 static bool
@@ -139,6 +207,7 @@ void iSCSIDext::free()
     if (ivars != nullptr) {
         OSSafeReleaseNULL(ivars->scratchMD);
         OSSafeReleaseNULL(ivars->publishQueue);
+        OSSafeReleaseNULL(ivars->watchdogQueue);
         ivars->scratch = nullptr;
     }
     IOSafeDeleteNULL(ivars, iSCSIDext_IVars, 1);
@@ -311,19 +380,29 @@ IMPL(iSCSIDext, UserStartController)
     Log("UserStartController");
     ivars->controllerStarted = true;
 
-    // Start the watchdog before any task can be parked.
+    // Start the watchdog before any task can be parked. It gets a DEDICATED
+    // queue: its IOSleep loop occupies the queue permanently, and anything
+    // dispatched behind it (SetLUNGeometry's media-parameters-changed call
+    // uses publishQueue) would otherwise never run.
     if (!ivars->watchdogStarted) {
-        if (ivars->publishQueue == nullptr) {
+        if (ivars->watchdogQueue == nullptr) {
             kern_return_t qret = IODispatchQueue::Create(
-                "iSCSIWatchdogQueue", 0, 0, &ivars->publishQueue);
+                "iSCSIWatchdogQueue", 0, 0, &ivars->watchdogQueue);
             if (qret != kIOReturnSuccess) {
                 Log("watchdog queue Create failed: 0x%x", qret);
             }
         }
-        if (ivars->publishQueue != nullptr) {
+        if (ivars->publishQueue == nullptr) {
+            kern_return_t qret = IODispatchQueue::Create(
+                "iSCSIPublishQueue", 0, 0, &ivars->publishQueue);
+            if (qret != kIOReturnSuccess) {
+                Log("publish queue Create failed: 0x%x", qret);
+            }
+        }
+        if (ivars->watchdogQueue != nullptr) {
             ivars->watchdogStarted = true;
             ivars->watchdogRun = true;
-            ivars->publishQueue->DispatchAsync(^{ WatchdogLoop(); });
+            ivars->watchdogQueue->DispatchAsync(^{ WatchdogLoop(); });
         }
     }
 
@@ -511,7 +590,9 @@ iSCSIDext::SetLUNGeometry(uint32_t blockSize, uint64_t blockCount)
 {
     ivars->lunBlockSize  = blockSize;
     ivars->lunBlockCount = blockCount;
-    bool becameReady = (blockSize != 0 && blockCount != 0) && !ivars->lunPublished;
+    bool wasPublished = ivars->lunPublished;
+    bool becameReady = (blockSize != 0 && blockCount != 0) && !wasPublished;
+    bool becameEmpty = (blockSize == 0 || blockCount == 0) && wasPublished;
     ivars->lunPublished  = (blockSize != 0 && blockCount != 0);
     Log("LUN geometry: %u x %llu (ready=%d)", blockSize, blockCount,
         ivars->lunPublished ? 1 : 0);
@@ -525,7 +606,13 @@ iSCSIDext::SetLUNGeometry(uint32_t blockSize, uint64_t blockCount)
     // Dispatched off this queue on purpose: this runs from the user client's
     // ExternalMethod, and calling back into the framework inline is what
     // deadlocked UserCreateTargetForID.
-    if (becameReady && ivars->publishQueue != nullptr) {
+    // Fire on BOTH edges. Publish makes the family attach the new medium;
+    // unpublish makes it drop its buffer cache and disk objects IMMEDIATELY.
+    // Without the unpublish edge the kernel keeps serving pre-swap cached
+    // content until a TUR poll happens to notice the medium left (~3s) — and
+    // a daemon bounce inside that window swaps the medium underneath a live
+    // cache: newfs/fsck then validate against stale pages and fail with EIO.
+    if ((becameReady || becameEmpty) && ivars->publishQueue != nullptr) {
         ivars->publishQueue->DispatchAsync(^{
             kern_return_t r = UserCallMediaParametersHaveChanged();
             Log("media parameters changed -> 0x%x", r);
@@ -540,10 +627,30 @@ iSCSIDext::FetchPendingTask(uint64_t * taskTag, uint32_t * slotIndex,
                             uint64_t * cdbLow, uint64_t * cdbHigh,
                             uint32_t * cdbLength)
 {
+    // FIFO: hand tasks to the daemon in SUBMISSION order, not slot order.
+    // taskTag is assigned monotonically under the serialized park path, so the
+    // parked task with the smallest tag is the oldest. Slot-scan order would
+    // reorder same-LBA rewrites (the kernel rewrites superblocks/GPT headers
+    // back-to-back), and a reordered pair leaves the OLDER content on the
+    // target — nondeterministic corruption that CRC-per-op tracing can't see.
+    uint32_t best = kISCSIRequestSlotCount;
+    uint64_t bestTag = ~0ull;
     for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
         ParkedTask * t = &ivars->tasks[i];
-        if (!t->inUse || t->fetched) continue;
-        t->fetched = true;
+        if (SlotState(t) != kSlotParked) continue;
+        if (t->taskTag < bestTag) { bestTag = t->taskTag; best = i; }
+    }
+    for (; best < kISCSIRequestSlotCount; best++) {
+        ParkedTask * t = &ivars->tasks[best];
+        // Winning the CAS claims the hand-off; the fields below are stable for
+        // any state past Parking (only the park path writes them, and it can
+        // only touch a Free slot). A concurrent watchdog claim (Fetched ->
+        // Completing) nulls the completion/buffer pointers but never these.
+        // (If the CAS races away, fall through to plain scan order — the
+        // ordering gate in the daemon still serializes overlapping ranges.)
+        if (!SlotCAS(t, kSlotParked, kSlotFetched)) continue;
+        uint32_t i = best;
+        CountUp(&ivars->cFetched);
         *taskTag        = t->taskTag;
         *slotIndex      = i;
         *targetID       = (uint32_t)t->targetID;
@@ -563,17 +670,23 @@ iSCSIDext::FetchPendingTask(uint64_t * taskTag, uint32_t * slotIndex,
     return false;
 }
 
-// Completes one parked slot with a delivery failure. Caller owns slot validity.
+// Completes one parked slot with a delivery failure. Safe from any context:
+// claims the slot with a CAS against both claimable states, so it can never
+// race the daemon's completion into a double ParallelTaskCompletion.
 void
 iSCSIDext::FailParkedSlot(uint32_t index)
 {
     ParkedTask * t = &ivars->tasks[index];
-    // Claim the slot atomically: the daemon's completion, the watchdog and the
-    // TMF paths can all race for it, and completing twice would finish an
-    // unrelated recycled task.
-    bool expected = true;
-    if (!__atomic_compare_exchange_n(&t->inUse, &expected, false, false,
-                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+    // Only Parked and Fetched slots are ours to fail. Parking slots are
+    // half-written (the completion pointer isn't there yet) — the park path
+    // will finish and the slot ages from its NEW parkTick. Completing slots
+    // already have an owner; Zombie slots were already answered.
+    bool wasFetched = false;
+    if (SlotCAS(t, kSlotParked, kSlotCompleting)) {
+        wasFetched = false;
+    } else if (SlotCAS(t, kSlotFetched, kSlotCompleting)) {
+        wasFetched = true;
+    } else {
         return;
     }
 
@@ -590,12 +703,22 @@ iSCSIDext::FailParkedSlot(uint32_t index)
 
     OSAction * completion = t->completion;
     OSSafeReleaseNULL(t->dataMD);
-    t->fetched = false; t->completion = nullptr;
+    t->completion = nullptr;
     t->dataPtr = nullptr; t->dataLen = 0;
 
     if (completion != nullptr) {
         ParallelTaskCompletion(completion, resp);
         completion->release();
+    }
+
+    if (wasFetched) {
+        // The daemon still holds this slot index and may yet write into its
+        // arena window or post a late completion. Quarantine the slot; it is
+        // freed by that late completion, by daemon disconnect, or by expiry.
+        t->zombieTick = __atomic_load_n(&ivars->watchdogTick, __ATOMIC_RELAXED);
+        SlotStore(t, kSlotZombie);
+    } else {
+        SlotStore(t, kSlotFree);
     }
 }
 
@@ -605,21 +728,62 @@ iSCSIDext::WatchdogLoop()
     Log("watchdog: running (interval %ums, timeout ~%us)",
         (unsigned)kWatchdogIntervalMs,
         (unsigned)(kWatchdogIntervalMs * kWatchdogTimeoutTicks / 1000));
+    uint64_t lastStatsTick = 0;
     while (ivars != nullptr && ivars->watchdogRun) {
         IOSleep(kWatchdogIntervalMs);
         if (ivars == nullptr || !ivars->watchdogRun) break;
-        ivars->watchdogTick++;
-        uint32_t timedOut = 0;
+        uint64_t tick =
+            __atomic_add_fetch(&ivars->watchdogTick, 1, __ATOMIC_RELAXED);
+
+        uint32_t timedOut = 0, live = 0, zombies = 0;
         for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
             ParkedTask * t = &ivars->tasks[i];
-            if (!t->inUse) continue;
-            if (ivars->watchdogTick - t->parkTick >= kWatchdogTimeoutTicks) {
-                FailParkedSlot(i);
-                timedOut++;
+            uint32_t s = SlotState(t);
+            if (s == kSlotParked || s == kSlotFetched) {
+                live++;
+                // parkTick is safe to read here: it is written before the
+                // release-store to Parked and we loaded the state with acquire.
+                // (An ABA slot — freed and re-parked between this check and the
+                // claim inside FailParkedSlot — could fail a fresh task; the
+                // stack just retries that I/O, and the window is instants out
+                // of a 2s tick.)
+                if (tick - t->parkTick >= kWatchdogTimeoutTicks) {
+                    FailParkedSlot(i);
+                    CountUp(&ivars->cWatchdogFail);
+                    timedOut++;
+                }
+            } else if (s == kSlotZombie) {
+                zombies++;
+                // Nothing has touched the slot since the daemon went quiet on
+                // it for a full watchdog timeout AND a full quarantine period;
+                // its servicer is long since timed out or dead. Reclaim.
+                if (tick - t->zombieTick >= kWatchdogTimeoutTicks) {
+                    if (SlotCAS(t, kSlotZombie, kSlotFree)) {
+                        CountUp(&ivars->cZombieExpired);
+                    }
+                }
             }
         }
         if (timedOut != 0) {
             Log("watchdog: failed %u task(s) the daemon never answered", timedOut);
+        }
+        // A stats heartbeat every ~30s while anything is happening, and
+        // immediately on any watchdog action — diagnosable from `log stream`.
+        bool due = (tick - lastStatsTick) >= 15;
+        if (timedOut != 0 || (due && (live != 0 || zombies != 0))) {
+            lastStatsTick = tick;
+            Log("stats: parked=%llu full=%llu fetched=%llu completed=%llu "
+                "wdFail=%llu aborted=%llu zLate=%llu zExpired=%llu "
+                "inflight=%u zombies=%u",
+                __atomic_load_n(&ivars->cParked, __ATOMIC_RELAXED),
+                __atomic_load_n(&ivars->cParkFull, __ATOMIC_RELAXED),
+                __atomic_load_n(&ivars->cFetched, __ATOMIC_RELAXED),
+                __atomic_load_n(&ivars->cCompleted, __ATOMIC_RELAXED),
+                __atomic_load_n(&ivars->cWatchdogFail, __ATOMIC_RELAXED),
+                __atomic_load_n(&ivars->cAborted, __ATOMIC_RELAXED),
+                __atomic_load_n(&ivars->cZombieLate, __ATOMIC_RELAXED),
+                __atomic_load_n(&ivars->cZombieExpired, __ATOMIC_RELAXED),
+                live, zombies);
         }
     }
     Log("watchdog: stopped");
@@ -628,11 +792,28 @@ iSCSIDext::WatchdogLoop()
 void
 iSCSIDext::AbortAllParkedTasks(const char * reason)
 {
-    uint32_t n = 0;
+    uint32_t n = 0, reclaimed = 0;
     for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
-        if (ivars->tasks[i].inUse) { FailParkedSlot(i); n++; }
+        ParkedTask * t = &ivars->tasks[i];
+        uint32_t s = SlotState(t);
+        if (s == kSlotParked || s == kSlotFetched) {
+            FailParkedSlot(i);
+            CountUp(&ivars->cAborted);
+            n++;
+        }
+        // This runs when the daemon disconnects (or the controller stops):
+        // nothing can write a quarantined slot's arena window any more, and
+        // the very fail above may have just re-quarantined a Fetched slot.
+        // Free them all.
+        s = SlotState(t);
+        if (s == kSlotZombie && SlotCAS(t, kSlotZombie, kSlotFree)) {
+            reclaimed++;
+        }
     }
-    if (n != 0) Log("aborted %u parked task(s): %s", n, reason);
+    if (n != 0 || reclaimed != 0) {
+        Log("aborted %u parked task(s), reclaimed %u zombie slot(s): %s",
+            n, reclaimed, reason);
+    }
 }
 
 uint32_t
@@ -641,8 +822,12 @@ iSCSIDext::AbortParkedTasksFor(uint64_t targetID, uint64_t lun)
     (void)lun; // single LUN per target for now
     uint32_t n = 0;
     for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
-        if (ivars->tasks[i].inUse && ivars->tasks[i].targetID == targetID) {
+        ParkedTask * t = &ivars->tasks[i];
+        uint32_t s = SlotState(t);
+        // targetID is stable for any state past Parking (see FetchPendingTask).
+        if ((s == kSlotParked || s == kSlotFetched) && t->targetID == targetID) {
             FailParkedSlot(i);
+            CountUp(&ivars->cAborted);
             n++;
         }
     }
@@ -655,7 +840,30 @@ iSCSIDext::CompleteTaskFromDaemonEx(uint64_t taskTag, uint32_t scsiStatus,
 {
     for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
         ParkedTask * t = &ivars->tasks[i];
-        if (!t->inUse || t->taskTag != taskTag) continue;
+        uint32_t s = SlotState(t);
+        // taskTag is stable for any state past Parking (written only while the
+        // park path owns the slot), so this filter is safe.
+        if (s == kSlotFree || s == kSlotParking) continue;
+        if (t->taskTag != taskTag) continue;
+
+        if (s == kSlotZombie) {
+            // The watchdog already answered the kernel for this task; the late
+            // completion just lifts the quarantine on the slot.
+            if (SlotCAS(t, kSlotZombie, kSlotFree)) {
+                CountUp(&ivars->cZombieLate);
+            }
+            return;
+        }
+
+        // Claim it, or lose to the watchdog. Losing means the watchdog just
+        // failed this task; it left the slot quarantined, so lift that.
+        if (!SlotCAS(t, kSlotFetched, kSlotCompleting)) {
+            if (SlotState(t) == kSlotZombie && t->taskTag == taskTag &&
+                SlotCAS(t, kSlotZombie, kSlotFree)) {
+                CountUp(&ivars->cZombieLate);
+            }
+            return;
+        }
 
         SCSIUserParallelResponse resp = {};
         resp.version = kScsiUserParallelTaskResponseCurrentVersion1;
@@ -686,8 +894,10 @@ iSCSIDext::CompleteTaskFromDaemonEx(uint64_t taskTag, uint32_t scsiStatus,
 
         OSAction * completion = t->completion;
         OSSafeReleaseNULL(t->dataMD);
-        t->inUse = false; t->fetched = false; t->completion = nullptr;
+        t->completion = nullptr;
         t->dataPtr = nullptr; t->dataLen = 0;
+        SlotStore(t, kSlotFree);
+        CountUp(&ivars->cCompleted);
 
         if (completion != nullptr) {
             ParallelTaskCompletion(completion, resp);
@@ -757,6 +967,9 @@ IMPL(iSCSIDext, UserProcessParallelTask)
     case 0x1B: // START STOP UNIT
         break;
 
+    case 0x1E: // PREVENT ALLOW MEDIUM REMOVAL — sent to removable devices;
+        break; // nothing to lock on a virtual drive, succeed as a no-op
+
     case 0x00: // TEST UNIT READY
 #if !ISCSI_DEXT_SCRATCH_DISK
         // Until the daemon publishes LUN geometry there is no medium behind
@@ -764,7 +977,7 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         // (it retries every ~3s) instead of giving up on the device.
         if (!ivars->lunPublished) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
-            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x04, 0x01);
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x3A, 0x00);
         }
 #endif
         break;
@@ -776,7 +989,7 @@ IMPL(iSCSIDext, UserProcessParallelTask)
 #else
         if (!ivars->lunPublished) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
-            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x04, 0x01);
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x3A, 0x00);
             break;
         }
         deferred = ParkTaskForDaemon(parallelRequest, completion,
@@ -803,7 +1016,17 @@ IMPL(iSCSIDext, UserProcessParallelTask)
             break;
         }
         inq[0] = 0x00;  // direct-access block device
-        inq[1] = 0x00;  // not removable
+        // REMOVABLE on purpose. A fixed disk that is NOT READY at probe gets
+        // exactly 45s of ClearNotReadyStatus polling from
+        // IOSCSIPeripheralDeviceType00::start, then InitializeDeviceSupport
+        // fails PERMANENTLY — and the daemon usually attaches much later than
+        // 45s after boot. Removable media is the model that fits an iSCSI LUN
+        // anyway: the block driver attaches with "no medium" and polls
+        // indefinitely; the disk appears when the daemon publishes geometry
+        // and goes away when it drops. Pair with sense 02/3A/00 (MEDIUM NOT
+        // PRESENT), never 02/04/01 (BECOMING READY, which implies a bounded
+        // wait).
+        inq[1] = 0x80;  // RMB: removable medium
         inq[2] = 0x05;  // SPC-3
         inq[3] = 0x02;  // response data format
         inq[4] = 31;    // additional length
@@ -820,7 +1043,7 @@ IMPL(iSCSIDext, UserProcessParallelTask)
 #if !ISCSI_DEXT_SCRATCH_DISK
         if (!ivars->lunPublished) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
-            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x04, 0x01);
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x3A, 0x00);
             break;
         }
 #endif
@@ -843,7 +1066,7 @@ IMPL(iSCSIDext, UserProcessParallelTask)
 #if !ISCSI_DEXT_SCRATCH_DISK
         if (!ivars->lunPublished) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
-            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x04, 0x01);
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x3A, 0x00);
             break;
         }
 #endif
@@ -883,7 +1106,7 @@ IMPL(iSCSIDext, UserProcessParallelTask)
 #else
         if (!ivars->lunPublished) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
-            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x04, 0x01);
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x3A, 0x00);
             break;
         }
         if (lba >= kLUNBlockCount) {
@@ -899,7 +1122,15 @@ IMPL(iSCSIDext, UserProcessParallelTask)
             (uint32_t)length, dataMD, buf, avail);
         if (!deferred) {
             // No free slot: tell the initiator to retry rather than fail the I/O.
+            Log("park refused: op=0x%02x lba=%llu blocks=%u (TASK_SET_FULL)",
+                op, lba, blocks);
             resp.fCompletionStatus = kSCSITaskStatus_TASK_SET_FULL;
+        }
+        if (deferred && buf == nullptr && isWrite && length > 0) {
+            // A write whose buffer could not be mapped would send GARBAGE from
+            // the recycled slot. This has never been observed; if it ever
+            // fires, fail the task instead of corrupting the LUN.
+            Log("WRITE with unmappable buffer: lba=%llu blocks=%u", lba, blocks);
         }
 #endif
         break;
@@ -907,10 +1138,37 @@ IMPL(iSCSIDext, UserProcessParallelTask)
 
     case 0x1A:   // MODE SENSE (6)
     case 0x5A: { // MODE SENSE (10)
-        uint8_t mode[8] = {};
-        uint64_t n;
-        if (op == 0x1A) { mode[0] = 3; n = 4; }   // mode data length, no block descriptors
-        else            { mode[1] = 6; n = 8; }
+        // The caching page (08h, WCE=1) is LOAD-BEARING: without it the SCSI
+        // block driver decides the device has no write cache, its flush path
+        // becomes a no-op that never emits SYNCHRONIZE CACHE, and the FIRST
+        // APFS journal barrier (any fsync/unmount) wedges the storage stack
+        // waiting on a flush that cannot be delivered. Observed as "sustained
+        // I/O hangs the box" with an idle, healthy dext underneath.
+        const uint8_t page = cdb[2] & 0x3F;
+        const bool six = (op == 0x1A);
+        uint8_t mode[32] = {};
+        uint64_t n = six ? 4 : 8;   // header only by default
+
+        if (page == 0x08 || page == 0x3F) {
+            uint8_t * pg = &mode[n];
+            pg[0] = 0x08;  // caching page
+            pg[1] = 0x12;  // page length (18 bytes follow)
+            // WCE=0: no volatile write cache VISIBLE TO THE HOST. The daemon
+            // completes a write only after the target acks it, so this is the
+            // honest report. WCE=1 was tried and is actively harmful here:
+            // the kernel's flush path still never emitted SYNCHRONIZE CACHE,
+            // DKIOCSYNCHRONIZECACHE became an 83µs lie, and the write issued
+            // immediately AFTER that ioctl (newfs_apfs's final superblock
+            // commit) was rejected in-kernel with EIO in 24µs — deterministic
+            // "failed to write superblock to block 0", no format possible.
+            pg[2] = 0x00;
+            n += 20;
+        }
+        // Unknown pages: header-only response (benign), not CHECK CONDITION —
+        // Type00 probes several optional pages and treats hard errors badly.
+
+        if (six) mode[0] = (uint8_t)(n - 1);
+        else { mode[0] = (uint8_t)((n - 2) >> 8); mode[1] = (uint8_t)(n - 2); }
         if (n > avail) n = avail;
         if (buf && n) memcpy(buf, mode, (size_t)n);
         resp.fBytesTransferred = n;
@@ -937,6 +1195,17 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         // the completion, and will finish it via CompleteTaskFromDaemonEx().
         *response = kSCSIServiceResponse_Request_In_Process;
         return kIOReturnSuccess;
+    }
+
+    // Every inline non-GOOD answer is loggable evidence: when the storage
+    // stack reports an I/O error with a healthy daemon underneath, this line
+    // is what distinguishes "the dext failed it" from "the kernel never sent
+    // it".
+    if (resp.fCompletionStatus != kSCSITaskStatus_GOOD &&
+        parallelRequest.fTargetID == kVirtualTargetID) {
+        Log("inline non-GOOD: op=0x%02x status=%u response=%u len=%llu",
+            op, resp.fCompletionStatus, resp.fServiceResponse,
+            parallelRequest.fRequestedTransferCount);
     }
 
     OSSafeReleaseNULL(dataMD);
@@ -967,7 +1236,11 @@ iSCSIDext::ParkTaskForDaemon(SCSIUserParallelTask parallelRequest,
     }
     for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
         ParkedTask * t = &ivars->tasks[i];
-        if (t->inUse) continue;
+        // Claim before touching ANY field. While the slot is Parking nobody
+        // else — fetch, watchdog, abort — will read or write it, so the
+        // half-written state that let the watchdog steal a mid-park slot (and
+        // complete it with a stale tick and a nullptr completion) can't recur.
+        if (!SlotCAS(t, kSlotFree, kSlotParking)) continue;
 
         uint8_t * slot = ivars->arena + ((uint64_t)i * kISCSISlotPayloadBytes);
         if (direction == kISCSIDirectionWrite && dataPtr != nullptr && transferLength > 0) {
@@ -977,9 +1250,7 @@ iSCSIDext::ParkTaskForDaemon(SCSIUserParallelTask parallelRequest,
             memcpy(slot, dataPtr, (size_t)n);
         }
 
-        t->inUse            = true;
-        t->fetched          = false;
-        t->parkTick         = ivars->watchdogTick;
+        t->parkTick         = __atomic_load_n(&ivars->watchdogTick, __ATOMIC_RELAXED);
         t->taskTag          = ++ivars->nextTaskTag;
         t->completion       = completion;
         if (completion != nullptr) completion->retain();
@@ -992,8 +1263,11 @@ iSCSIDext::ParkTaskForDaemon(SCSIUserParallelTask parallelRequest,
         t->transferLength   = transferLength;
         t->cdbLength        = parallelRequest.fCommandSize;
         memcpy(t->cdb, parallelRequest.fCommandDescriptorBlock, 16);
+        SlotStore(t, kSlotParked);      // release: fields visible before state
+        CountUp(&ivars->cParked);
         return true;
     }
+    CountUp(&ivars->cParkFull);
     return false;
 }
 
