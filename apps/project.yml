@@ -63,6 +63,15 @@ targets:
         SDKROOT: driverkit
         SUPPORTED_PLATFORMS: driverkit
         DRIVERKIT_DEPLOYMENT_TARGET: "24.0"
+        # DriverKit dexts on Apple Silicon MUST be arm64e (the platform ABI the
+        # kernel's dext launcher grades against). Because this target is declared
+        # `platform: macOS` for XcodeGen's benefit, the macOS ARCHS_STANDARD
+        # (arm64 x86_64) would otherwise leak in and build a *plain* arm64 slice
+        # with no arm64e — the kernel then rejects the spawn with ENOEXEC
+        # ("Exec format error") even though matching, signing, and entitlements
+        # are all fine. Force arm64e to match every shipping Apple dext.
+        ARCHS: arm64e
+        ONLY_ACTIVE_ARCH: "NO"
         PRODUCT_NAME: me.herko.iSCSIInitiator.dext
         # iig compiles the .iig files; DriverKit + SCSIControllerDriverKit link.
         OTHER_LDFLAGS: "-framework DriverKit -framework SCSIControllerDriverKit"

@@ -19,7 +19,7 @@ struct ISCSIInitiatorApp: App {
 
 struct ContentView: View {
     @StateObject private var controller = ExtensionController()
-    @State private var portal = "planet-express.herko.me"
+    @State private var portal = "192.168.0.101"
     @State private var target = "iqn.me.herko.planet-express:iscsi-driver-testing"
 
     var body: some View {

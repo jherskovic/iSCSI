@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Dev-VM helper: load the SCSI Parallel family kext at boot.
+
+  IOUserSCSIParallelInterfaceController lives in IOSCSIParallelFamily.kext,
+  which macOS only loads when a real SCSI-parallel HBA matches. Our virtual HBA
+  has no hardware to trigger that, so without this the dext's controller
+  personality fails with "Couldn't alloc class
+  IOUserSCSIParallelInterfaceController" on every boot.
+
+  Install (on the dev VM):
+    sudo cp me.herko.iSCSIInitiator.scsifamily.plist /Library/LaunchDaemons/
+    sudo chown root:wheel /Library/LaunchDaemons/me.herko.iSCSIInitiator.scsifamily.plist
+    sudo chmod 644       /Library/LaunchDaemons/me.herko.iSCSIInitiator.scsifamily.plist
+    sudo launchctl load -w /Library/LaunchDaemons/me.herko.iSCSIInitiator.scsifamily.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>me.herko.iSCSIInitiator.scsifamily</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/kmutil</string>
+        <string>load</string>
+        <string>-b</string>
+        <string>com.apple.iokit.IOSCSIParallelFamily</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/var/log/iscsi-scsifamily.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/iscsi-scsifamily.log</string>
+</dict>
+</plist>

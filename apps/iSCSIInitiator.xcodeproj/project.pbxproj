@@ -14,6 +14,8 @@
 		79ED20D3D81F09EA8410D7AA /* iSCSIDext.dext in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = F9E5E4079C9AAECB94704229 /* iSCSIDext.dext */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		7DF0B704FFA3482AABAFE5F3 /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1930AC270A5C69BFDB1258AA /* iSCSIKit */; };
 		83E3A3242A55B4C0F8AA573B /* ExtensionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB19582709CC88A804AB9C0C /* ExtensionController.swift */; };
+		AF1FD391FC1153FBE7F490E4 /* iSCSIBootstrap.iig in Sources */ = {isa = PBXBuildFile; fileRef = EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */; };
+		D0275F7018B35D408AE1692A /* iSCSIBootstrap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */; };
 		E71D3B1A098B46CBAB3D75F8 /* iSCSIUserClient.iig in Sources */ = {isa = PBXBuildFile; fileRef = E2A9410B4B594B4270735046 /* iSCSIUserClient.iig */; };
 		F95104A4FB9A5F3F762E5992 /* iSCSIDext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E7A00F869F8056AEACDFFAA /* iSCSIDext.cpp */; };
 /* End PBXBuildFile section */
@@ -44,6 +46,7 @@
 
 /* Begin PBXFileReference section */
 		0710492659A0FA46BDD2108A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = iSCSIBootstrap.cpp; sourceTree = "<group>"; };
 		0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = iSCSIFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		0FC18B26402E15EC48C74856 /* iSCSIApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iSCSIApp.swift; sourceTree = "<group>"; };
 		1E7A00F869F8056AEACDFFAA /* iSCSIDext.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = iSCSIDext.cpp; sourceTree = "<group>"; };
@@ -60,6 +63,7 @@
 		E2A9410B4B594B4270735046 /* iSCSIUserClient.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = iSCSIUserClient.iig; sourceTree = "<group>"; };
 		E988EFDBF4855884F248B81E /* iSCSIUserClient.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = iSCSIUserClient.cpp; sourceTree = "<group>"; };
 		EB08832F94FB4DF341938A31 /* iSCSIUserClientShared.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = iSCSIUserClientShared.h; sourceTree = "<group>"; };
+		EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = iSCSIBootstrap.iig; sourceTree = "<group>"; };
 		F9E5E4079C9AAECB94704229 /* iSCSIDext.dext */ = {isa = PBXFileReference; explicitFileType = "wrapper.driver-extension"; includeInIndex = 0; path = iSCSIDext.dext; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -112,6 +116,8 @@
 			isa = PBXGroup;
 			children = (
 				0710492659A0FA46BDD2108A /* Info.plist */,
+				0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */,
+				EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */,
 				1E7A00F869F8056AEACDFFAA /* iSCSIDext.cpp */,
 				74EBC031D395B5399FDC5506 /* iSCSIDext.entitlements */,
 				3DC08C498B489B3118E2CF64 /* iSCSIDext.iig */,
@@ -265,6 +271,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D0275F7018B35D408AE1692A /* iSCSIBootstrap.cpp in Sources */,
+				AF1FD391FC1153FBE7F490E4 /* iSCSIBootstrap.iig in Sources */,
 				F95104A4FB9A5F3F762E5992 /* iSCSIDext.cpp in Sources */,
 				3982D9B9A332FCB9061C3BFA /* iSCSIDext.iig in Sources */,
 				4E0D9AEC2C32868C1A6D1BB6 /* iSCSIUserClient.cpp in Sources */,
@@ -295,6 +303,7 @@
 		33A8822ABA9E9A6EF5A2B54E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64e;
 				CODE_SIGN_ENTITLEMENTS = iSCSIDext/iSCSIDext.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				DRIVERKIT_DEPLOYMENT_TARGET = 24.0;
@@ -303,6 +312,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				ONLY_ACTIVE_ARCH = NO;
 				OTHER_LDFLAGS = "-framework DriverKit -framework SCSIControllerDriverKit";
 				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator.dext;
 				PRODUCT_NAME = me.herko.iSCSIInitiator.dext;
@@ -415,6 +425,7 @@
 		A54A0BE69857CBAC9C930ACC /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64e;
 				CODE_SIGN_ENTITLEMENTS = iSCSIDext/iSCSIDext.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				DRIVERKIT_DEPLOYMENT_TARGET = 24.0;
@@ -423,6 +434,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				ONLY_ACTIVE_ARCH = NO;
 				OTHER_LDFLAGS = "-framework DriverKit -framework SCSIControllerDriverKit";
 				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator.dext;
 				PRODUCT_NAME = me.herko.iSCSIInitiator.dext;

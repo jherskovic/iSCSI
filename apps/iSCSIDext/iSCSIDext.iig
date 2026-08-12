@@ -38,6 +38,20 @@ public:
     virtual kern_return_t UserReportHBAHighestLogicalUnitNumber(uint64_t * value) override;
     virtual kern_return_t UserDoesHBAPerformDeviceManagement(bool * result) override;
     virtual kern_return_t UserDoesHBAPerformAutoSense(bool * result) override;
+    // Also pure-virtual in the base: omitting any of these makes the framework
+    // fail Start() right after UserInitializeController().
+    virtual kern_return_t UserDoesHBASupportMultiPathing(bool * result) override;
+    virtual kern_return_t UserMapHBAData(uint32_t * uniqueTaskID) override;
+    virtual kern_return_t UserDoesHBASupportSCSIParallelFeature(
+        uint32_t theValue, bool * result) override;
+    // The framework asks for the DMA spec while starting the controller; it
+    // must agree with the constraints reported in UserInitializeController
+    // (maxTransferSize >= segmentCount * segmentByteCount).
+    virtual kern_return_t UserGetDMASpecification(
+        uint64_t * maxTransferSize,
+        uint32_t * alignment,
+        uint8_t * numAddressBits,
+        DMAOutputSegmentType * segmentType) override;
 
     // The I/O path. On an override the OSAction parameter must NOT repeat the
     // TYPE(ParallelTaskCompletion) annotation (the base already established
@@ -47,9 +61,29 @@ public:
         uint32_t * response,
         OSAction * completion) override;
 
+    // Bundled-task API. Both are pure-virtual in the base, so they MUST be
+    // overridden or the framework fails Start(). We deliberately return
+    // kIOReturnFailure from the map call, which is the documented way to opt
+    // out of bundled mode and keep the simpler UserProcessParallelTask path.
+    virtual kern_return_t UserMapBundledParallelTaskCommandAndResponseBuffers(
+        IOBufferMemoryDescriptor * parallelCommandIOMemoryDescriptor,
+        IOBufferMemoryDescriptor * parallelResponseIOMemoryDescriptor) override;
+    // Never invoked while we opt out above; must still exist. The OSAction
+    // parameter must NOT repeat the base's TYPE() annotation (iig asserts).
+    virtual void UserProcessBundledParallelTasks(
+        const uint16_t parallelRequestSlotIndices[kMaxBundledParallelTasks],
+        uint16_t parallelRequestSlotIndicesCount,
+        OSAction * completion) override;
+
     // Task management (theT=target, theL=lun, theQ=tagged task id).
     virtual kern_return_t UserAbortTaskRequest(
         uint64_t theT, uint64_t theL, uint64_t theQ, uint32_t * response) override;
+    virtual kern_return_t UserAbortTaskSetRequest(
+        uint64_t theT, uint64_t theL, uint32_t * response) override;
+    virtual kern_return_t UserClearACARequest(
+        uint64_t theT, uint64_t theL, uint32_t * response) override;
+    virtual kern_return_t UserClearTaskSetRequest(
+        uint64_t theT, uint64_t theL, uint32_t * response) override;
     virtual kern_return_t UserLogicalUnitResetRequest(
         uint64_t theT, uint64_t theL, uint32_t * response) override;
     virtual kern_return_t UserTargetResetRequest(
@@ -59,6 +93,14 @@ public:
     // outstanding task; looks up the parked completion and finishes it.
     virtual void CompleteTaskFromDaemon(
         uint64_t taskTag, uint32_t scsiStatus, uint32_t dataLength) LOCALONLY;
+
+    // Publishes the virtual target. MUST NOT be called from inside
+    // UserStartController: UserCreateTargetForID runs on the Auxiliary queue
+    // and the framework calls UserInitializeTargetForID back into the dext
+    // before it returns, so calling it while the dext queue is blocked in
+    // UserStartController deadlocks (PM then reports a stuck driver callout).
+    // It is dispatched asynchronously instead.
+    virtual void PublishVirtualTarget() LOCALONLY;
 };
 
 #endif /* iSCSIDext_h */

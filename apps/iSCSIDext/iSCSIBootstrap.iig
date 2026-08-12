@@ -1,0 +1,25 @@
+//
+//  iSCSIBootstrap.iig
+//  Bootstrap nub for the hardware-less SCSI HBA. An IOUserSCSIParallelInterface
+//  Controller cannot parent on IOUserResources directly, so this lightweight
+//  IOService matches IOUserResources (always present at boot), carries a marker
+//  property (iSCSIVirtualHBA) from its personality, and RegisterService()s
+//  itself so the controller personality can IOPropertyMatch it as its provider.
+//  (DevForums 836344; WWDC20 #10210.)
+//
+
+#ifndef iSCSIBootstrap_h
+#define iSCSIBootstrap_h
+
+#include <DriverKit/IOService.iig>
+
+class iSCSIBootstrap: public IOService
+{
+public:
+    virtual bool init() override;
+    virtual void free() override;
+    virtual kern_return_t Start(IOService * provider) override;
+    virtual kern_return_t Stop(IOService * provider) override;
+};
+
+#endif /* iSCSIBootstrap_h */

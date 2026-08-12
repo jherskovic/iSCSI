@@ -53,6 +53,10 @@ enum {
     kISCSICompletionSlotCount = 256,
     kISCSIDataRegionBytes     = 16u * 1024u * 1024u, // 16 MiB payload arena
     kISCSISlotPayloadBytes    = 65536,               // per-slot data window
+    // Reported to the SCSI family via UserReportHBAConstraints(). We advertise
+    // a single segment of this size; IOBreaker splits larger requests. Keep it
+    // <= kISCSISlotPayloadBytes so a task always fits one ring slot.
+    kISCSIMaxSegmentByteCount = 65536,
 };
 
 // Shared-memory header at the front of the mapped region. The daemon and dext
