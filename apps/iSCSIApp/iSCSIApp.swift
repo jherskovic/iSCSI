@@ -40,6 +40,12 @@ struct ContentView: View {
                 }
                 .padding(6)
             }
+            // Dev convenience: request activation as soon as the app launches,
+            // so a plain Cmd-R installs the freshly built dext. Without this it
+            // is far too easy to rebuild, reboot, and unknowingly keep running
+            // the PREVIOUS dext because nobody pressed Activate. (Remember to
+            // bump CFBundleVersion too — sysextd skips same-version installs.)
+            .task { controller.activate() }
 
             GroupBox("Target") {
                 Grid(alignment: .leading) {

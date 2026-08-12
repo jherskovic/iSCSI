@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import iSCSIDaemon
 import iSCSIKit
 
 // iscsictl — control CLI. In Phase 4 the read-only protocol operations
@@ -13,7 +14,7 @@ struct ISCSICtl: AsyncParsableCommand {
         commandName: "iscsictl",
         abstract: "Control the macOS iSCSI initiator.",
         version: "0.1.0",
-        subcommands: [Discover.self, Verify.self]
+        subcommands: [Discover.self, Verify.self, DextAttach.self]
     )
 }
 
@@ -186,6 +187,115 @@ struct Verify: AsyncParsableCommand {
         print("Logged out.")
         #else
         throw ValidationError("Network.framework unavailable on this platform")
+        #endif
+    }
+}
+
+// MARK: dext-attach
+
+struct DextAttach: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "dext-attach",
+        abstract: "Log in and serve the LUN to the DriverKit dext as a real block device."
+    )
+
+    // The portal is an option (not the usual positional argument) because this
+    // command is meant to be typed bare against the test target.
+    @Option(help: "Target portal host (IP or DNS name).")
+    var portal = "192.168.0.101"
+
+    @Option(help: "Target portal TCP port.")
+    var port: UInt16 = 3260
+
+    @Option(help: "Target IQN to log into.")
+    var target = "iqn.me.herko.planet-express:iscsi-driver-testing"
+
+    @Option(help: "LUN number.")
+    var lun: UInt64 = 0
+
+    @Option(help: "Initiator IQN.")
+    var initiator = IQN.defaultInitiatorName(
+        hostIdentifier: Host.current().localizedName ?? "mac"
+    )
+
+    @Option(help: "CHAP username.")
+    var chapUser: String?
+
+    @Option(help: "CHAP secret (prefer $ISCSI_CHAP_SECRET env var).")
+    var chapSecret: String?
+
+    @Option(help: "Mutual CHAP username (target authenticates to us).")
+    var mutualUser: String?
+
+    @Option(help: "Mutual CHAP secret.")
+    var mutualSecret: String?
+
+    @Flag(help: "Trace every PDU on the wire to stderr.")
+    var debug = false
+
+    func credentials() -> CHAP.Credentials? {
+        guard let user = chapUser else { return nil }
+        let secret = chapSecret ?? ProcessInfo.processInfo.environment["ISCSI_CHAP_SECRET"] ?? ""
+        return CHAP.Credentials(
+            name: user, secret: secret,
+            mutualName: mutualUser,
+            mutualSecret: mutualSecret ?? ProcessInfo.processInfo.environment["ISCSI_MUTUAL_SECRET"]
+        )
+    }
+
+    func run() async throws {
+        #if canImport(IOKit) && canImport(Network)
+        let trace = debug
+        let label = portal
+        let core = DaemonCore(initiatorName: initiator) { host, port in
+            let tcp = try await NetworkTransport.connect(host: host, port: port)
+            return trace ? TracingTransport(tcp, label: label) : tcp
+        }
+
+        let handle = try await core.login(
+            host: portal, port: port, targetIQN: target, lun: lun, chap: credentials()
+        )
+        print("Logged in to \(target) LUN \(lun). Session=\(handle)")
+
+        do {
+            let (blockSize, blockCount) = try await core.capacity(handle)
+            let bytes = blockCount * UInt64(blockSize)
+            print("  CAPACITY: \(blockCount) blocks × \(blockSize) bytes = \(bytes / 1_048_576) MiB "
+                + "(\(String(format: "%.2f", Double(bytes) / 1_073_741_824)) GiB)")
+
+            let bridge = DextBridge()
+            do {
+                try await bridge.open()
+            } catch {
+                print("Cannot open the dext user client: \(error)")
+                print("  Is the dext loaded? Check `systemextensionsctl list`.")
+                throw ExitCode(1)
+            }
+
+            // Ctrl-C has to unwind rather than kill us mid-flight, so the LUN is
+            // withdrawn and the session logged out instead of left dangling.
+            let pump = Task { await bridge.run(handle: handle, core: core) }
+            signal(SIGINT, SIG_IGN)
+            let interrupts = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+            interrupts.setEventHandler { pump.cancel() }
+            interrupts.resume()
+
+            print("  Attached: servicing SCSI tasks; press Ctrl-C to stop.")
+            await pump.value
+            interrupts.cancel()
+
+            try? await bridge.unpublish()
+            await bridge.close()
+            print("Detached.")
+        } catch {
+            try? await core.logout(handle)
+            throw error
+        }
+
+        try await core.logout(handle)
+        print("Logged out.")
+        #else
+        throw ValidationError("IOKit/Network unavailable on this platform — dext-attach requires macOS")
         #endif
     }
 }

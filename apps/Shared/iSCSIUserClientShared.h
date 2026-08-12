@@ -14,14 +14,56 @@
 #include <stdint.h>
 
 // External method selectors on the dext's IOUserClient.
+//
+// Control travels as SCALARS (max 16 per call, so everything below fits inline
+// and we never need out-of-line struct descriptors); bulk payload travels
+// through the shared data arena mapped once via CopyClientMemoryForType. That
+// keeps the DriverKit surface small — scalar methods plus one memory mapping.
 enum {
-    // Scalar methods (no struct payload).
-    kISCSIUserClientPublishLUN     = 0, // args: targetID, lun, blockSize, blockCount
-    kISCSIUserClientUnpublishLUN   = 1, // args: targetID, lun
-    kISCSIUserClientSetRingBuffer  = 2, // maps the shared ring (struct output)
-    kISCSIUserClientCompleteTask   = 3, // args: slotIndex, scsiStatus, dataLength
-    kISCSIUserClientTeardownNub    = 4, // reboot-free upgrade: drop the nub
+    // in: blockSize, blockCount. Publishes LUN geometry; until this arrives the
+    // dext answers TEST UNIT READY / READ CAPACITY with NOT READY.
+    kISCSIUserClientPublishLUN     = 0,
+    kISCSIUserClientUnpublishLUN   = 1, // no args
+    // Maps the shared data arena (memory type for CopyClientMemoryForType).
+    kISCSIUserClientSetRingBuffer  = 2,
+    // out: see ISCSIFetchScalar order below. Returns taskTag == 0 when idle.
+    kISCSIUserClientFetchTask      = 3,
+    // in: taskTag, scsiStatus, dataLength, senseLength
+    kISCSIUserClientCompleteTask   = 4,
+    kISCSIUserClientTeardownNub    = 5, // reboot-free upgrade: drop the nub
     kISCSIUserClientMethodCount
+};
+
+// Scalar output order for kISCSIUserClientFetchTask.
+enum {
+    kISCSIFetchTaskTag        = 0, // 0 => no task pending
+    kISCSIFetchSlotIndex      = 1, // payload lives at slotIndex * kISCSISlotPayloadBytes
+    kISCSIFetchTargetID       = 2,
+    kISCSIFetchLUN            = 3,
+    kISCSIFetchDirection      = 4, // 0 none, 1 device→initiator (read), 2 write
+    kISCSIFetchTransferLength = 5,
+    kISCSIFetchCDBLow         = 6, // CDB bytes 0-7, little-endian packed
+    kISCSIFetchCDBHigh        = 7, // CDB bytes 8-15
+    kISCSIFetchCDBLength      = 8,
+    kISCSIFetchScalarCount    = 9
+};
+
+// Scalar input order for kISCSIUserClientCompleteTask. For a read the daemon
+// first writes dataLength bytes into the arena at slotIndex*kISCSISlotPayloadBytes;
+// on error it writes senseLength sense bytes at that same offset instead.
+enum {
+    kISCSICompleteTaskTag     = 0,
+    kISCSICompleteSCSIStatus  = 1, // SAM status byte (0 = GOOD)
+    kISCSICompleteDataLength  = 2,
+    kISCSICompleteSenseLength = 3,
+    kISCSICompleteScalarCount = 4
+};
+
+// Transfer directions used in the fetch scalars.
+enum {
+    kISCSIDirectionNone  = 0,
+    kISCSIDirectionRead  = 1,
+    kISCSIDirectionWrite = 2
 };
 
 // One entry in the request ring: a SCSI task the kernel handed us that must be

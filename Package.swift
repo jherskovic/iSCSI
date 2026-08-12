@@ -36,6 +36,8 @@ let package = Package(
             name: "iscsictl",
             dependencies: [
                 "iSCSIKit",
+                // dext-attach drives DaemonCore + DextBridge directly.
+                "iSCSIDaemon",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]

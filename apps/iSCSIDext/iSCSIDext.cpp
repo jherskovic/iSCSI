@@ -17,6 +17,7 @@
 #include <DriverKit/IOLib.h>
 #include <DriverKit/IOKitKeys.h>
 #include <DriverKit/IOReturn.h>
+#include <DriverKit/IOUserClient.h>
 #include <DriverKit/IOUserServer.h>
 #include <DriverKit/OSAction.h>
 #include <DriverKit/OSDictionary.h>
@@ -35,7 +36,9 @@
 // completion → /dev/disk) independently of the daemon. Set to 0 once
 // UserProcessParallelTask is bridged to iscsid over the shared ring.
 // ---------------------------------------------------------------------------
-#define ISCSI_DEXT_SCRATCH_DISK 1
+// 0 = real path: READ/WRITE/SYNC CACHE are forwarded to iscsid over the shared
+// arena. 1 = bring-up scaffolding backed by an in-dext RAM buffer.
+#define ISCSI_DEXT_SCRATCH_DISK 0
 
 enum {
     kScratchBlockSize = 512,
@@ -46,6 +49,43 @@ enum {
 // The single target we publish. Must be <= UserReportHighestSupportedDeviceID
 // and must not collide with the initiator's own ID.
 enum { kVirtualTargetID = 0, kInitiatorID = 7, kHighestTargetID = 7 };
+
+// Reported LUN geometry: fixed in scaffolding mode, daemon-supplied otherwise.
+#if ISCSI_DEXT_SCRATCH_DISK
+#define kLUNBlockSize  ((uint32_t)kScratchBlockSize)
+#define kLUNBlockCount ((uint64_t)kScratchBlocks)
+#else
+#define kLUNBlockSize  (ivars->lunBlockSize)
+#define kLUNBlockCount (ivars->lunBlockCount)
+#endif
+
+// One outstanding SCSI task handed to the daemon. The task's data buffer is
+// only obtainable inside UserProcessParallelTask, so we retain the descriptor
+// here and copy into it when the daemon answers.
+struct ParkedTask
+{
+    bool       inUse;
+    bool       fetched;      // already handed to the daemon
+    uint64_t   taskTag;
+    OSAction * completion;
+    IOBufferMemoryDescriptor * dataMD;
+    uint8_t *  dataPtr;
+    uint64_t   dataLen;
+    uint32_t   direction;
+    uint64_t   targetID;
+    uint64_t   controllerTaskID;
+    uint32_t   transferLength;
+    uint32_t   cdbLength;
+    uint8_t    cdb[16];
+    uint64_t   parkTick;     // watchdog tick when this slot was filled
+};
+
+// Watchdog cadence. Tasks are failed once they have been parked for roughly
+// kWatchdogTimeoutTicks * kWatchdogIntervalMs. Ticks avoid needing a clock.
+enum {
+    kWatchdogIntervalMs   = 2000,
+    kWatchdogTimeoutTicks = 8,   // ~16 seconds
+};
 
 struct iSCSIDext_IVars
 {
@@ -60,6 +100,18 @@ struct iSCSIDext_IVars
     // the dext, and that callback is serviced on the default queue — so if the
     // publish runs there, it blocks waiting for the queue it is occupying.
     IODispatchQueue * publishQueue;
+
+    // --- daemon bridge ---
+    IOBufferMemoryDescriptor * arenaMD; // shared payload arena (mapped by daemon)
+    uint8_t * arena;
+    bool lunPublished;
+    uint32_t lunBlockSize;
+    uint64_t lunBlockCount;
+    ParkedTask tasks[kISCSIRequestSlotCount];
+    uint64_t nextTaskTag;
+    bool watchdogStarted;
+    bool watchdogRun;
+    uint64_t watchdogTick;
 };
 
 // Helper: set an OSNumber into the constraints dictionary.
@@ -115,7 +167,34 @@ kern_return_t
 IMPL(iSCSIDext, Stop)
 {
     Log("Stop");
+    if (ivars != nullptr) {
+        ivars->watchdogRun = false;          // let the loop exit
+        AbortAllParkedTasks("controller stopping");
+    }
     return Stop(provider, SUPERDISPATCH);
+}
+
+kern_return_t
+IMPL(iSCSIDext, NewUserClient)
+{
+    (void)type;
+    // Instantiates the class named by the personality's UserClientProperties
+    // dict (IOUserClass = iSCSIUserClient) with this controller as provider.
+    IOService * client = nullptr;
+    kern_return_t ret = Create(this, "UserClientProperties", &client);
+    if (ret != kIOReturnSuccess || client == nullptr) {
+        Log("NewUserClient: Create failed 0x%x", ret);
+        return ret == kIOReturnSuccess ? kIOReturnError : ret;
+    }
+    IOUserClient * uc = OSDynamicCast(IOUserClient, client);
+    if (uc == nullptr) {
+        Log("NewUserClient: created object is not an IOUserClient");
+        client->release();
+        return kIOReturnError;
+    }
+    *userClient = uc;
+    Log("NewUserClient: handed out iSCSIUserClient");
+    return kIOReturnSuccess;
 }
 
 kern_return_t
@@ -232,6 +311,22 @@ IMPL(iSCSIDext, UserStartController)
     Log("UserStartController");
     ivars->controllerStarted = true;
 
+    // Start the watchdog before any task can be parked.
+    if (!ivars->watchdogStarted) {
+        if (ivars->publishQueue == nullptr) {
+            kern_return_t qret = IODispatchQueue::Create(
+                "iSCSIWatchdogQueue", 0, 0, &ivars->publishQueue);
+            if (qret != kIOReturnSuccess) {
+                Log("watchdog queue Create failed: 0x%x", qret);
+            }
+        }
+        if (ivars->publishQueue != nullptr) {
+            ivars->watchdogStarted = true;
+            ivars->watchdogRun = true;
+            ivars->publishQueue->DispatchAsync(^{ WatchdogLoop(); });
+        }
+    }
+
 #if ISCSI_DEXT_SCRATCH_DISK
     // Back the bring-up target with a RAM buffer.
     if (ivars->scratch == nullptr) {
@@ -260,7 +355,8 @@ IMPL(iSCSIDext, UserStartController)
     return kIOReturnSuccess;
 }
 
-#if ISCSI_DEXT_SCRATCH_DISK
+// Declared in the .iig, so it must always be defined (it lands in the vtable)
+// even though nothing calls it while the family does the bus scan.
 void
 iSCSIDext::PublishVirtualTarget()
 {
@@ -290,7 +386,6 @@ iSCSIDext::PublishVirtualTarget()
     ivars->targetPublished = true;
     Log("published virtual target %u", kVirtualTargetID);
 }
-#endif
 
 kern_return_t
 IMPL(iSCSIDext, UserInitializeTargetForID)
@@ -351,8 +446,7 @@ IMPL(iSCSIDext, UserDoesHBAPerformAutoSense)
     return kIOReturnSuccess;
 }
 
-#if ISCSI_DEXT_SCRATCH_DISK
-// --- Bring-up only: minimal SCSI target emulation over the RAM buffer. ---
+// --- SCSI helpers, used by both the daemon path and the scaffolding. ---
 
 static inline void PutBE32(uint8_t * p, uint32_t v)
 {
@@ -389,18 +483,224 @@ MakeSense(uint8_t * sense, uint8_t key, uint8_t asc, uint8_t ascq)
     sense[13] = ascq;
     return 18;
 }
-#endif // ISCSI_DEXT_SCRATCH_DISK
+
+// --- Daemon bridge (LOCALONLY; called by iSCSIUserClient in-process). ------
+
+IOBufferMemoryDescriptor *
+iSCSIDext::CopyPayloadArena()
+{
+    if (ivars->arenaMD == nullptr) {
+        kern_return_t ret = IOBufferMemoryDescriptor::Create(
+            kIOMemoryDirectionInOut, kISCSIDataRegionBytes, 8, &ivars->arenaMD);
+        if (ret != kIOReturnSuccess || ivars->arenaMD == nullptr) {
+            Log("arena Create failed: 0x%x", ret);
+            return nullptr;
+        }
+        IOAddressSegment seg = {};
+        if (ivars->arenaMD->GetAddressRange(&seg) == kIOReturnSuccess) {
+            ivars->arena = reinterpret_cast<uint8_t *>(seg.address);
+        }
+        Log("payload arena ready: %u bytes", (unsigned)kISCSIDataRegionBytes);
+    }
+    ivars->arenaMD->retain();
+    return ivars->arenaMD;
+}
+
+void
+iSCSIDext::SetLUNGeometry(uint32_t blockSize, uint64_t blockCount)
+{
+    ivars->lunBlockSize  = blockSize;
+    ivars->lunBlockCount = blockCount;
+    bool becameReady = (blockSize != 0 && blockCount != 0) && !ivars->lunPublished;
+    ivars->lunPublished  = (blockSize != 0 && blockCount != 0);
+    Log("LUN geometry: %u x %llu (ready=%d)", blockSize, blockCount,
+        ivars->lunPublished ? 1 : 0);
+
+    // The SCSI family probes the bus once, right after the controller starts.
+    // If the daemon connects after that (the normal case — it has to log in to
+    // the target first), the LUN was NOT READY at probe time and nothing ever
+    // re-examines it, so no /dev/disk is created. Telling the family the media
+    // parameters changed makes it re-read capacity and attach.
+    //
+    // Dispatched off this queue on purpose: this runs from the user client's
+    // ExternalMethod, and calling back into the framework inline is what
+    // deadlocked UserCreateTargetForID.
+    if (becameReady && ivars->publishQueue != nullptr) {
+        ivars->publishQueue->DispatchAsync(^{
+            kern_return_t r = UserCallMediaParametersHaveChanged();
+            Log("media parameters changed -> 0x%x", r);
+        });
+    }
+}
+
+bool
+iSCSIDext::FetchPendingTask(uint64_t * taskTag, uint32_t * slotIndex,
+                            uint32_t * targetID, uint32_t * lun,
+                            uint32_t * direction, uint32_t * transferLength,
+                            uint64_t * cdbLow, uint64_t * cdbHigh,
+                            uint32_t * cdbLength)
+{
+    for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
+        ParkedTask * t = &ivars->tasks[i];
+        if (!t->inUse || t->fetched) continue;
+        t->fetched = true;
+        *taskTag        = t->taskTag;
+        *slotIndex      = i;
+        *targetID       = (uint32_t)t->targetID;
+        *lun            = 0;
+        *direction      = t->direction;
+        *transferLength = t->transferLength;
+        uint64_t lo = 0, hi = 0;
+        for (int b = 0; b < 8; b++) {
+            lo |= (uint64_t)t->cdb[b] << (8 * b);
+            hi |= (uint64_t)t->cdb[b + 8] << (8 * b);
+        }
+        *cdbLow    = lo;
+        *cdbHigh   = hi;
+        *cdbLength = t->cdbLength;
+        return true;
+    }
+    return false;
+}
+
+// Completes one parked slot with a delivery failure. Caller owns slot validity.
+void
+iSCSIDext::FailParkedSlot(uint32_t index)
+{
+    ParkedTask * t = &ivars->tasks[index];
+    // Claim the slot atomically: the daemon's completion, the watchdog and the
+    // TMF paths can all race for it, and completing twice would finish an
+    // unrelated recycled task.
+    bool expected = true;
+    if (!__atomic_compare_exchange_n(&t->inUse, &expected, false, false,
+                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+        return;
+    }
+
+    SCSIUserParallelResponse resp = {};
+    resp.version = kScsiUserParallelTaskResponseCurrentVersion1;
+    resp.fTargetID = t->targetID;
+    resp.fControllerTaskIdentifier = t->controllerTaskID;
+    // Delivery failure (rather than CHECK CONDITION) tells the stack the
+    // command never reached the device, so it can retry or fail the I/O
+    // promptly instead of interpreting stale sense data.
+    resp.fServiceResponse  = kSCSIServiceResponse_SERVICE_DELIVERY_OR_TARGET_FAILURE;
+    resp.fCompletionStatus = kSCSITaskStatus_DeliveryFailure;
+    resp.fBytesTransferred = 0;
+
+    OSAction * completion = t->completion;
+    OSSafeReleaseNULL(t->dataMD);
+    t->fetched = false; t->completion = nullptr;
+    t->dataPtr = nullptr; t->dataLen = 0;
+
+    if (completion != nullptr) {
+        ParallelTaskCompletion(completion, resp);
+        completion->release();
+    }
+}
+
+void
+iSCSIDext::WatchdogLoop()
+{
+    Log("watchdog: running (interval %ums, timeout ~%us)",
+        (unsigned)kWatchdogIntervalMs,
+        (unsigned)(kWatchdogIntervalMs * kWatchdogTimeoutTicks / 1000));
+    while (ivars != nullptr && ivars->watchdogRun) {
+        IOSleep(kWatchdogIntervalMs);
+        if (ivars == nullptr || !ivars->watchdogRun) break;
+        ivars->watchdogTick++;
+        uint32_t timedOut = 0;
+        for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
+            ParkedTask * t = &ivars->tasks[i];
+            if (!t->inUse) continue;
+            if (ivars->watchdogTick - t->parkTick >= kWatchdogTimeoutTicks) {
+                FailParkedSlot(i);
+                timedOut++;
+            }
+        }
+        if (timedOut != 0) {
+            Log("watchdog: failed %u task(s) the daemon never answered", timedOut);
+        }
+    }
+    Log("watchdog: stopped");
+}
+
+void
+iSCSIDext::AbortAllParkedTasks(const char * reason)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
+        if (ivars->tasks[i].inUse) { FailParkedSlot(i); n++; }
+    }
+    if (n != 0) Log("aborted %u parked task(s): %s", n, reason);
+}
+
+uint32_t
+iSCSIDext::AbortParkedTasksFor(uint64_t targetID, uint64_t lun)
+{
+    (void)lun; // single LUN per target for now
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
+        if (ivars->tasks[i].inUse && ivars->tasks[i].targetID == targetID) {
+            FailParkedSlot(i);
+            n++;
+        }
+    }
+    return n;
+}
+
+void
+iSCSIDext::CompleteTaskFromDaemonEx(uint64_t taskTag, uint32_t scsiStatus,
+                                    uint32_t dataLength, uint32_t senseLength)
+{
+    for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
+        ParkedTask * t = &ivars->tasks[i];
+        if (!t->inUse || t->taskTag != taskTag) continue;
+
+        SCSIUserParallelResponse resp = {};
+        resp.version = kScsiUserParallelTaskResponseCurrentVersion1;
+        resp.fTargetID = t->targetID;
+        resp.fControllerTaskIdentifier = t->controllerTaskID;
+        resp.fServiceResponse  = kSCSIServiceResponse_TASK_COMPLETE;
+        resp.fCompletionStatus = (scsiStatus == 0) ? kSCSITaskStatus_GOOD
+                                                   : kSCSITaskStatus_CHECK_CONDITION;
+
+        const uint8_t * slot = ivars->arena
+            ? ivars->arena + ((uint64_t)i * kISCSISlotPayloadBytes) : nullptr;
+
+        if (scsiStatus != 0 && senseLength > 0 && slot != nullptr) {
+            uint32_t n = senseLength > kMaxSenseBufferSize ? kMaxSenseBufferSize : senseLength;
+            if (n > 255) n = 255; // fSenseLength is a uint8_t
+            memcpy(resp.fSenseBuffer, slot, n);
+            resp.fSenseLength = (uint8_t)n;
+        } else if (t->direction == kISCSIDirectionRead && dataLength > 0 &&
+                   slot != nullptr && t->dataPtr != nullptr) {
+            uint64_t n = dataLength;
+            if (n > t->dataLen) n = t->dataLen;
+            if (n > kISCSISlotPayloadBytes) n = kISCSISlotPayloadBytes;
+            memcpy(t->dataPtr, slot, (size_t)n);
+            resp.fBytesTransferred = n;
+        } else if (scsiStatus == 0) {
+            resp.fBytesTransferred = dataLength;
+        }
+
+        OSAction * completion = t->completion;
+        OSSafeReleaseNULL(t->dataMD);
+        t->inUse = false; t->fetched = false; t->completion = nullptr;
+        t->dataPtr = nullptr; t->dataLen = 0;
+
+        if (completion != nullptr) {
+            ParallelTaskCompletion(completion, resp);
+            completion->release();
+        }
+        return;
+    }
+    Log("CompleteTaskFromDaemon: unknown tag %llu", taskTag);
+}
 
 kern_return_t
 IMPL(iSCSIDext, UserProcessParallelTask)
 {
-    // TODO(daemon-bridge): once ISCSI_DEXT_SCRATCH_DISK is 0, translate
-    // parallelRequest into an ISCSIRequestSlot (CDB, direction, transfer
-    // length, buffer offset), publish it on the request ring, retain
-    // `completion` and park it keyed by fControllerTaskIdentifier. The daemon
-    // posts an ISCSICompletionSlot and CompleteTaskFromDaemon() finishes it.
-    // The response-filling code below is reused verbatim for that path.
-
     SCSIUserParallelResponse resp = {};
     // MANDATORY: if this version does not match, the kernel returns WITHOUT
     // completing the I/O — the task just hangs, with no error reported.
@@ -412,9 +712,9 @@ IMPL(iSCSIDext, UserProcessParallelTask)
     resp.fBytesTransferred      = 0;
     resp.fSenseLength           = 0;
 
-#if ISCSI_DEXT_SCRATCH_DISK
     const uint8_t * cdb = parallelRequest.fCommandDescriptorBlock;
     const uint8_t   op  = cdb[0];
+    bool deferred = false; // true => daemon owns the completion now
 
     // fBufferIOVMAddr is a DMA/IOVM address — NOT dereferenceable from the
     // dext. Touching it faults instantly (EXC_BAD_ACCESS, byte write
@@ -454,11 +754,38 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
         resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x05, 0x25, 0x00); // LUN not supported
     } else switch (op) {
-    case 0x00: // TEST UNIT READY
-    case 0x35: // SYNCHRONIZE CACHE (10) — RAM buffer is always coherent
-    case 0x91: // SYNCHRONIZE CACHE (16)
     case 0x1B: // START STOP UNIT
         break;
+
+    case 0x00: // TEST UNIT READY
+#if !ISCSI_DEXT_SCRATCH_DISK
+        // Until the daemon publishes LUN geometry there is no medium behind
+        // us. Reporting "becoming ready" makes the SCSI stack keep polling
+        // (it retries every ~3s) instead of giving up on the device.
+        if (!ivars->lunPublished) {
+            resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x04, 0x01);
+        }
+#endif
+        break;
+
+    case 0x35: // SYNCHRONIZE CACHE (10)
+    case 0x91: // SYNCHRONIZE CACHE (16)
+#if ISCSI_DEXT_SCRATCH_DISK
+        break; // RAM buffer is always coherent
+#else
+        if (!ivars->lunPublished) {
+            resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x04, 0x01);
+            break;
+        }
+        deferred = ParkTaskForDaemon(parallelRequest, completion,
+                                     kISCSIDirectionNone, 0, dataMD, buf, avail);
+        if (!deferred) {
+            resp.fCompletionStatus = kSCSITaskStatus_TASK_SET_FULL;
+        }
+        break;
+#endif
 
     case 0x12: { // INQUIRY
         uint8_t inq[36] = {};
@@ -490,10 +817,17 @@ IMPL(iSCSIDext, UserProcessParallelTask)
     }
 
     case 0x25: { // READ CAPACITY (10)
+#if !ISCSI_DEXT_SCRATCH_DISK
+        if (!ivars->lunPublished) {
+            resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x04, 0x01);
+            break;
+        }
+#endif
         uint8_t cap[8] = {};
-        uint64_t lastLBA = kScratchBlocks - 1;
+        uint64_t lastLBA = kLUNBlockCount - 1;
         PutBE32(&cap[0], lastLBA > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)lastLBA);
-        PutBE32(&cap[4], kScratchBlockSize);
+        PutBE32(&cap[4], kLUNBlockSize);
         uint64_t n = avail < sizeof(cap) ? avail : sizeof(cap);
         if (buf && n) memcpy(buf, cap, (size_t)n);
         resp.fBytesTransferred = n;
@@ -506,9 +840,16 @@ IMPL(iSCSIDext, UserProcessParallelTask)
             resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x05, 0x20, 0x00);
             break;
         }
+#if !ISCSI_DEXT_SCRATCH_DISK
+        if (!ivars->lunPublished) {
+            resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x04, 0x01);
+            break;
+        }
+#endif
         uint8_t cap[32] = {};
-        PutBE64(&cap[0], (uint64_t)kScratchBlocks - 1);
-        PutBE32(&cap[8], kScratchBlockSize);
+        PutBE64(&cap[0], (uint64_t)kLUNBlockCount - 1);
+        PutBE32(&cap[8], kLUNBlockSize);
         uint64_t n = avail < sizeof(cap) ? avail : sizeof(cap);
         if (buf && n) memcpy(buf, cap, (size_t)n);
         resp.fBytesTransferred = n;
@@ -524,10 +865,11 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         uint64_t lba    = is16 ? GetBE64(&cdb[2]) : (uint64_t)GetBE32(&cdb[2]);
         uint32_t blocks = is16 ? GetBE32(&cdb[10])
                                : (uint32_t)((cdb[7] << 8) | cdb[8]);
-        uint64_t offset = lba * kScratchBlockSize;
-        uint64_t length = (uint64_t)blocks * kScratchBlockSize;
+#if ISCSI_DEXT_SCRATCH_DISK
+        uint64_t offset = lba * kLUNBlockSize;
+        uint64_t length = (uint64_t)blocks * kLUNBlockSize;
 
-        if (lba >= kScratchBlocks || offset + length > kScratchBytes) {
+        if (lba >= kLUNBlockCount || offset + length > kScratchBytes) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
             resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x05, 0x21, 0x00); // LBA out of range
             break;
@@ -538,6 +880,28 @@ IMPL(iSCSIDext, UserProcessParallelTask)
             else         memcpy(buf, ivars->scratch + offset, (size_t)length);
         }
         resp.fBytesTransferred = length;
+#else
+        if (!ivars->lunPublished) {
+            resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x04, 0x01);
+            break;
+        }
+        if (lba >= kLUNBlockCount) {
+            resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x05, 0x21, 0x00);
+            break;
+        }
+        uint64_t length = (uint64_t)blocks * kLUNBlockSize;
+        if (length > avail) length = avail;
+        deferred = ParkTaskForDaemon(
+            parallelRequest, completion,
+            isWrite ? kISCSIDirectionWrite : kISCSIDirectionRead,
+            (uint32_t)length, dataMD, buf, avail);
+        if (!deferred) {
+            // No free slot: tell the initiator to retry rather than fail the I/O.
+            resp.fCompletionStatus = kSCSITaskStatus_TASK_SET_FULL;
+        }
+#endif
         break;
     }
 
@@ -568,8 +932,14 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x05, 0x20, 0x00); // invalid opcode
         break;
     }
+    if (deferred) {
+        // The daemon owns this task now: it holds the retained data buffer and
+        // the completion, and will finish it via CompleteTaskFromDaemonEx().
+        *response = kSCSIServiceResponse_Request_In_Process;
+        return kIOReturnSuccess;
+    }
+
     OSSafeReleaseNULL(dataMD);
-#endif // ISCSI_DEXT_SCRATCH_DISK
 
     // Completion is delivered through the OSAction; tell the framework the
     // request itself was accepted.
@@ -578,19 +948,72 @@ IMPL(iSCSIDext, UserProcessParallelTask)
     return kIOReturnSuccess;
 }
 
+// Parks a task for the daemon. For a write the payload is copied into the
+// shared arena now, while the task's data buffer is still obtainable; for a
+// read the buffer descriptor is retained so the daemon's reply can be copied
+// back later. Returns false if no slot is free.
+bool
+iSCSIDext::ParkTaskForDaemon(SCSIUserParallelTask parallelRequest,
+                             OSAction * completion,
+                             uint32_t direction,
+                             uint32_t transferLength,
+                             IOBufferMemoryDescriptor * dataMD,
+                             uint8_t * dataPtr,
+                             uint64_t dataLen)
+{
+    if (ivars->arena == nullptr) {
+        Log("ParkTaskForDaemon: no arena (daemon never connected)");
+        return false;
+    }
+    for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
+        ParkedTask * t = &ivars->tasks[i];
+        if (t->inUse) continue;
+
+        uint8_t * slot = ivars->arena + ((uint64_t)i * kISCSISlotPayloadBytes);
+        if (direction == kISCSIDirectionWrite && dataPtr != nullptr && transferLength > 0) {
+            uint64_t n = transferLength;
+            if (n > dataLen) n = dataLen;
+            if (n > kISCSISlotPayloadBytes) n = kISCSISlotPayloadBytes;
+            memcpy(slot, dataPtr, (size_t)n);
+        }
+
+        t->inUse            = true;
+        t->fetched          = false;
+        t->parkTick         = ivars->watchdogTick;
+        t->taskTag          = ++ivars->nextTaskTag;
+        t->completion       = completion;
+        if (completion != nullptr) completion->retain();
+        t->dataMD           = dataMD;   // ownership transfers to the slot
+        t->dataPtr          = dataPtr;
+        t->dataLen          = dataLen;
+        t->direction        = direction;
+        t->targetID         = parallelRequest.fTargetID;
+        t->controllerTaskID = parallelRequest.fControllerTaskIdentifier;
+        t->transferLength   = transferLength;
+        t->cdbLength        = parallelRequest.fCommandSize;
+        memcpy(t->cdb, parallelRequest.fCommandDescriptorBlock, 16);
+        return true;
+    }
+    return false;
+}
+
 kern_return_t
 IMPL(iSCSIDext, UserAbortTaskRequest)
 {
-    Log("UserAbortTaskRequest t=%llu l=%llu q=%llu", theT, theL, theQ);
-    *response = 0; // TODO: forward ABORT TASK to daemon (→ iSCSI TMF)
+    // Actually cancel the parked work rather than claiming success and leaving
+    // it outstanding — a lying TMF is how a "hung disk" turns permanent.
+    uint32_t n = AbortParkedTasksFor(theT, theL);
+    Log("UserAbortTaskRequest t=%llu l=%llu q=%llu -> aborted %u", theT, theL, theQ, n);
+    *response = kSCSIServiceResponse_FUNCTION_COMPLETE;
     return kIOReturnSuccess;
 }
 
 kern_return_t
 IMPL(iSCSIDext, UserAbortTaskSetRequest)
 {
-    Log("UserAbortTaskSetRequest t=%llu l=%llu", theT, theL);
-    *response = 0; // TODO: forward ABORT TASK SET to daemon
+    { uint32_t n = AbortParkedTasksFor(theT, theL);
+      Log("UserAbortTaskSetRequest t=%llu l=%llu -> aborted %u", theT, theL, n); }
+    *response = kSCSIServiceResponse_FUNCTION_COMPLETE; // TODO: forward ABORT TASK SET to daemon
     return kIOReturnSuccess;
 }
 
@@ -605,24 +1028,27 @@ IMPL(iSCSIDext, UserClearACARequest)
 kern_return_t
 IMPL(iSCSIDext, UserClearTaskSetRequest)
 {
-    Log("UserClearTaskSetRequest t=%llu l=%llu", theT, theL);
-    *response = 0; // TODO: forward CLEAR TASK SET to daemon
+    { uint32_t n = AbortParkedTasksFor(theT, theL);
+      Log("UserClearTaskSetRequest t=%llu l=%llu -> aborted %u", theT, theL, n); }
+    *response = kSCSIServiceResponse_FUNCTION_COMPLETE; // TODO: forward CLEAR TASK SET to daemon
     return kIOReturnSuccess;
 }
 
 kern_return_t
 IMPL(iSCSIDext, UserLogicalUnitResetRequest)
 {
-    Log("UserLogicalUnitResetRequest t=%llu l=%llu", theT, theL);
-    *response = 0; // TODO: forward LUN RESET to daemon
+    uint32_t n = AbortParkedTasksFor(theT, theL);
+    Log("UserLogicalUnitResetRequest t=%llu l=%llu -> aborted %u", theT, theL, n);
+    *response = kSCSIServiceResponse_FUNCTION_COMPLETE;
     return kIOReturnSuccess;
 }
 
 kern_return_t
 IMPL(iSCSIDext, UserTargetResetRequest)
 {
-    Log("UserTargetResetRequest t=%llu", theT);
-    *response = 0; // TODO: forward TARGET RESET to daemon
+    uint32_t n = AbortParkedTasksFor(theT, ~0ull);
+    Log("UserTargetResetRequest t=%llu -> aborted %u", theT, n);
+    *response = kSCSIServiceResponse_FUNCTION_COMPLETE;
     return kIOReturnSuccess;
 }
 

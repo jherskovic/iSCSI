@@ -12,10 +12,16 @@
     <string>6.0</string>
     <key>CFBundlePackageType</key>
     <string>DEXT</string>
+    <!-- BUMP CFBundleVersion FOR EVERY DEXT CHANGE YOU WANT LOADED.
+         sysextd keys replacement off the version: rebuilding with the same
+         version leaves the OLD dext active ("already activated"), even though
+         the app bundle contains the new binary — which looks exactly like the
+         new code silently not working. Bumping it makes the swap a real
+         upgrade, so no kill -9 workaround is needed. -->
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.1.1</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>OSBundleUsageDescription</key>
     <string>Presents iSCSI LUNs as local disks.</string>
     <key>IOKitPersonalities</key>

@@ -44,10 +44,33 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
 
     private var lunAddress: UInt64 { lun << 48 }
 
+    /// Executes a task, absorbing UNIT ATTENTION.
+    ///
+    /// A target reports UNIT ATTENTION (sense key 0x06) on the first non-INQUIRY
+    /// command of a fresh I_T nexus — "power on, reset, or bus device reset
+    /// occurred" — and again after events like a target reset or a capacity
+    /// change. Reporting the condition is what clears it, so the correct
+    /// initiator behaviour is to retry rather than surface an error. Retrying
+    /// the *login* cannot help: each new session re-arms the UA, so it has to be
+    /// absorbed inside the session.
+    private func executeAbsorbingUnitAttention(
+        _ task: SCSITask,
+        retries: Int = 2
+    ) async throws -> SCSITaskResult {
+        var attempt = 0
+        while true {
+            let result = try await session.execute(task)
+            if result.isGood { return result }
+            let sense = result.sense.flatMap(SenseData.init)
+            guard sense?.key == 0x06, attempt < retries else { return result }
+            attempt += 1
+        }
+    }
+
     /// READ CAPACITY(16) to learn geometry; cached after first call.
     public func readCapacity() async throws -> (blockSize: Int, blockCount: UInt64) {
         if capacityKnown { return (cachedBlockSize, cachedBlockCount) }
-        let result = try await session.execute(SCSITask(
+        let result = try await executeAbsorbingUnitAttention(SCSITask(
             lun: lunAddress,
             cdb: CDB.readCapacity16(),
             direction: .read(expectedLength: 32)
@@ -81,7 +104,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         while remaining > 0 {
             let blocks = min(remaining, blocksPerChunk)
             let byteLen = blocks * bs
-            let result = try await session.execute(SCSITask(
+            let result = try await executeAbsorbingUnitAttention(SCSITask(
                 lun: lunAddress,
                 cdb: CDB.read16(lba: lba, blocks: UInt32(blocks)),
                 direction: .read(expectedLength: UInt32(byteLen))
@@ -108,7 +131,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
             let blocks = min(remaining, blocksPerChunk)
             let byteLen = blocks * bs
             let chunk = data[cursor ..< cursor + byteLen]
-            let result = try await session.execute(SCSITask(
+            let result = try await executeAbsorbingUnitAttention(SCSITask(
                 lun: lunAddress,
                 cdb: CDB.write16(lba: lba, blocks: UInt32(blocks)),
                 direction: .write(Data(chunk))
@@ -123,7 +146,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     }
 
     public func flush() async throws {
-        let result = try await session.execute(SCSITask(lun: lunAddress, cdb: CDB.synchronizeCache16()))
+        let result = try await executeAbsorbingUnitAttention(SCSITask(lun: lunAddress, cdb: CDB.synchronizeCache16()))
         guard result.isGood else {
             throw BlockDeviceError.scsiError(status: result.status, sense: result.sense.flatMap(SenseData.init))
         }

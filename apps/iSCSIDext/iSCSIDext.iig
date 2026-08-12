@@ -26,6 +26,12 @@ public:
     virtual kern_return_t Start(IOService * provider) override;
     virtual kern_return_t Stop(IOService * provider) override;
 
+    // Must be overridden explicitly: the SCSI family's base class provides its
+    // own NewUserClient and will not hand out ours, so IOServiceOpen fails with
+    // kIOReturnError (0xe00002bc) before any of our code runs.
+    virtual kern_return_t NewUserClient(uint32_t type,
+                                        IOUserClient ** userClient) override;
+
     // Controller lifecycle.
     virtual kern_return_t UserInitializeController() override;
     virtual kern_return_t UserStartController() override;
@@ -101,6 +107,62 @@ public:
     // UserStartController deadlocks (PM then reports a stuck driver callout).
     // It is dispatched asynchronously instead.
     virtual void PublishVirtualTarget() LOCALONLY;
+
+    // --- Bridge to the iscsid daemon, driven by the user client. ---------
+    // All LOCALONLY: plain C++ calls from iSCSIUserClient, which lives in the
+    // same dext process and reaches us through its provider.
+
+    // Hands out the shared payload arena so the user client can vend it to the
+    // daemon via CopyClientMemoryForType.
+    virtual IOBufferMemoryDescriptor * CopyPayloadArena() LOCALONLY;
+
+    // Daemon publishes/retracts LUN geometry. Until published, the dext answers
+    // TEST UNIT READY / READ CAPACITY with NOT READY so the SCSI stack waits.
+    virtual void SetLUNGeometry(uint32_t blockSize, uint64_t blockCount) LOCALONLY;
+
+    // Pops one queued task for the daemon. Returns false when idle.
+    virtual bool FetchPendingTask(uint64_t * taskTag,
+                                  uint32_t * slotIndex,
+                                  uint32_t * targetID,
+                                  uint32_t * lun,
+                                  uint32_t * direction,
+                                  uint32_t * transferLength,
+                                  uint64_t * cdbLow,
+                                  uint64_t * cdbHigh,
+                                  uint32_t * cdbLength) LOCALONLY;
+
+    // Queues one task for the daemon; false when no slot is free.
+    virtual bool ParkTaskForDaemon(SCSIUserParallelTask parallelRequest,
+                                   OSAction * completion,
+                                   uint32_t direction,
+                                   uint32_t transferLength,
+                                   IOBufferMemoryDescriptor * dataMD,
+                                   uint8_t * dataPtr,
+                                   uint64_t dataLen) LOCALONLY;
+
+    // Fails every parked task. MUST be called when the daemon disconnects:
+    // parked tasks have no other way to complete, and the SCSI stack waits on
+    // them forever, which wedges every mount on the device (and anything that
+    // walks mounted volumes, e.g. Finder or `df`).
+    virtual void AbortAllParkedTasks(const char * reason) LOCALONLY;
+
+    // Completes a single parked slot with a delivery failure.
+    virtual void FailParkedSlot(uint32_t index) LOCALONLY;
+
+    // Runs forever on a private queue, failing tasks the daemon never answered.
+    // This is the safety net that makes a wedged or dead daemon produce I/O
+    // ERRORS instead of a permanently hung storage stack. It must not depend on
+    // user space doing anything — that assumption is what wedged the machine.
+    virtual void WatchdogLoop() LOCALONLY;
+
+    // Fails parked tasks matching a target (and LUN, when lun != ~0ull).
+    virtual uint32_t AbortParkedTasksFor(uint64_t targetID, uint64_t lun) LOCALONLY;
+
+    // Daemon reports a task result; copies read payload back and completes it.
+    virtual void CompleteTaskFromDaemonEx(uint64_t taskTag,
+                                          uint32_t scsiStatus,
+                                          uint32_t dataLength,
+                                          uint32_t senseLength) LOCALONLY;
 };
 
 #endif /* iSCSIDext_h */
