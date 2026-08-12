@@ -14,13 +14,13 @@ options:
   createIntermediateGroups: true
 
 packages:
-  iSCSIKit:
+  iSCSI:
     path: ..
 
 settings:
   base:
     # Fill in your Apple Developer team, or set it in Xcode's Signing pane.
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: "4A27X5PJP3"
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "0.1.0"
@@ -33,12 +33,11 @@ targets:
     platform: macOS
     sources:
       - iSCSIApp
+    # The app only activates the dext (SystemExtensions.framework) and talks
+    # to the daemon over XPC — it does not link iSCSIKit. The FSKit extension
+    # (Backend A) is built separately.
     dependencies:
-      - package: iSCSIKit
-        product: iSCSIKit
       - target: iSCSIDext
-        embed: true
-      - target: iSCSIFSExtension
         embed: true
     settings:
       base:
@@ -64,7 +63,7 @@ targets:
         SDKROOT: driverkit
         SUPPORTED_PLATFORMS: driverkit
         DRIVERKIT_DEPLOYMENT_TARGET: "24.0"
-        PRODUCT_NAME: iSCSIDext
+        PRODUCT_NAME: me.herko.iSCSIInitiator.dext
         # iig compiles the .iig files; DriverKit + SCSIControllerDriverKit link.
         OTHER_LDFLAGS: "-framework DriverKit -framework SCSIControllerDriverKit"
 
@@ -75,7 +74,7 @@ targets:
     sources:
       - iSCSIFSExtension
     dependencies:
-      - package: iSCSIKit
+      - package: iSCSI
         product: iSCSIKit
     settings:
       base:

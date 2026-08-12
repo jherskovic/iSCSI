@@ -72,14 +72,9 @@ extension ExtensionController: OSSystemExtensionRequestDelegate {
         _ request: OSSystemExtensionRequest,
         didFinishWithResult result: OSSystemExtensionRequest.Result
     ) {
+        let willReboot = (result == .willCompleteAfterReboot)
         Task { @MainActor in
-            switch request.identifier {
-            case Self.dextBundleID where request is OSSystemExtensionRequest:
-                break
-            default:
-                break
-            }
-            if result == .willCompleteAfterReboot {
+            if willReboot {
                 self.dextStatus = "Will complete after reboot"
                 self.appendLog("Completed pending reboot.")
             } else {
@@ -91,9 +86,11 @@ extension ExtensionController: OSSystemExtensionRequestDelegate {
     }
 
     nonisolated func request(_ request: OSSystemExtensionRequest, didFailWithError error: any Error) {
+        let ns = error as NSError
+        let detail = "domain=\(ns.domain) code=\(ns.code) desc=\(ns.localizedDescription) userInfo=\(ns.userInfo)"
         Task { @MainActor in
             self.dextStatus = "Failed"
-            self.appendLog("Request failed: \(error.localizedDescription)")
+            self.appendLog("Request failed: \(detail)")
         }
     }
 }

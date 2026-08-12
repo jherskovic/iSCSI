@@ -14,20 +14,11 @@
 		79ED20D3D81F09EA8410D7AA /* iSCSIDext.dext in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = F9E5E4079C9AAECB94704229 /* iSCSIDext.dext */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		7DF0B704FFA3482AABAFE5F3 /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1930AC270A5C69BFDB1258AA /* iSCSIKit */; };
 		83E3A3242A55B4C0F8AA573B /* ExtensionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB19582709CC88A804AB9C0C /* ExtensionController.swift */; };
-		84DDB8AC28FAAA12845B24AA /* iSCSIFSExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		C0CA4A2C5992DEA05AFFA359 /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 06E933808FB15BD15AC1AD5D /* iSCSIKit */; };
 		E71D3B1A098B46CBAB3D75F8 /* iSCSIUserClient.iig in Sources */ = {isa = PBXBuildFile; fileRef = E2A9410B4B594B4270735046 /* iSCSIUserClient.iig */; };
 		F95104A4FB9A5F3F762E5992 /* iSCSIDext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E7A00F869F8056AEACDFFAA /* iSCSIDext.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		3A35A1DC944D3F417C7EFF2E /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 4FDC03CF97A85A16B4901D8D /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BB773D208684E53219196A1E;
-			remoteInfo = iSCSIFSExtension;
-		};
 		90AF1320B674FE98B916DE26 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4FDC03CF97A85A16B4901D8D /* Project object */;
@@ -38,17 +29,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		375908A421F74AB979991C2D /* Embed Foundation Extensions */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 13;
-			files = (
-				84DDB8AC28FAAA12845B24AA /* iSCSIFSExtension.appex in Embed Foundation Extensions */,
-			);
-			name = "Embed Foundation Extensions";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		6355023C84E47668F08726A3 /* Embed System Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -84,14 +64,6 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		201B6C258FD3F5D038449D48 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				C0CA4A2C5992DEA05AFFA359 /* iSCSIKit in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		498D2882AF0B33A1BE7958FF /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -200,19 +172,15 @@
 			buildConfigurationList = 955C6A1C6B5CD9EEBA760D48 /* Build configuration list for PBXNativeTarget "iSCSIApp" */;
 			buildPhases = (
 				88BC9DAC7C07876216195078 /* Sources */,
-				201B6C258FD3F5D038449D48 /* Frameworks */,
-				375908A421F74AB979991C2D /* Embed Foundation Extensions */,
 				6355023C84E47668F08726A3 /* Embed System Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				4985FA4100BEC3C5F28DA5AB /* PBXTargetDependency */,
-				8F4CDBCF3CEC0013BBBCF081 /* PBXTargetDependency */,
 			);
 			name = iSCSIApp;
 			packageProductDependencies = (
-				06E933808FB15BD15AC1AD5D /* iSCSIKit */,
 			);
 			productName = iSCSIApp;
 			productReference = 90DA087A85B91E84CD0AB5D4 /* iSCSIApp.app */;
@@ -247,15 +215,15 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					34B4B33589792E2B507EFB6B = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = 4A27X5PJP3;
 						ProvisioningStyle = Automatic;
 					};
 					7575591A2E9C965DCDD0C6A4 = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = 4A27X5PJP3;
 						ProvisioningStyle = Automatic;
 					};
 					BB773D208684E53219196A1E = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = 4A27X5PJP3;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -321,11 +289,6 @@
 			target = 34B4B33589792E2B507EFB6B /* iSCSIDext */;
 			targetProxy = 90AF1320B674FE98B916DE26 /* PBXContainerItemProxy */;
 		};
-		8F4CDBCF3CEC0013BBBCF081 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BB773D208684E53219196A1E /* iSCSIFSExtension */;
-			targetProxy = 3A35A1DC944D3F417C7EFF2E /* PBXContainerItemProxy */;
-		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -342,7 +305,7 @@
 				);
 				OTHER_LDFLAGS = "-framework DriverKit -framework SCSIControllerDriverKit";
 				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator.dext;
-				PRODUCT_NAME = iSCSIDext;
+				PRODUCT_NAME = me.herko.iSCSIInitiator.dext;
 				SDKROOT = driverkit;
 				SUPPORTED_PLATFORMS = driverkit;
 			};
@@ -419,7 +382,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 4A27X5PJP3;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -462,7 +425,7 @@
 				);
 				OTHER_LDFLAGS = "-framework DriverKit -framework SCSIControllerDriverKit";
 				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator.dext;
-				PRODUCT_NAME = iSCSIDext;
+				PRODUCT_NAME = me.herko.iSCSIInitiator.dext;
 				SDKROOT = driverkit;
 				SUPPORTED_PLATFORMS = driverkit;
 			};
@@ -539,7 +502,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 4A27X5PJP3;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -611,10 +574,6 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		06E933808FB15BD15AC1AD5D /* iSCSIKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = iSCSIKit;
-		};
 		1930AC270A5C69BFDB1258AA /* iSCSIKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = iSCSIKit;

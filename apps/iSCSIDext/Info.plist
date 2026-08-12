@@ -6,6 +6,10 @@
     <string>me.herko.iSCSIInitiator.dext</string>
     <key>CFBundleName</key>
     <string>iSCSIDext</string>
+    <key>CFBundleExecutable</key>
+    <string>me.herko.iSCSIInitiator.dext</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
     <key>CFBundlePackageType</key>
     <string>DEXT</string>
     <key>CFBundleShortVersionString</key>
