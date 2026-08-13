@@ -105,6 +105,36 @@ final class BackingStore {
     private let lock = NSLock()
     let byteCount: UInt64
 
+    /// Call accounting. The absence of `synchronize` calls in the first
+    /// end-to-end run raised the question of whether the kernel routes disk
+    /// image I/O through this extension at all, or offloads it — so read/write
+    /// are counted rather than assumed. Logged in bulk (see `summary`) instead
+    /// of per call, which would be thousands of lines.
+    private(set) var readCount = 0
+    private(set) var writeCount = 0
+    private(set) var readBytes: UInt64 = 0
+    private(set) var writeBytes: UInt64 = 0
+    private(set) var flushCount = 0
+    private(set) var maxIOSize = 0
+
+    var summary: String {
+        lock.lock(); defer { lock.unlock() }
+        return snapshotLocked()
+    }
+
+    /// Must be called with `lock` held; `summary` would deadlock here.
+    private func snapshotLocked() -> String {
+        "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B "
+        + "flushes=\(flushCount) maxIO=\(maxIOSize)"
+    }
+
+    /// Emits a counter snapshot every 2048 operations, so the numbers are
+    /// visible even if the volume never unmounts cleanly.
+    private func periodicLogLocked() -> String? {
+        let total = readCount + writeCount
+        return total % 2048 == 0 ? snapshotLocked() : nil
+    }
+
     /// Opens (creating if needed) a sparse file of `kDefaultImageBytes`.
     ///
     /// `O_NOFOLLOW` is deliberate: the backing path lives in a world-writable
@@ -140,6 +170,11 @@ final class BackingStore {
         lock.lock(); defer { lock.unlock() }
         let n = pread(fd, buffer.baseAddress, clamped, off_t(offset))
         guard n >= 0 else { throw POSIXError(.EIO) }
+        if readCount == 0 { fsLog.log("FIRST READ off=\(offset) len=\(clamped)") }
+        readCount += 1
+        readBytes += UInt64(n)
+        maxIOSize = max(maxIOSize, clamped)
+        if let snap = periodicLogLocked() { fsLog.log("io: \(snap, privacy: .public)") }
         return n
     }
 
@@ -151,12 +186,19 @@ final class BackingStore {
             pwrite(fd, raw.baseAddress, clamped, off_t(offset))
         }
         guard n >= 0 else { throw POSIXError(.EIO) }
+        if writeCount == 0 { fsLog.log("FIRST WRITE off=\(offset) len=\(clamped)") }
+        writeCount += 1
+        writeBytes += UInt64(n)
+        maxIOSize = max(maxIOSize, clamped)
+        if let snap = periodicLogLocked() { fsLog.log("io: \(snap, privacy: .public)") }
         return n
     }
 
     /// Whether a flush ever reaches us is precisely question (2) above.
     func flush() throws {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        flushCount += 1
+        lock.unlock()
         guard fcntl(fd, F_FULLFSYNC) == 0 else { throw POSIXError(.EIO) }
     }
 }
@@ -291,7 +333,13 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
 
 // MARK: - Volume
 
-final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations {
+// FSVolume.OpenCloseOperations is optional — "if a file system volume doesn't
+// conform to this protocol, the kernel layer can skip making such calls". It is
+// implemented here mainly to observe *when* the disk image is opened for write
+// and finally closed, which is a candidate point for the flush that never
+// reaches `synchronize`.
+final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations,
+                         FSVolume.OpenCloseOperations {
     private let store: BackingStore
     private let root: ProtoItem
     private let image: ProtoItem
@@ -350,7 +398,7 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
 
     func deactivate(options: FSDeactivateOptions,
                     replyHandler reply: @escaping ((any Error)?) -> Void) {
-        fsLog.log("deactivate")
+        fsLog.log("deactivate — \(self.store.summary, privacy: .public)")
         reply(nil)
     }
 
@@ -360,7 +408,7 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
     }
 
     func unmount(replyHandler reply: @escaping () -> Void) {
-        fsLog.log("unmount")
+        fsLog.log("unmount — \(self.store.summary, privacy: .public)")
         try? store.flush()
         reply()
     }
@@ -440,6 +488,23 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
             next = 3
         }
         reply(verifierOut, nil)
+    }
+
+    // MARK: FSVolume.OpenCloseOperations
+
+    func openItem(_ item: FSItem, modes: FSVolume.OpenModes,
+                  replyHandler reply: @escaping ((any Error)?) -> Void) {
+        fsLog.log("OPEN modes=\(modes.rawValue)")
+        reply(nil)
+    }
+
+    /// A final close (no modes retained) is the last chance to make the backing
+    /// store durable, so flush here regardless of whether `synchronize` fires.
+    func closeItem(_ item: FSItem, modes: FSVolume.OpenModes,
+                   replyHandler reply: @escaping ((any Error)?) -> Void) {
+        fsLog.log("CLOSE keeping=\(modes.rawValue) — \(self.store.summary, privacy: .public)")
+        if modes.isEmpty { try? store.flush() }
+        reply(nil)
     }
 
     // MARK: FSVolume.ReadWriteOperations
