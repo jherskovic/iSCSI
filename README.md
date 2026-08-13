@@ -18,7 +18,7 @@ Apple lifts the software-controller throughput limit (see
 | 2 | Negotiation engine, login state machine, CHAP | ✅ done |
 | 3 | Session/connection engine, scriptable MockTarget, hostile-script suite | ✅ done |
 | 4 | `NetworkTransport` (TCP), `iscsictl`, iscsid daemon (BlockDevice + XPC) | ✅ **verified vs real TrueNAS**; daemon built + tested |
-| 5 | FSKit + `hdiutil` block-device backend | ✅ **works end-to-end**: our module mounts, `hdiutil` attaches `lun0.img`, APFS formats/mounts, 32 MiB round-trip byte-exact, no wedge. Open: flush does not reach `synchronize` |
+| 5 | FSKit + `hdiutil` block-device backend | ✅ **works end-to-end**, including a **real 40 GiB LUN** mounted over XPC→iscsid→TCP. APFS formats/mounts on the attached image, 32 MiB round-trip byte-exact, no wedge. FSKit signals no barriers at all, so durability rides on close (see `docs/backend-a-fskit-notes.md`) |
 | 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **real disk; ExFAT works end-to-end, APFS now formats and mounts**; see the open issues below |
 | 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
 
@@ -93,11 +93,13 @@ Sources/
     SCSI/            SCSITask, CDB builders, sense parsing
   MockTarget/        scriptable in-process target + TCP listener (test infra)
   iscsictl/          control CLI (discover, verify)
-  iscsid/            daemon (Phase 4, stub)
+  iscsid/            daemon: owns sessions, vends block I/O over XPC
+  iSCSIFSExtension/  (apps/) FSKit module presenting the LUN as a file
   pdu-fuzz/          structure-aware fuzzer
 Tests/
-  iSCSIKitTests/     86 unit tests
-  IntegrationTests/  43 tests: happy paths, hostile scripts, recovery, TCP loopback
+  iSCSIKitTests/     96 unit tests
+  IntegrationTests/  55 tests: happy paths, hostile scripts, recovery, TCP loopback
+packaging/           LaunchDaemon plist for iscsid
 scripts/fuzz.sh      ASan fuzz driver
 docs/                architecture, entitlements, test playbook
 ```
