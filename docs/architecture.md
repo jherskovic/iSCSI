@@ -339,11 +339,46 @@ cannot arbitrate. The persisted log is worse still: after a forced power-off the
 entire wedge window is missing (only the pre-run "watchdog: running" lines
 survive), because logd never flushed it.
 
-Next, and it is a tooling change rather than another experiment: **expose the
-counters through the user client** as a scalar `ExternalMethod` so `iscsictl`
-can read them directly from the dext. That path does not depend on logging, on
-logd, or on the unified log surviving a power-cycle — and bare ssh still works
-during the wedge, so it can actually be queried while the device is stuck.
+#### The counters are now readable without os_log — and the read itself is the finding
+
+`iscsictl dext-stats` (v19) reads the counters through a scalar
+`ExternalMethod`, bypassing logging entirely. Validated on a healthy box first,
+which matters — an unvalidated tool that hangs proves nothing:
+
+```
+stats: parked=0 ... inflight=0 zombies=0 tick=17
+stats: parked=0 ... inflight=0 zombies=0 tick=20
+watchdog: ALIVE (tick advanced 17 -> 20)
+outstanding (fetched - completed): 0
+```
+
+Run against a **wedged** device, the same command hangs — over a minute versus
+~7 s healthy — and never returns.
+
+That is a much sharper result than a silent log, because opening the user
+client and dispatching an `ExternalMethod` do not touch the block device at all.
+It says **the dext cannot service a request while wedged**, which fits
+everything else: no commands reach us because the family's dispatch is blocked
+behind us; the watchdog's log heartbeat stops; raw `dd` and flush ioctls hang.
+The coherent reading is that **the dext itself is stuck**, most likely with its
+default dispatch queue blocked inside the `UserProcessParallelTask` path — which
+is where `NewUserClient` and `ExternalMethod` are serviced too.
+
+Caveat: `DextBridge.open()` both matches the service and maps the arena, so a
+hang there is consistent with a blocked default queue but does not by itself
+name the blocking call.
+
+Next: find what blocks that queue. `UserGetDataBuffer` is the prime suspect —
+it is only obtainable inside `UserProcessParallelTask`, it is called on every
+data-bearing task, and a blocking call there would stall the queue that
+services both new tasks and user-client requests.
+
+**Tooling trap worth remembering:** `vm-restore-baseline.sh` rolls back the
+whole guest disk, which includes the deployed dext, the built binaries and the
+synced source. After a restore the VM runs the baseline's version, not what was
+last deployed — the symptom is a brand-new subcommand reporting "Unknown
+option", or a just-deployed fix appearing not to work. Re-deploy after
+restoring, or `--recapture` once the VM is where you want it.
 
 #### Superseded: READDIR is the operation that wedges
 

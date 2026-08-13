@@ -120,6 +120,11 @@ public:
     // TEST UNIT READY / READ CAPACITY with NOT READY so the SCSI stack waits.
     virtual void SetLUNGeometry(uint32_t blockSize, uint64_t blockCount) LOCALONLY;
 
+    // Fills `out` with kISCSIStatsScalarCount counters. Readable while the
+    // device is wedged, when os_log cannot be relied on — see the selector's
+    // comment in iSCSIUserClientShared.h.
+    virtual void CopyStats(uint64_t * out, uint32_t count) LOCALONLY;
+
     // Pops one queued task for the daemon. Returns false when idle.
     virtual bool FetchPendingTask(uint64_t * taskTag,
                                   uint32_t * slotIndex,

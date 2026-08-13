@@ -14,6 +14,14 @@
 #
 #   scripts/vm-restore-baseline.sh              # restore VM from baseline
 #   scripts/vm-restore-baseline.sh --recapture  # replace baseline with current
+#
+# WARNING: restoring rolls back the WHOLE guest disk, which includes the
+# deployed dext, the built binaries and the synced source tree. After a restore
+# the VM runs whatever version the baseline was captured at — not what you last
+# deployed. The symptom is subtle and confusing: a brand-new iscsictl
+# subcommand reports "Unknown option", or a fix you just deployed appears not
+# to work. Re-run scripts/vm-deploy.sh after restoring, or --recapture once the
+# VM is at the version you want to keep returning to.
 set -euo pipefail
 
 VM_UUID=${VM_UUID:-6B1E9443-D808-430E-8C1A-44DDBC2C2C4F}

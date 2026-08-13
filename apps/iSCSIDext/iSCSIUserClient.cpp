@@ -19,6 +19,11 @@
 struct iSCSIUserClient_IVars
 {
     iSCSIDext * controller; // our provider; owns the arena and the task table
+    // Whether THIS client ever published the LUN, i.e. whether it is the
+    // daemon rather than a bystander. Stop() used to tear the LUN down for any
+    // client that disconnected, so a read-only client (`iscsictl dext-stats`)
+    // would kill a live session merely by exiting.
+    bool didPublish;
 };
 
 bool iSCSIUserClient::init()
@@ -60,7 +65,10 @@ IMPL(iSCSIUserClient, Stop)
     // away (crash, Ctrl-C, kill) they must be failed here — otherwise the SCSI
     // stack waits on them forever and every mount on this device wedges, along
     // with anything that enumerates mounted volumes.
-    if (ivars->controller != nullptr) {
+    // Only the client that published the LUN owns its lifetime. Without this
+    // check, any other client closing (a diagnostic read, say) would abort the
+    // daemon's in-flight tasks and yank the disk out from under a live mount.
+    if (ivars->controller != nullptr && ivars->didPublish) {
         ivars->controller->AbortAllParkedTasks("daemon disconnected");
         ivars->controller->SetLUNGeometry(0, 0); // back to NOT READY
     }
@@ -96,6 +104,7 @@ iSCSIUserClient::ExternalMethod(
     switch (selector) {
         case kISCSIUserClientPublishLUN: {
             if (arguments->scalarInputCount < 2) return kIOReturnBadArgument;
+            ivars->didPublish = true; // this client is the daemon; it owns the LUN
             ivars->controller->SetLUNGeometry(
                 (uint32_t)arguments->scalarInput[0], arguments->scalarInput[1]);
             return kIOReturnSuccess;
@@ -103,6 +112,19 @@ iSCSIUserClient::ExternalMethod(
         case kISCSIUserClientUnpublishLUN:
             ivars->controller->SetLUNGeometry(0, 0);
             return kIOReturnSuccess;
+
+        case kISCSIUserClientGetStats: {
+            if (arguments->scalarOutputCount < kISCSIStatsScalarCount) {
+                return kIOReturnBadArgument;
+            }
+            uint64_t stats[kISCSIStatsScalarCount] = {};
+            ivars->controller->CopyStats(stats, kISCSIStatsScalarCount);
+            for (uint32_t i = 0; i < kISCSIStatsScalarCount; i++) {
+                arguments->scalarOutput[i] = stats[i];
+            }
+            arguments->scalarOutputCount = kISCSIStatsScalarCount;
+            return kIOReturnSuccess;
+        }
 
         case kISCSIUserClientFetchTask: {
             if (arguments->scalarOutputCount < kISCSIFetchScalarCount) {

@@ -14,7 +14,8 @@ struct ISCSICtl: AsyncParsableCommand {
         commandName: "iscsictl",
         abstract: "Control the macOS iSCSI initiator.",
         version: "0.1.0",
-        subcommands: [Discover.self, Verify.self, Wipe.self, DextAttach.self]
+        subcommands: [Discover.self, Verify.self, Wipe.self, DextAttach.self,
+                      DextStatsCommand.self]
     )
 }
 
@@ -288,6 +289,69 @@ struct Wipe: AsyncParsableCommand {
 }
 
 // MARK: dext-attach
+
+/// Read the dext's task counters straight out of the driver.
+///
+/// This exists because os_log cannot answer the question that matters when the
+/// device wedges: the watchdog's log heartbeat stops, `log show` itself hangs,
+/// and a forced power-off loses the whole window because logd never flushed it.
+/// Bare ssh keeps working during a wedge, so this is the channel that still
+/// says whether every task we were handed was completed — and whether the
+/// dext's own watchdog thread is still running.
+struct DextStatsCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "dext-stats",
+        abstract: "Read the dext's task counters (works while the device is wedged)."
+    )
+
+    @Option(help: "Sample twice, this many seconds apart, to show the watchdog tick advancing.")
+    var interval: Double = 0
+
+    func run() async throws {
+        #if canImport(IOKit)
+        let bridge = DextBridge()
+        try await bridge.open()
+        defer { Task { await bridge.close() } }
+
+        // Built in pieces: as one interpolated expression the type checker
+        // gives up on it ("unable to type-check in reasonable time").
+        func dump(_ s: DextStats, label: String) {
+            var line = "\(label): parked=\(s.parked)"
+            line += " full=\(s.parkFull)"
+            line += " fetched=\(s.fetched)"
+            line += " completed=\(s.completed)"
+            line += " wdFail=\(s.watchdogFail)"
+            line += " aborted=\(s.aborted)"
+            line += " zLate=\(s.zombieLate)"
+            line += " zExpired=\(s.zombieExpired)"
+            line += " inflight=\(s.inflight)"
+            line += " zombies=\(s.zombies)"
+            line += " tick=\(s.watchdogTick)"
+            print(line)
+        }
+
+        let first = try await bridge.stats()
+        dump(first, label: "stats")
+
+        if interval > 0 {
+            try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            let second = try await bridge.stats()
+            dump(second, label: "stats")
+            // A tick that does not advance means the dext's watchdog thread is
+            // not running — which is exactly what a stopped LOG heartbeat could
+            // never distinguish from logging having died.
+            let advanced = second.watchdogTick > first.watchdogTick
+            print(advanced
+                ? "watchdog: ALIVE (tick advanced \(first.watchdogTick) -> \(second.watchdogTick))"
+                : "watchdog: STALLED (tick stuck at \(first.watchdogTick))")
+            let outstanding = second.fetched &- second.completed
+            print("outstanding (fetched - completed): \(outstanding)")
+        }
+        #else
+        print("dext-stats requires IOKit (macOS).")
+        #endif
+    }
+}
 
 struct DextAttach: AsyncParsableCommand {
     static let configuration = CommandConfiguration(

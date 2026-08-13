@@ -19,6 +19,44 @@ private enum DextSelector {
     static let fetchTask: UInt32 = 3      // out: 9 scalars, see FetchScalar
     static let completeTask: UInt32 = 4   // in: 4 scalars, see CompleteScalar
     static let teardownNub: UInt32 = 5    // reboot-free upgrade: drop the nub
+    static let getStats: UInt32 = 6       // out: 11 scalars, see StatsScalar
+}
+
+/// Scalar output order for `kISCSIUserClientGetStats`.
+///
+/// Read directly from the dext, deliberately bypassing os_log: when the device
+/// wedges, the watchdog's log heartbeat stops, `log show` hangs, and a forced
+/// power-off loses the window entirely because logd never flushed it. Bare ssh
+/// still works then, so this is the one channel that can answer "did we
+/// complete everything we were handed, and is our watchdog thread still alive?"
+enum StatsScalar {
+    static let parked = 0
+    static let parkFull = 1
+    static let fetched = 2
+    static let completed = 3
+    static let watchdogFail = 4
+    static let aborted = 5
+    static let zombieLate = 6
+    static let zombieExpired = 7
+    static let inflight = 8        // slots currently Parked or Fetched
+    static let zombies = 9
+    static let watchdogTick = 10   // bumps every 2s while the watchdog runs
+    static let count = 11
+}
+
+/// One sample of the dext's task counters.
+public struct DextStats: Sendable {
+    public let parked: UInt64
+    public let parkFull: UInt64
+    public let fetched: UInt64
+    public let completed: UInt64
+    public let watchdogFail: UInt64
+    public let aborted: UInt64
+    public let zombieLate: UInt64
+    public let zombieExpired: UInt64
+    public let inflight: UInt64
+    public let zombies: UInt64
+    public let watchdogTick: UInt64
 }
 
 /// Scalar output order for `kISCSIUserClientFetchTask`.
@@ -264,6 +302,43 @@ private final class DextLink: @unchecked Sendable {
         guard kr == KERN_SUCCESS else {
             throw DextBridgeError.methodFailed(selector: selector, code: kr)
         }
+    }
+
+    /// Read the dext's task counters. Works while the device is wedged.
+    func stats() throws -> DextStats {
+        var out = [UInt64](repeating: 0, count: StatsScalar.count)
+        var outCount = UInt32(StatsScalar.count)
+        let result = withConnection { connection in
+            out.withUnsafeMutableBufferPointer { buffer in
+                IOConnectCallScalarMethod(
+                    connection,
+                    DextSelector.getStats,
+                    nil, 0,
+                    buffer.baseAddress,
+                    &outCount
+                )
+            }
+        }
+        guard let kr = result else { throw DextBridgeError.notConnected }
+        guard kr == KERN_SUCCESS else {
+            throw DextBridgeError.methodFailed(selector: DextSelector.getStats, code: kr)
+        }
+        guard outCount >= UInt32(StatsScalar.count) else {
+            throw DextBridgeError.methodFailed(selector: DextSelector.getStats, code: kIOReturnUnderrun)
+        }
+        return DextStats(
+            parked: out[StatsScalar.parked],
+            parkFull: out[StatsScalar.parkFull],
+            fetched: out[StatsScalar.fetched],
+            completed: out[StatsScalar.completed],
+            watchdogFail: out[StatsScalar.watchdogFail],
+            aborted: out[StatsScalar.aborted],
+            zombieLate: out[StatsScalar.zombieLate],
+            zombieExpired: out[StatsScalar.zombieExpired],
+            inflight: out[StatsScalar.inflight],
+            zombies: out[StatsScalar.zombies],
+            watchdogTick: out[StatsScalar.watchdogTick]
+        )
     }
 
     /// Pull the next parked task, or nil when the dext has nothing pending.
@@ -996,6 +1071,12 @@ public actor DextBridge {
     /// Drop the dext's IOUserResources nub so a replacement can match without a reboot.
     public func teardownNub() throws {
         try callScalar(DextSelector.teardownNub, input: [])
+    }
+
+    /// Sample the dext's task counters. Safe to call while the device is wedged.
+    public func stats() throws -> DextStats {
+        guard let link else { throw DextBridgeError.notConnected }
+        return try link.stats()
     }
 
     private func callScalar(_ selector: UInt32, input: [UInt64]) throws {

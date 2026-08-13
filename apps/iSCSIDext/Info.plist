@@ -23,7 +23,7 @@
     <key>CFBundleShortVersionString</key>
     <string>0.1.2</string>
     <key>CFBundleVersion</key>
-    <string>18</string>
+    <string>19</string>
     <key>OSBundleUsageDescription</key>
     <string>Presents iSCSI LUNs as local disks.</string>
     <key>IOKitPersonalities</key>

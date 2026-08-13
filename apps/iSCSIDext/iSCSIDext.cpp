@@ -681,6 +681,36 @@ iSCSIDext::SetLUNGeometry(uint32_t blockSize, uint64_t blockCount)
     }
 }
 
+void
+iSCSIDext::CopyStats(uint64_t * out, uint32_t count)
+{
+    if (out == nullptr || count < kISCSIStatsScalarCount) return;
+
+    // Census the slot table the same way the watchdog does, so a caller gets
+    // the live/zombie picture even when the watchdog's log line cannot be seen.
+    uint32_t live = 0, zombies = 0;
+    for (uint32_t i = 0; i < kISCSIRequestSlotCount; i++) {
+        uint32_t s = SlotState(&ivars->tasks[i]);
+        if (s == kSlotParked || s == kSlotFetched) live++;
+        else if (s == kSlotZombie) zombies++;
+    }
+
+    out[kISCSIStatsParked]        = __atomic_load_n(&ivars->cParked, __ATOMIC_RELAXED);
+    out[kISCSIStatsParkFull]      = __atomic_load_n(&ivars->cParkFull, __ATOMIC_RELAXED);
+    out[kISCSIStatsFetched]       = __atomic_load_n(&ivars->cFetched, __ATOMIC_RELAXED);
+    out[kISCSIStatsCompleted]     = __atomic_load_n(&ivars->cCompleted, __ATOMIC_RELAXED);
+    out[kISCSIStatsWatchdogFail]  = __atomic_load_n(&ivars->cWatchdogFail, __ATOMIC_RELAXED);
+    out[kISCSIStatsAborted]       = __atomic_load_n(&ivars->cAborted, __ATOMIC_RELAXED);
+    out[kISCSIStatsZombieLate]    = __atomic_load_n(&ivars->cZombieLate, __ATOMIC_RELAXED);
+    out[kISCSIStatsZombieExpired] = __atomic_load_n(&ivars->cZombieExpired, __ATOMIC_RELAXED);
+    out[kISCSIStatsInflight]      = live;
+    out[kISCSIStatsZombies]       = zombies;
+    // The watchdog bumps this every 2s. Sampling it twice a few seconds apart
+    // says whether the dext's own thread is still running — which is precisely
+    // what a stopped log heartbeat cannot distinguish from logging having died.
+    out[kISCSIStatsWatchdogTick]  = __atomic_load_n(&ivars->watchdogTick, __ATOMIC_RELAXED);
+}
+
 bool
 iSCSIDext::FetchPendingTask(uint64_t * taskTag, uint32_t * slotIndex,
                             uint32_t * targetID, uint32_t * lun,

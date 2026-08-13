@@ -31,7 +31,34 @@ enum {
     // in: taskTag, scsiStatus, dataLength, senseLength
     kISCSIUserClientCompleteTask   = 4,
     kISCSIUserClientTeardownNub    = 5, // reboot-free upgrade: drop the nub
+    // out: see ISCSIStatsScalar order below. Reads the dext's task counters
+    // directly, with no dependence on os_log.
+    //
+    // Diagnosing the post-mount wedge needs these counters at the moment the
+    // device stops serving I/O, and the log cannot deliver them then: the
+    // watchdog's heartbeat stops, `log show` itself hangs, and a forced
+    // power-off loses the whole window because logd never flushed it. Bare ssh
+    // keeps working during a wedge, so a scalar read is the one channel that
+    // still answers "did we complete everything we were handed?".
+    kISCSIUserClientGetStats       = 6,
     kISCSIUserClientMethodCount
+};
+
+// Scalar output order for kISCSIUserClientGetStats. Mirrors the watchdog's
+// stats line, plus the live/zombie slot census it computes on the fly.
+enum {
+    kISCSIStatsParked        = 0,
+    kISCSIStatsParkFull      = 1,
+    kISCSIStatsFetched       = 2,
+    kISCSIStatsCompleted     = 3,
+    kISCSIStatsWatchdogFail  = 4,
+    kISCSIStatsAborted       = 5,
+    kISCSIStatsZombieLate    = 6,
+    kISCSIStatsZombieExpired = 7,
+    kISCSIStatsInflight      = 8, // slots currently Parked or Fetched
+    kISCSIStatsZombies       = 9,
+    kISCSIStatsWatchdogTick  = 10, // proves the watchdog thread is still running
+    kISCSIStatsScalarCount   = 11
 };
 
 // Scalar output order for kISCSIUserClientFetchTask.
