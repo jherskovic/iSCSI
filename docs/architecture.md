@@ -225,9 +225,29 @@ arm dtrace on the path-taking syscalls *before* mounting, then catch
   that, a thread that once touched the path reports every later sleep it ever
   makes, and the per-process tallies quietly become meaningless.
 
-Remaining gap: the captured stacks are raw addresses — dtrace cannot symbolicate
-`kernel.release.vmapple`. Resolving them (or tracing `fbt:apfs::entry` to name
-the APFS path instead) is what turns "blocked on a mutex" into a named culprit.
+Symbolication turned out to be unnecessary: `com.apple.filesystems.apfs` carries
+fbt probes, so `scripts/vm-apfs-trace.sh` prints APFS function *names* directly
+(`apfs_vfsop_root`, `apfs_vnop_getattr`, `apfs_get_bsd_flags`,
+`ino_is_invisible`, `get_nlink_for_object`, …). What that run showed:
+
+- **Every traced getattr completed.** 1179 `ENTER`s, 1179 `RETURNED`s on this
+  volume — APFS services them normally right up until the box stops.
+- **Then dtrace loses the ability to read user memory**: the trace degenerates
+  into `invalid user access in predicate` on `copyinstr(arg0)`. Page-ins have
+  stalled system-wide by that point.
+
+That second observation is also the reason an earlier run appeared to show the
+trigger blocking without entering any syscall: its `lstat64` probe *did* fire
+(the syscall census confirms `stat(1)` uses `lstat64`), but the path predicate
+errored before printing. **`copyinstr` predicates are unusable during this
+hang** — select on `execname` instead, which is what the script now does by
+copying the trigger binary to a unique name.
+
+Still not caught: the wedging thread itself. The remaining difficulty is a
+race, not a tooling gap — background daemons (`diskarbitrationd`, `fseventsd`,
+the `deleted` daemon, Finder) reach the volume on their own and often wedge it
+before a deliberate trigger can run, so the trigger must be armed and launched
+before they get there.
 
 ### Still open #2: the partition-map re-probe race
 
