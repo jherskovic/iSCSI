@@ -38,20 +38,38 @@ done
 echo "=== disk: $DISK"
 diskutil info "$DISK" 2>/dev/null | grep -iE "Disk Size|Block Size|Device Block" | sed 's/^/    /'
 
-echo "=== newfs_apfs on the scratch disk"
-newfs_apfs -v scratchTest "/dev/$DISK" > /Users/herko/logs/scratch-newfs.out 2>&1
+# FS=apfs (default) or exfat. ExFAT ran end-to-end over iSCSI in earlier work,
+# so if it survives here while APFS wedges, the failure needs APFS's access
+# pattern; if ExFAT wedges too, the driver breaks the block layer regardless of
+# filesystem and APFS is incidental.
+FS=${FS:-apfs}
+echo "=== newfs ($FS) on the scratch disk"
+if [ "$FS" = "exfat" ]; then
+  newfs_exfat -v scratchTest "/dev/$DISK" > /Users/herko/logs/scratch-newfs.out 2>&1
+else
+  newfs_apfs -v scratchTest "/dev/$DISK" > /Users/herko/logs/scratch-newfs.out 2>&1
+fi
 NEWFS_RC=$?
 sed 's/^/    /' /Users/herko/logs/scratch-newfs.out
 [ "$NEWFS_RC" -eq 0 ] || { echo "NEWFS-FAILED rc=$NEWFS_RC"; exit 1; }
 echo "=== newfs ok"
 sleep 3
 
-VOLDEV=$(diskutil info scratchTest 2>/dev/null | awk '/Device Node:/{print $3}')
+if [ "$FS" = "exfat" ]; then
+  # ExFAT has no container/synthesized device; the filesystem lives on the disk.
+  VOLDEV="/dev/$DISK"
+else
+  VOLDEV=$(diskutil info scratchTest 2>/dev/null | awk '/Device Node:/{print $3}')
+fi
 [ -z "$VOLDEV" ] && { echo NO-VOLDEV; diskutil list | sed 's/^/    /'; exit 1; }
 echo "=== volume device: $VOLDEV"
 
 echo "=== mounting privately at /Users/herko/mnt2"
-mount_apfs "$VOLDEV" /Users/herko/mnt2 || { echo MOUNT-FAILED; exit 1; }
+if [ "$FS" = "exfat" ]; then
+  mount -t exfat "$VOLDEV" /Users/herko/mnt2 || { echo MOUNT-FAILED; exit 1; }
+else
+  mount_apfs "$VOLDEV" /Users/herko/mnt2 || { echo MOUNT-FAILED; exit 1; }
+fi
 echo "=== mounted"
 
 echo "=== first access: readdir"
