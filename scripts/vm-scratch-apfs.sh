@@ -42,9 +42,22 @@ diskutil info "$DISK" 2>/dev/null | grep -iE "Disk Size|Block Size|Device Block"
 # so if it survives here while APFS wedges, the failure needs APFS's access
 # pattern; if ExFAT wedges too, the driver breaks the block layer regardless of
 # filesystem and APFS is incidental.
+# FS=apfs | exfat | exfat-part
+#
+# exfat-part is the discriminator between "APFS" and "extra IOMedia layer".
+# Plain exfat mounts on the WHOLE disk (disk7); APFS mounts on a SYNTHESIZED
+# container device (disk8s1), one IOMedia layer further down. That nested layer
+# is present in every wedging run and absent from every passing one, so put a
+# non-APFS filesystem behind a partition map and see which property matters:
+#   exfat-part wedges  -> the nested media layer is the trigger, filesystem
+#                         incidental
+#   exfat-part passes  -> APFS itself is required
 FS=${FS:-apfs}
 echo "=== newfs ($FS) on the scratch disk"
-if [ "$FS" = "exfat" ]; then
+if [ "$FS" = "exfat-part" ]; then
+  # Lay a GPT + ExFAT so the filesystem lands on a SLICE, not the whole disk.
+  diskutil eraseDisk ExFAT SCRATCHP GPT "/dev/$DISK" > /Users/herko/logs/scratch-newfs.out 2>&1
+elif [ "$FS" = "exfat" ]; then
   newfs_exfat -v scratchTest "/dev/$DISK" > /Users/herko/logs/scratch-newfs.out 2>&1
 else
   newfs_apfs -v scratchTest "/dev/$DISK" > /Users/herko/logs/scratch-newfs.out 2>&1
@@ -55,7 +68,12 @@ sed 's/^/    /' /Users/herko/logs/scratch-newfs.out
 echo "=== newfs ok"
 sleep 3
 
-if [ "$FS" = "exfat" ]; then
+if [ "$FS" = "exfat-part" ]; then
+  # The slice diskutil just created — one IOMedia layer below the whole disk.
+  VOLDEV=$(diskutil list "$DISK" | awk '/Microsoft Basic Data|Windows_NTFS|EXFAT/{print "/dev/"$NF; exit}')
+  [ -z "$VOLDEV" ] && VOLDEV="/dev/${DISK}s2"
+  diskutil unmount "$VOLDEV" >/dev/null 2>&1
+elif [ "$FS" = "exfat" ]; then
   # ExFAT has no container/synthesized device; the filesystem lives on the disk.
   VOLDEV="/dev/$DISK"
 else
@@ -65,7 +83,7 @@ fi
 echo "=== volume device: $VOLDEV"
 
 echo "=== mounting privately at /Users/herko/mnt2"
-if [ "$FS" = "exfat" ]; then
+if [ "$FS" = "exfat" ] || [ "$FS" = "exfat-part" ]; then
   mount -t exfat "$VOLDEV" /Users/herko/mnt2 || { echo MOUNT-FAILED; exit 1; }
 else
   mount_apfs "$VOLDEV" /Users/herko/mnt2 || { echo MOUNT-FAILED; exit 1; }
