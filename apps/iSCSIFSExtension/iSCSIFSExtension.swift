@@ -206,6 +206,13 @@ final class ProtoItem: FSItem {
 /// Stable ID for the one file; root is FSItem.Identifier.rootDirectory (2).
 private let kImageItemID = FSItem.Identifier(rawValue: 3)!
 
+/// Stable identity for the container and the volume.
+///
+/// FSContainer.h: "For unary file systems, the volume identifier is the same as
+/// the container identifier." A fresh UUID per call would also make the volume
+/// look like a different one on every probe.
+private let kVolumeUUID = UUID(uuidString: "6F1C2B14-9A4E-4E31-B1E2-4C7A9D0E5B33")!
+
 // MARK: - File system
 
 final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
@@ -240,7 +247,7 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             reply(FSProbeResult.notRecognized, nil)
             return
         }
-        let containerID = FSContainerIdentifier(uuid: UUID())
+        let containerID = FSContainerIdentifier(uuid: kVolumeUUID)
         reply(FSProbeResult.usable(name: "iSCSIProto", containerID: containerID), nil)
     }
 
@@ -254,7 +261,11 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         do {
             let store = try BackingStore(path: path)
             let volume = ProtoVolume(store: store)
-            containerStatus = .active(status: fs_errorForPOSIXError(0))
+            // `.active` is the no-error status. Do NOT use
+            // `.active(status: fs_errorForPOSIXError(0))` — that attaches a real
+            // NSError with POSIX code 0, and mount rejects the load with
+            // "Undefined error: 0".
+            containerStatus = .active
             fsLog.log("loadResource ok, volume ready")
             reply(volume, nil)
         } catch {
@@ -284,7 +295,7 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
         self.store = store
         self.root = ProtoItem(name: "/", type: .directory, id: .rootDirectory, size: 0)
         self.image = ProtoItem(name: kImageName, type: .file, id: kImageItemID, size: store.byteCount)
-        super.init(volumeID: FSVolume.Identifier(uuid: UUID()),
+        super.init(volumeID: FSVolume.Identifier(uuid: kVolumeUUID),
                    volumeName: FSFileName(string: "iSCSIProto"))
     }
 
