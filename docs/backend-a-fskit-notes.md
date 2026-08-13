@@ -256,6 +256,45 @@ Two gotchas the run exposed, both now handled in the script:
   reports *tail's* status — the same class of pipeline-status bug that has bitten
   this project before; capture `$?` from the command itself.
 
+### The enablement gate, located exactly
+
+FSKit stores module enablement as a plain array of bundle identifiers in the
+user's group container:
+
+```
+~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist
+~/Library/Group Containers/group.com.apple.fskit.settings/probeOrder.plist
+```
+
+On the test VM:
+
+```
+enabledModules.plist          probeOrder.plist
+  com.apple.fskit.apfs          me.herko.iSCSIInitiator.fsext   <- ours, known
+  com.apple.fskit.exfat         com.apple.fskit.apfs
+  com.apple.fskit.msdos         com.apple.fskit.exfat
+  com.apple.filesystems.util.ntfs   com.apple.fskit.msdos
+  com.apple.fskit.ftp           com.apple.filesystems.util.ntfs
+                                com.apple.fskit.ftp
+```
+
+**Our module is in `probeOrder` but absent from `enabledModules`.** That single
+absence is the whole gate — it is what makes `FSModuleIdentity.isEnabled` false
+and what `mount` reports as *"Module … is disabled!"*.
+
+So the System Settings switch does exactly one thing: append the bundle ID to
+that array. Since the UI refuses to do it, the equivalent is:
+
+```sh
+G=~/Library/Group\ Containers/group.com.apple.fskit.settings
+cp "$G/enabledModules.plist" "$G/enabledModules.plist.bak"
+plutil -insert 0 -string me.herko.iSCSIInitiator.fsext "$G/enabledModules.plist"
+killall fskit_agent      # force a reload
+```
+
+Untested — writing to this file needs approval. It may also be re-read only at
+agent start, or validated against something else on use.
+
 ### Still open
 
 
