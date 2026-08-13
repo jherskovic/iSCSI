@@ -112,6 +112,77 @@ the prototype.
 The extension point identifier `com.apple.fskit.fsmodule` and the `XPC!` package
 type look right and need no change.
 
+## Reference implementation: Apple's own URL-resource module
+
+`/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex` is a
+**shipping** FSKit filesystem with no block device behind it — the same shape
+Backend A needs. Its Info.plist is the authority on how to declare one:
+
+```
+"EXAppExtensionAttributes" => {
+    "EXExtensionPointIdentifier" => "com.apple.fskit.fsmodule"
+    "EXExtensionPrincipalClass" => "ftpFileSystem"
+    "FSShortName" => "ftp"
+    "FSSupportedSchemes" => [ "ftp" ]
+    "FSSupportsBlockResources" => false
+    "FSSupportsGenericURLResources" => true
+    "FSSupportsPathURLs" => false
+    "FSRequiresSecurityScopedPathURLResources" => false
+    "FSMediaTypes" => { }
+    "FSPersonalities" => { }
+    ...
+}
+```
+
+**Every `FS*` key lives inside `EXAppExtensionAttributes`.** Placed at the top
+level of the Info.plist they are silently ignored, and the module advertises no
+resource support at all — which is how ours was originally written. This cost a
+build cycle to find and is the single most important gotcha here.
+
+`EXExtensionPrincipalClass` is set because Apple's module is ObjC; a Swift
+extension using `@main` + `UnaryFileSystemExtension` supplies its entry point
+through ExtensionFoundation instead. If the extension fails to launch, adding
+`$(PRODUCT_MODULE_NAME).ISCSIFileSystemExtension` is the first thing to try.
+
+## Status: verified working
+
+- The extension builds and signs on the VM (team 4A27X5PJP3).
+- `Package.swift` had no `products:` section, so the Xcode target could not link
+  `iSCSIKit` ("Missing package product"). Fixed by exposing it as a library.
+- The `.appex` was never embedded in the host app. Added an "Embed ExtensionKit
+  Extensions" copy phase to `$(EXTENSIONS_FOLDER_PATH)` (`Contents/Extensions`)
+  plus a target dependency.
+- FSKit **discovers** the module:
+  `pluginkit -m -v -p com.apple.fskit.fsmodule` lists
+  `me.herko.iSCSIInitiator.fsext` alongside Apple's msdos/exfat/ftp, and
+  `fskit_agent` logs a new module list when the app is installed.
+
+## Blocker: the module must be enabled by the user
+
+```
+$ sudo mount -F -t iSCSI iscsi://proto/lun0 /Users/herko/fsmnt
+Module me.herko.iSCSIInitiator.fsext is disabled!
+mount: Unable to invoke task
+```
+
+`/sbin/mount` gates on `FSModuleIdentity.isEnabled` (the string `isEnabled` and
+the message `Module %s is disabled!` are both in the `mount` binary). This is a
+**user-consent gate, separate from pluginkit registration**:
+
+- `pluginkit -e use -i me.herko.iSCSIInitiator.fsext` reports the module as `+`
+  enabled, for both the user and root, and `mount` still refuses.
+- `fskitd` logs *"Call fskit_agent to set enabled state of identifier"* and
+  exposes `setEnabledStateForIdentifier:newState:replyHandler:` over XPC, but
+  that is a private interface behind an entitlement check.
+- There is no `defaults` domain for FSKit yet and no CLI equivalent was found.
+
+**Resolution: toggle it once in System Settings → General → Login Items &
+Extensions → File System Extensions.** This is a one-time action per install and
+needs GUI access to the VM. Everything else in the chain is already in place.
+
+Note this is a real product consideration, not just a test-rig annoyance: any
+user of this project will have to flip the same switch after installing.
+
 ## Prototype plan (deliberately not the real extension)
 
 Two Backend A risks are untested and decide viability. Neither involves iSCSI, so
