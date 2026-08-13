@@ -1148,6 +1148,15 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         break;
 #endif
 
+    // NOTE: advertising UNMAP does NOT fix the post-mount wedge — tested.
+    // Every configuration where APFS works reports unmap support (hdiutil RAM
+    // disk 0x10, internal disk 0x12) while this device reported 0, an exact
+    // correlation across every run. Implementing it properly — VPD pages 0xB0
+    // and 0xB2, LBPME in READ CAPACITY(16), and UNMAP (0x42) — moved
+    // DKIOCGETFEATURES to 0x10 [unmap], confirmed with tools/dkflush.c, and
+    // APFS still wedged on the second access. Reverted: it was diagnostic, and
+    // claiming a capability we only no-op is not worth carrying. If unmap is
+    // wanted later, forward it to the target rather than discarding it.
     case 0x12: { // INQUIRY
         uint8_t inq[36] = {};
         if (cdb[1] & 0x01) { // EVPD

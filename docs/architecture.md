@@ -282,6 +282,14 @@ hypothesis that looked live at the time:
 | command volume | ExFAT drives 303 data commands through the same driver; APFS wedges at 418 |
 | oversized transfers | largest request is 16 KiB against an advertised 64 KiB segment |
 | the nested media layer | ExFAT on a GPT slice passes |
+| missing UNMAP support | implemented VPD 0xB0/0xB2 + LBPME + UNMAP; `DKIOCGETFEATURES` went 0 → `0x10 [unmap]`, wedge unchanged |
+
+The UNMAP entry deserves a note, because the correlation looked compelling:
+every configuration where APFS works advertises unmap (hdiutil RAM disk `0x10`,
+internal disk `0x12`) and ours advertised `0x00000000`, exactly matching
+wedges-vs-works across every run to date. Implementing it moved the reported
+features to `0x10 [unmap]` — verified with `tools/dkflush.c` — and APFS wedged
+anyway. Reverted; the driver should not claim a capability it only no-ops.
 
 Opcode histograms from the identical scratch disk:
 
