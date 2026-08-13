@@ -250,7 +250,55 @@ Each cycle failed one layer deeper, which is what a sound stack looks like:
 `mount`'s error text is consistently less useful than `fskitd`'s log. When stuck,
 read `log show --predicate 'process == "fskitd"'`.
 
-### Open: flush does not reach our `synchronize`
+### RESOLVED: there is no barrier signal — durability must ride on open/close
+
+Instrumented run (counts from `BackingStore`), writing 32 MiB through APFS on
+the attached image:
+
+```
+OPEN modes=1                  # FREAD
+OPEN modes=3                  # FREAD|FWRITE
+FIRST READ  off=536854528 len=16384
+FIRST WRITE off=0 len=131072
+CLOSE keeping=0 — reads=199/3016192B writes=123/38895616B maxIO=1048576
+```
+
+**Our read/write path is genuinely used** — 123 writes totalling 38.9 MB, max
+I/O 1 MiB. Nothing is kernel-offloaded behind our back.
+
+**No sync callback ever fires.** `synchronize` was not called once, and three
+separate probes confirm it is not merely rare:
+
+| probe | result |
+|---|---|
+| `sync(8)` with our volume mounted | no `synchronize` |
+| `fsync()` on `lun0.img` | arrives as a plain write; no `synchronize` |
+| `F_FULLFSYNC` on `lun0.img` | arrives as a plain write; no `synchronize` |
+
+So on macOS 26.6 with `FSVolume.Operations`, an FSKit volume gets **no barrier
+notification at all**. An APFS barrier on the disk image cannot be observed by
+the extension underneath it.
+
+What *is* observable is open/close: DiskImages opens `modes=3` and closes with
+`keeping=0` around I/O batches. `closeItem` with no retained modes is therefore
+the only durability hook available, and the extension now flushes there.
+
+**Design consequence for the real backend.** Once `BackingStore` is iSCSI, every
+write is already handed to the target in order — the extension receives them as
+ordered `pwrite`s, so ordering is preserved. The residual risk is only the
+target's volatile write cache. The defensible policy is:
+
+1. `SYNCHRONIZE CACHE` on final close (the one real signal), and
+2. either write-through/FUA on every write, or a target configured without a
+   volatile write cache, for crash consistency during sustained I/O.
+
+This is worth stating plainly because it is the *opposite* of the dext-side
+barrier bug: there, flushes were silently elided by the kernel and the fix was
+to make them reach the wire. Here they are never generated in the first place,
+so correctness has to come from write policy rather than from honouring
+barriers.
+
+### Superseded note: flush does not reach our `synchronize`
 
 The extension logs every `synchronize` call, and across a full run — including a
 `sync` on the APFS volume and 32 MiB of writes — **not one was logged**. Data
