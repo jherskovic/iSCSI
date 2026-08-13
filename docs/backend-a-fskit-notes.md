@@ -217,7 +217,48 @@ is registered but has **never been instantiated even once**.
    <private>" records and likely name the actual rejection reason. This was
    about to be tried when the VM froze.
 
-### Not blocked on any of this
+## VERDICT: Backend A's mechanism is sound (verified 2026-08-13, macOS 26.6.1)
+
+The two questions that decide Backend A have been answered **yes**, without
+needing our own module enabled — Apple's `msdos` FSKit module provides a
+genuine userspace-served volume to test against.
+
+`scripts/vm-diskimage-on-fskit.sh` runs the whole thing. Results:
+
+| step | result |
+|---|---|
+| `mount -F -t msdos` — FSKit-served volume | mounts; options include the literal `fskit`, served by `com.apple.fskit.msdos.appex` |
+| 256 MiB raw image created on that volume | ok |
+| **Q1:** `hdiutil attach -imagekey diskimage-class=CRawDiskImage` | **attaches** → `/dev/disk9` |
+| `newfs_apfs` on the attached device | ok (synthesized container `disk10`, volume `disk10s1`) |
+| `mount_apfs` privately | ok |
+| readdir, then getattr (the **positional probe** that wedges the dext) | **both complete** — no wedge |
+| 8 MiB write + `sync` | ok, `df` confirms the space used |
+| **Q2:** 32 MiB random write → unmount → detach → reattach → remount → SHA-256 | **byte-exact match** |
+
+So DiskImages does not care that its backing file is served by a userspace
+filesystem, the full APFS stack runs on top of it, and writes propagate all the
+way down to the backing file and survive a teardown cycle. Backend A does not
+have to wait on Apple, and the wedge does not follow it.
+
+**Caveat on Q2:** this proves propagation through *Apple's* FSKit module. Our
+extension's own `synchronize` / `write` implementations still have to be
+verified once it can be mounted — `scripts/vm-fskit-proto.sh` does exactly that
+and greps the extension log for `SYNCHRONIZE` calls.
+
+Two gotchas the run exposed, both now handled in the script:
+
+- **Use `msdos`, not `exfat`.** `mount -F -t exfat` fails with *"Filesystem
+  exfat does not support operation mount"*; only `msdos` declares
+  `FSActivateOptionSyntax` and `FSSupportsKernelOffloadedIO`.
+- **APFS synthesizes a new container disk**, so the volume is not `${DEV}s1`.
+  Find it by volume name. Relatedly, `mount_apfs … | tail -2 && echo MOUNTED`
+  reports *tail's* status — the same class of pipeline-status bug that has bitten
+  this project before; capture `$?` from the command itself.
+
+### Still open
+
+
 
 `scripts/vm-diskimage-on-fskit.sh` answers Backend A's decisive question — will
 DiskImages attach a raw image living on an FSKit-served volume? — using Apple's

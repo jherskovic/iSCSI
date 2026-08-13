@@ -18,7 +18,7 @@ virtual SCSI HBA once Apple lifts the software-controller throughput limit (see
 | 2 | Negotiation engine, login state machine, CHAP | ✅ done |
 | 3 | Session/connection engine, scriptable MockTarget, hostile-script suite | ✅ done |
 | 4 | `NetworkTransport` (TCP), `iscsictl`, iscsid daemon (BlockDevice + XPC) | ✅ **verified vs real TrueNAS**; daemon built + tested |
-| 5 | FSKit + `hdiutil` block-device backend | 🚧 module implemented, builds, signs, embeds, and is **discovered by FSKit**; blocked on a one-time System Settings enable before the first mount |
+| 5 | FSKit + `hdiutil` block-device backend | 🚧 **mechanism proven** (APFS over DiskImages over a userspace FSKit volume: no wedge, byte-exact integrity across a detach/reattach cycle); our module builds, signs, embeds and is discovered, but will not enable — see `docs/backend-a-fskit-notes.md` |
 | 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **real disk; ExFAT works end-to-end, APFS now formats and mounts**; see the open issues below |
 | 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
 
