@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchDaemon for iscsid.
+
+  The daemon vends its XPC service via NSXPCListener(machServiceName:), which
+  only works if launchd owns the Mach service name — running the binary from a
+  shell is not enough, the listener gets nothing to attach to.
+
+  It runs in the system domain (as root) because the FSKit extension connects
+  with NSXPCConnection(machServiceName:options:.privileged), and because the
+  daemon owns the TCP sessions on behalf of whichever user mounts a LUN.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>me.herko.iSCSIInitiator.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/libexec/iscsid</string>
+    </array>
+
+    <!-- Registers the name the extension and iscsictl look up. -->
+    <key>MachServices</key>
+    <dict>
+        <key>me.herko.iSCSIInitiator.daemon</key>
+        <true/>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- The daemon logs to stderr; keep it where a wedge cannot hide it. -->
+    <key>StandardErrorPath</key>
+    <string>/var/log/iscsid.err</string>
+    <key>StandardOutPath</key>
+    <string>/var/log/iscsid.out</string>
+</dict>
+</plist>

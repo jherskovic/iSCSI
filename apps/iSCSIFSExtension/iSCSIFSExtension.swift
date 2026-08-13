@@ -232,7 +232,19 @@ final class DaemonStore: LUNStore {
     private let connection: NSXPCConnection
     private let session: String
     private let lock = NSLock()
+    /// Serialises read-modify-write so two partial writes to the same block
+    /// cannot interleave and lose one of the updates.
+    private let ioLock = NSLock()
     let byteCount: UInt64
+
+    /// The LUN's block size. `ISCSIBlockDevice` rejects any request that is not
+    /// block-aligned with a whole-block length (`BlockDeviceError.misaligned`),
+    /// and truncates on `length / blockSize`. FSKit hands us arbitrary byte
+    /// ranges — DiskImages reads the backing file at 512-byte granularity,
+    /// which is unaligned against a 4Kn LUN — so every request is realigned
+    /// here. Skipping this makes the APFS probe fail with EIO while ordinary
+    /// file reads still work, because the page cache happens to be aligned.
+    private let blockSize: UInt64
 
     private(set) var readCount = 0
     private(set) var writeCount = 0
@@ -282,7 +294,8 @@ final class DaemonStore: LUNStore {
         }
         if let capError { throw capError }
         byteCount = blockSize.uint64Value * blockCount.uint64Value
-        guard byteCount > 0 else { throw POSIXError(.EIO) }
+        self.blockSize = blockSize.uint64Value
+        guard byteCount > 0, self.blockSize > 0 else { throw POSIXError(.EIO) }
 
         fsLog.log("DaemonStore session=\(handle, privacy: .public) size=\(self.byteCount) blockSize=\(blockSize.uint64Value)")
     }
@@ -315,24 +328,51 @@ final class DaemonStore: LUNStore {
         }
     }
 
-    func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int {
-        guard offset < byteCount else { return 0 }
-        let clamped = min(Int(byteCount - offset), min(length, buffer.count))
+    /// Reads exactly `[offset, offset+length)` where both are already
+    /// block-aligned. Every aligned access funnels through here.
+    private func rawRead(offset: UInt64, length: Int) throws -> Data {
         let proxy = try Self.proxy(connection)
-
         var data: Data?
         var err: Error?
         try Self.blocking { done in
             proxy.read(session: session, offset: NSNumber(value: offset),
-                       length: NSNumber(value: clamped)) { d, e in
+                       length: NSNumber(value: length)) { d, e in
                 data = d; err = e; done()
             }
         }
         if let err { throw err }
-        guard let data else { throw POSIXError(.EIO) }
-        let n = min(data.count, clamped)
+        guard let data, data.count == length else { throw POSIXError(.EIO) }
+        return data
+    }
+
+    private func rawWrite(offset: UInt64, data: Data) throws {
+        let proxy = try Self.proxy(connection)
+        var err: Error?
+        try Self.blocking { done in
+            proxy.write(session: session, offset: NSNumber(value: offset), data: data) { e in
+                err = e; done()
+            }
+        }
+        if let err { throw err }
+    }
+
+    private func alignDown(_ v: UInt64) -> UInt64 { (v / blockSize) * blockSize }
+    private func alignUp(_ v: UInt64) -> UInt64 { ((v + blockSize - 1) / blockSize) * blockSize }
+
+    func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int {
+        guard offset < byteCount else { return 0 }
+        let clamped = min(Int(byteCount - offset), min(length, buffer.count))
+        guard clamped > 0 else { return 0 }
+
+        // Widen to block boundaries, then slice out what was actually asked for.
+        let start = alignDown(offset)
+        let end = min(alignUp(offset + UInt64(clamped)), byteCount)
+        let data = try rawRead(offset: start, length: Int(end - start))
+
+        let skip = Int(offset - start)
+        let n = min(clamped, data.count - skip)
         data.withUnsafeBytes { src in
-            buffer.baseAddress?.copyMemory(from: src.baseAddress!, byteCount: n)
+            buffer.baseAddress?.copyMemory(from: src.baseAddress! + skip, byteCount: n)
         }
         lock.lock(); readCount += 1; readBytes += UInt64(n); lock.unlock()
         return n
@@ -341,16 +381,27 @@ final class DaemonStore: LUNStore {
     func write(_ data: Data, at offset: UInt64) throws -> Int {
         guard offset < byteCount else { throw POSIXError(.ENOSPC) }
         let clamped = min(Int(byteCount - offset), data.count)
-        let slice = clamped == data.count ? data : data.prefix(clamped)
-        let proxy = try Self.proxy(connection)
+        guard clamped > 0 else { return 0 }
+        let payload = clamped == data.count ? data : Data(data.prefix(clamped))
 
-        var err: Error?
-        try Self.blocking { done in
-            proxy.write(session: session, offset: NSNumber(value: offset), data: Data(slice)) { e in
-                err = e; done()
-            }
+        let headAligned = offset % blockSize == 0
+        let tailAligned = (offset + UInt64(clamped)) % blockSize == 0
+
+        if headAligned && tailAligned {
+            try rawWrite(offset: offset, data: payload)
+        } else {
+            // Read-modify-write the partial edge blocks. Serialised so two
+            // partial writes to the same block cannot lose an update.
+            ioLock.lock()
+            defer { ioLock.unlock() }
+            let start = alignDown(offset)
+            let end = min(alignUp(offset + UInt64(clamped)), byteCount)
+            var block = try rawRead(offset: start, length: Int(end - start))
+            let skip = Int(offset - start)
+            block.replaceSubrange(skip ..< (skip + clamped), with: payload)
+            try rawWrite(offset: start, data: block)
         }
-        if let err { throw err }
+
         lock.lock(); writeCount += 1; writeBytes += UInt64(clamped); lock.unlock()
         return clamped
     }
