@@ -205,6 +205,31 @@ do_getattr() {
   kill -0 $p 2>/dev/null && echo "GETATTR-BLOCKED" || echo "GETATTR-COMPLETED"
 }
 
+ioreg_probe() {
+  # What does the layer ABOVE us think its state is?
+  #
+  # Everything on our side is now cleared: all tasks completed, no TMFs issued,
+  # dext responsive. So ask IOBlockStorageDriver directly — it publishes a
+  # Statistics dictionary (operation counts, bytes, errors, latency) and
+  # IOSCSIPeripheralDeviceType00 publishes its own state. ukopen proved
+  # IOServiceGetMatchingService still works while wedged, so the registry is
+  # traversable even though almost every other inspection tool is not.
+  #
+  # Compare these against a healthy boot: a nonzero outstanding/pending count
+  # here would name what the block driver is still waiting for.
+  # Only IOBlockStorageDriver's Statistics dict carries "Retries" keys, which is
+  # what separates it from the APFS volume statistics that otherwise flood this
+  # output with tens of thousands of characters per volume.
+  echo "=== IOBlockStorageDriver stats while wedged"
+  ioreg -c IOBlockStorageDriver -r -l -w0 2>&1 | grep -E '"Statistics".*Retries' | head -4
+  echo "IOREG-BLOCKSTORAGE-RETURNED"
+  echo "=== our SCSI peripheral device state while wedged"
+  ioreg -c IOSCSIPeripheralDeviceType00 -r -l -w0 2>&1 \
+    | grep -iE '"(BSD Name|Protocol Characteristics|Device Characteristics|IOMinimumSegment|Power|Ready)"' | head -8
+  echo "IOREG-PERIPHERAL-RETURNED"
+  sync   # force the tee'd run log out; a forced power-off loses page cache
+}
+
 # THE decisive probe. "The dext's queue is empty" only rules out tasks stuck
 # INSIDE the dext; it cannot rule out one stuck ABOVE us, in IOSCSIParallelFamily
 # or IOBlockStorageDriver, that was never dispatched to UserProcessParallelTask.
@@ -249,6 +274,12 @@ else
   do_readdir
 fi
 
+# Ordered deliberately: the ioreg probe runs FIRST, immediately after the
+# second access blocks, while the box still answers ssh. The raw I/O probes
+# below take ~40s and push the box far enough into degradation that new ssh
+# connections stop working — which is why every earlier attempt to read this
+# came back empty.
+ioreg_probe
 raw_io_probe
 
 # Where is the dext itself stuck?
@@ -282,28 +313,6 @@ if [ -x ./ukopen ]; then
 else
   echo "=== ukopen not built; skipping IOKit liveness probe"
 fi
-
-# What does the layer ABOVE us think its state is?
-#
-# Everything on our side is now cleared: all tasks completed, no TMFs issued,
-# dext responsive. So ask IOBlockStorageDriver directly — it publishes a
-# Statistics dictionary (operation counts, bytes, errors, latency) and
-# IOSCSIPeripheralDeviceType00 publishes its own state. ukopen proved
-# IOServiceGetMatchingService still works while wedged, so the registry is
-# traversable even though almost every other inspection tool is not.
-#
-# Compare these against a healthy boot: a nonzero outstanding/pending count
-# here would name what the block driver is still waiting for.
-# Only IOBlockStorageDriver's Statistics dict carries "Retries" keys, which is
-# what separates it from the APFS volume statistics that otherwise flood this
-# output with tens of thousands of characters per volume.
-echo "=== IOBlockStorageDriver stats while wedged"
-ioreg -c IOBlockStorageDriver -r -l -w0 2>&1 | grep -E '"Statistics".*Retries' | head -4
-echo "IOREG-BLOCKSTORAGE-RETURNED"
-echo "=== our SCSI peripheral device state while wedged"
-ioreg -c IOSCSIPeripheralDeviceType00 -r -l -w0 2>&1 \
-  | grep -iE '"(BSD Name|Protocol Characteristics|Device Characteristics|IOMinimumSegment|Power|Ready)"' | head -8
-echo "IOREG-PERIPHERAL-RETURNED"
 
 # Control: an ordinary process that touches nothing storage-related. If sample
 # works on IT but hangs on the dext, the dext is genuinely stuck. If sample
