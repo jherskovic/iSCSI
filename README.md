@@ -17,14 +17,26 @@ software-controller throughput limit (see `docs/architecture.md`).
 | 3 | Session/connection engine, scriptable MockTarget, hostile-script suite | ✅ done |
 | 4 | `NetworkTransport` (TCP), `iscsictl`, iscsid daemon (BlockDevice + XPC) | ✅ **verified vs real TrueNAS**; daemon built + tested |
 | 5 | FSKit + `hdiutil` block-device backend | 🚧 skeleton scaffolded (needs Xcode signing + API reconciliation) |
-| 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **builds vs DriverKit 27 SDK**; data-path bridge + VM activation pending |
+| 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **real disk, ExFAT works end-to-end**; APFS hangs the storage stack (see below) |
 | 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
 
-129 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
+141 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
 clean over millions of inputs. The full protocol stack is **verified end-to-end
 against a real TrueNAS target** (login negotiation → INQUIRY → READ CAPACITY →
-write + SYNCHRONIZE CACHE → read-back verify → logout). The DriverKit dext
-**compiles against the DriverKit 27 SDK**.
+write + SYNCHRONIZE CACHE → read-back verify → logout).
+
+The dext presents the LUN as a real block device on macOS 26.6: it attaches at
+boot, the disk appears when the daemon logs in, and **ExFAT formats, mounts and
+runs on it**. Data integrity is CRC-verified byte-exact across thousands of
+ops including 16-way concurrent same-region storms, and the failure plumbing
+is sound (~30k tasks: no double completions, no watchdog misfires, no leaks).
+
+**Known blocker: APFS wedges the storage stack at mount** (ExFAT is fine).
+Root cause is narrowed to barriers — the kernel never sends SYNCHRONIZE CACHE
+to this device under any tested configuration, and APFS commits every
+transaction behind one. Evidence, ruled-out causes and next steps are in
+`docs/architecture.md` ("OPEN: APFS hangs"). Wipe the scratch LUN
+(`iscsictl wipe …`) before attaching, or the auto-mount re-triggers the hang.
 
 ## Building the app + extensions (Xcode)
 

@@ -127,6 +127,60 @@ with a perfectly healthy dext underneath. Recorded so they never get re-broken:
    impossible. The daemon's per-task timeout (10 s) sits BELOW the dext
    watchdog (~16 s) so the clean CHECK CONDITION path fires first.
 
+## OPEN: APFS hangs; ExFAT works (the current blocker)
+
+Status after a full day of instrumented testing on macOS 26.6.1 (dext v10):
+**ExFAT formats, mounts, and runs perfectly. APFS reproducibly wedges the
+storage stack the moment a volume is mounted** — not under load, at mount.
+Once wedged, anything touching the mount table (`mount`, `ls /Volumes`,
+`ioreg -c IOBlockStorageDevice`) blocks forever; bare ssh still answers. Only
+a VM power-cycle recovers it. Because a mounted-at-attach APFS volume
+re-triggers it, the scratch LUN must be wiped (`iscsictl wipe`) before
+attaching, or the box wedges on auto-mount.
+
+What is ruled OUT (measured, not assumed):
+- Our task plumbing. ~30k tasks serviced: `wdFail=0`, `full=0`, no double
+  completions, no leaks; every parked task completes well inside the watchdog.
+- Data correctness. Write-vs-readback CRC32C cross-checks over thousands of
+  ops, including 16-way concurrent same-region storms: zero mismatches.
+- Short/truncated transfers. Every serviced op moves exactly its CDB length
+  (the short-transfer guards never fired).
+- The APFS *format* code path per se: `newfs_apfs` on an already-probed,
+  stable slice SUCCEEDS. It is `diskutil eraseDisk APFS` that fails
+  nondeterministically, because rewriting the partition map triggers a media
+  re-probe (INQUIRY / MODE SENSE / PREVENT-ALLOW / READ CAPACITY appear
+  mid-write-stream) that races the in-progress format; the losing write is
+  rejected in-kernel with EIO in ~24 µs, never reaching the driver.
+
+The load-bearing observation: **the kernel has never once sent SYNCHRONIZE
+CACHE to this device** — confirmed by unconditional daemon-side logging
+(`FLUSH` lines) across full formats and file writes, with WCE=0 and WCE=1,
+despite `IOStorageFeatures = {Barrier=Yes, Unmap=Yes}`. ExFAT does not
+journal; APFS commits every transaction behind a barrier. A barrier request
+that is never translated into a device command — and whose waiter is never
+completed — would block APFS's commit path forever and cascade exactly the
+VFS-wide hang we see.
+
+Next steps, in order:
+1. Determine whether `SCSIControllerDriverKit` can deliver a cache-synchronize
+   to a user-space controller AT ALL. If the family never converts the
+   IOStorage barrier into a `UserProcessParallelTask`, this is an Apple-side
+   gap of the same species as the single-segment limit (FB23814092), it
+   blocks every journaling filesystem on a DriverKit software HBA, and it
+   deserves a Feedback filing. Confirm by finding ANY condition that makes
+   0x35/0x91 arrive.
+2. Capture a stackshot DURING the hang, written to the (still-healthy) boot
+   volume, to name the thread APFS is blocked in. Start it on a delay before
+   mounting, since the shell is unusable afterwards.
+3. Fix the re-probe race structurally by making the medium present BEFORE the
+   family probes: keep the bootstrap nub always-matched with its own user
+   client, have the daemon publish geometry to IT, and only then set the
+   marker property that lets the `IOUserSCSIParallelInterfaceController`
+   personality match. The LUN is then a FIXED disk (RMB=0) that exists only
+   while the daemon is attached — real-HBA hot-plug semantics — which removes
+   the NOT-READY window, the removable-media polling, and the re-probe churn
+   in one move.
+
 Entitlements (all restricted, requested from Apple): `com.apple.developer.driverkit`,
 `.driverkit.family.scsicontroller`, `.driverkit.userclient-access` (daemon),
 `com.apple.developer.system-extension.install` (host app). For development

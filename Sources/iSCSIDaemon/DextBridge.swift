@@ -641,6 +641,10 @@ private func service(_ task: FetchedTask,
             postCompletion(link, table, tag: task.taskTag, status: SAMStatus.good, dataLength: 0)
 
         case SCSIOpcode.synchronizeCache10, SCSIOpcode.synchronizeCache16:
+            // Always logged, not just under ISCSI_TRACE_TASKS: whether the
+            // kernel ever sends a barrier at all is THE open question for the
+            // APFS failures, and a sampled/lossy log stream cannot answer it.
+            dextLog("FLUSH tag=\(task.taskTag)")
             try await core.flush(handle)
             postCompletion(link, table, tag: task.taskTag, status: SAMStatus.good, dataLength: 0)
 

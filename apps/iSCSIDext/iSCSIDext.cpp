@@ -970,6 +970,15 @@ IMPL(iSCSIDext, UserProcessParallelTask)
     case 0x1E: // PREVENT ALLOW MEDIUM REMOVAL — sent to removable devices;
         break; // nothing to lock on a virtual drive, succeed as a no-op
 
+    case 0xA0: { // REPORT LUNS — one LUN, number 0
+        uint8_t rl[16] = {};
+        rl[3] = 8; // LUN list length: one 8-byte entry
+        uint64_t n = avail < sizeof(rl) ? avail : sizeof(rl);
+        if (buf && n) memcpy(buf, rl, (size_t)n);
+        resp.fBytesTransferred = n;
+        break;
+    }
+
     case 0x00: // TEST UNIT READY
 #if !ISCSI_DEXT_SCRATCH_DISK
         // Until the daemon publishes LUN geometry there is no medium behind
@@ -1146,21 +1155,40 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         // I/O hangs the box" with an idle, healthy dext underneath.
         const uint8_t page = cdb[2] & 0x3F;
         const bool six = (op == 0x1A);
-        uint8_t mode[32] = {};
-        uint64_t n = six ? 4 : 8;   // header only by default
+        const bool dbd = (cdb[1] & 0x08) != 0;
+        uint8_t mode[48] = {};
+        uint64_t n = six ? 4 : 8;   // header
+
+        // Block descriptor (8 bytes) unless DBD asked it away. Real SCSI
+        // disks ALWAYS return this, and the family's caching-page parser
+        // expects the page at header+8 — a descriptor-free layout (legal per
+        // SPC, but unusual) put the page 8 bytes early, so the WCE bit was
+        // read from garbage and the flush machinery ran on an inconsistent
+        // cache state (flush ioctl a no-op, post-flush write EIO'd in-kernel).
+        if (!dbd) {
+            uint8_t * bd = &mode[n];
+            uint64_t blocks = kLUNBlockCount;
+            uint32_t nb = blocks > 0xFFFFFF ? 0xFFFFFF : (uint32_t)blocks;
+            bd[0] = 0x00;                       // density
+            bd[1] = (uint8_t)(nb >> 16); bd[2] = (uint8_t)(nb >> 8); bd[3] = (uint8_t)nb;
+            bd[5] = (uint8_t)(kLUNBlockSize >> 16);
+            bd[6] = (uint8_t)(kLUNBlockSize >> 8);
+            bd[7] = (uint8_t)kLUNBlockSize;
+            mode[six ? 3 : 7] = 8;              // block descriptor length
+            n += 8;
+        }
 
         if (page == 0x08 || page == 0x3F) {
             uint8_t * pg = &mode[n];
             pg[0] = 0x08;  // caching page
             pg[1] = 0x12;  // page length (18 bytes follow)
-            // WCE=0: no volatile write cache VISIBLE TO THE HOST. The daemon
-            // completes a write only after the target acks it, so this is the
-            // honest report. WCE=1 was tried and is actively harmful here:
-            // the kernel's flush path still never emitted SYNCHRONIZE CACHE,
-            // DKIOCSYNCHRONIZECACHE became an 83µs lie, and the write issued
-            // immediately AFTER that ioctl (newfs_apfs's final superblock
-            // commit) was rejected in-kernel with EIO in 24µs — deterministic
-            // "failed to write superblock to block 0", no format possible.
+            // WCE=0. Empirically on macOS 26 (DriverKit SCSI controller,
+            // removable medium): WCE=1 — with OR without a block descriptor —
+            // makes the kernel reject the write issued right after
+            // DKIOCSYNCHRONIZECACHE with EIO in ~24µs (newfs_apfs's final
+            // superblock commit → every APFS format fails), while STILL never
+            // emitting SYNCHRONIZE CACHE to the device. WCE=0 is also the
+            // honest report: writes complete only after the target acks them.
             pg[2] = 0x00;
             n += 20;
         }
