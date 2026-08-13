@@ -173,37 +173,61 @@ With that fixed, APFS gets much further than it ever did:
 synthesizes, and `diskutil mount` **mounts the volume** — reproducibly, where
 before the mount itself wedged the box.
 
-### Still open #1: first access to the mounted volume hangs
+### Still open #1: the first getattr on the mounted volume hangs
 
-`ls -la /Volumes/iSCSITest` on the freshly mounted volume usually blocks and
-never returns; the box then slides into the familiar wedge (`ps`, `log show`,
-and anything touching the mount table hang; bare ssh still answers; only a
-power-cycle recovers).
+Stat the root of a freshly mounted APFS volume on this LUN and the call never
+returns; the box then slides into the familiar wedge (`ps`, `log show`, ssh
+*login*, and anything enumerating mounts hang; only a power-cycle recovers).
 
 What is known:
-- **It is not our I/O.** During the hang the dext receives nothing but 3-second
-  TEST UNIT READY polls — not one READ or WRITE — and the daemon is alive and
-  connected (no error logged, its exit-status wrapper never fires). APFS is not
-  waiting on a command we failed to complete.
-- **It is not deterministic.** One run listed the volume instantly and
-  correctly (`.Spotlight-V100`, `.fseventsd`, nothing else). Every run that
-  hung had touched the mount within a second or two of `diskutil mount`; the
-  one that worked had a couple of seconds of slack. A 15 s settle delay did
-  NOT make it reliable, so "it's just a race after mount" is a hypothesis, not
-  a conclusion.
+- **It is not our I/O, and not our queue.** During the hang the dext receives
+  no commands at all, and its slot table is provably empty: the watchdog logs
+  a stats line only while `live != 0 || zombies != 0`, and it stays silent. The
+  daemon is alive with nothing logged. Nothing is parked, stuck, or unanswered
+  on our side.
+- **It is not APFS being broken in this VM.** `scripts/vm-apfs-control.sh`
+  builds an APFS volume on a RAM disk in the same VM and runs the identical
+  probe sequence: statfs, getattr, readdir, full listing, 16 MiB write, sync,
+  unmount — all clean. APFS is healthy here; the pathology needs *our* device.
+- **Mounting alone is safe.** Mounted and deliberately left untouched, the box
+  stays healthy — verified for 90 s with a forking heartbeat, and 153 s in
+  another run. The hang requires something to reach for the volume.
+- **The trigger is a path getattr, NOT statfs.** `stat -f FMT` is stat(1)'s
+  output *format* flag, not statfs(2) — a trap worth naming, because it made an
+  earlier reading of this exactly backwards. dtrace settles it: 502 real
+  `statfs64` calls on this volume (Finder's, mostly) returned normally *while*
+  a `stat()` on the same path sat blocked forever.
 - **It is not Spotlight.** Reproduced with `mdutil -a -i off`.
-- **The wedge blocks process creation.** In the worst runs the harness's own
-  timeout never fires — the watchdog loop cannot `fork`/`exec` — which,
-  together with `ps` hanging, points at a global kernel lock (proc list / VFS)
-  held by whatever is blocked, not at a mere per-volume stall.
+- **The whole-box wedge is a pileup, not a global lock.** Everything that
+  enumerates mounts queues behind the stuck vnode — which is ssh login, Finder,
+  `ps`, and `spindump`. That also explains the old "even `fork` stops working"
+  reading: it is shell/login startup blocking, not process creation itself.
+- **`mount_apfs` is still resident and blocking during the hang**, long after
+  `diskutil mount` reported success — so the mount plausibly never completes
+  and everything else stacks up behind it. Treat as strong suspicion, not
+  settled: see the instrumentation caveat below.
 - Red herring: reads failing with sense `04/08/00` in the log are the
   *teardown* — the harness's trap kills the daemon, the arena goes away, and
   the dext fails everything after that. They are not the cause.
 
-Next: a stackshot during the hang, to name the thread and the lock. Note that
-`spindump` is NOT usable here — it hangs even on a healthy VM with the LUN
-attached, and then wedges the box itself. Try the kernel stackshot facility
-directly, or dtrace (SIP is off in the test VM).
+Capturing this is now possible and `scripts/vm-apfs-stack.sh` does it:
+arm dtrace on the path-taking syscalls *before* mounting, then catch
+`sched:::sleep` and `fbt::lck_mtx_sleep`. Hard-won details:
+- `spindump` is NOT usable — it enumerates mounts, so it blocks on the very
+  hang it is meant to record, and wedges the box on the way.
+- `fbt::thread_block_reason` does not exist on this kernel; `sched:::sleep`,
+  `sched:::off-cpu` and `fbt::lck_mtx_sleep` do.
+- Name syscalls explicitly. A `*stat*` glob catches `fstat`/`fstatfs`, whose
+  `arg0` is a file descriptor rather than a path pointer, and `copyinstr()`
+  then faults on every call the machine makes, burying the trace in "invalid
+  address in predicate".
+- Arming is per-thread, so disarm on every armed syscall's *return*. Without
+  that, a thread that once touched the path reports every later sleep it ever
+  makes, and the per-process tallies quietly become meaningless.
+
+Remaining gap: the captured stacks are raw addresses — dtrace cannot symbolicate
+`kernel.release.vmapple`. Resolving them (or tracing `fbt:apfs::entry` to name
+the APFS path instead) is what turns "blocked on a mutex" into a named culprit.
 
 ### Still open #2: the partition-map re-probe race
 
@@ -214,6 +238,17 @@ cleanly (`wdFail=0`, `aborted=0`). Rewriting the partition map triggers a media
 re-probe that races the in-flight I/O. `newfs_apfs` on an already-probed slice,
 or on a whole device with no partition map at all, does not hit it. The
 structural fix below removes this race too.
+
+One source of gratuitous re-probes has been removed: `SetLUNGeometry` used to
+announce `UserCallMediaParametersHaveChanged()` on daemon-attach *edges*, which
+is not the same question as whether anything the family can observe actually
+changed. Under `ISCSI_DEXT_FIXED_DISK_PROBE` the medium is present from
+controller start on hardcoded geometry, and the scratch target reports exactly
+that geometry (4096 × 10485760) — so every single run was tearing the media
+down and rebuilding it at attach time for no reason. It now compares the
+before/after effective geometry and stays quiet when they match (verified:
+`changed=0`, no re-probe line). **This did not fix the hang** — the hang
+reproduces with no re-probe at all — but it removes a real confounder.
 
 ## Next: make the LUN a fixed disk that exists only while the daemon is attached
 

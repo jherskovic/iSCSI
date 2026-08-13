@@ -80,7 +80,15 @@ enum { kVirtualTargetID = 0, kInitiatorID = 7, kHighestTargetID = 7 };
 // once-per-device init sees a present medium.
 #define kLUNBlockSize  (ivars->lunPublished ? ivars->lunBlockSize  : kProbeBlockSize)
 #define kLUNBlockCount (ivars->lunPublished ? ivars->lunBlockCount : kProbeBlockCount)
-#define kMediumPresent true
+// Present only until the daemon has attached for the FIRST time — that window
+// is the entire point of this flag, because the block driver runs its
+// once-per-device init there and a device it believes has no medium never gets
+// a flush path. Afterwards presence follows the daemon, so its exit still
+// drops the media and the kernel's cache with it. Hardwiring this to `true`
+// looks equivalent and is not: presence then never changes, the unpublish edge
+// disappears, and a dead daemon leaves a disk that serves stale cached pages
+// and fails every read.
+#define kMediumPresent (ivars->everPublished ? ivars->lunPublished : true)
 #else
 #define kLUNBlockSize  (ivars->lunBlockSize)
 #define kLUNBlockCount (ivars->lunBlockCount)
@@ -178,6 +186,9 @@ struct iSCSIDext_IVars
     IOBufferMemoryDescriptor * arenaMD; // shared payload arena (mapped by daemon)
     uint8_t * arena;
     bool lunPublished;
+    // Latches on the first successful publish. Only ISCSI_DEXT_FIXED_DISK_PROBE
+    // reads it, to end the "pretend a medium is there" window (see kMediumPresent).
+    bool everPublished;
     uint32_t lunBlockSize;
     uint64_t lunBlockCount;
     ParkedTask tasks[kISCSIRequestSlotCount];
@@ -616,14 +627,34 @@ iSCSIDext::CopyPayloadArena()
 void
 iSCSIDext::SetLUNGeometry(uint32_t blockSize, uint64_t blockCount)
 {
+    // Compare what the family ALREADY believes against what it would believe
+    // after this update, rather than tracking daemon-attach edges. Those are
+    // not the same question: with ISCSI_DEXT_FIXED_DISK_PROBE the medium is
+    // present from controller start on hardcoded geometry, so a daemon that
+    // attaches and reports exactly that geometry changes nothing the family can
+    // observe — and announcing a change anyway costs a full media re-probe.
+    uint32_t oldSize    = kLUNBlockSize;
+    uint64_t oldCount   = kLUNBlockCount;
+    bool     oldPresent = kMediumPresent;
+
     ivars->lunBlockSize  = blockSize;
     ivars->lunBlockCount = blockCount;
-    bool wasPublished = ivars->lunPublished;
-    bool becameReady = (blockSize != 0 && blockCount != 0) && !wasPublished;
-    bool becameEmpty = (blockSize == 0 || blockCount == 0) && wasPublished;
     ivars->lunPublished  = (blockSize != 0 && blockCount != 0);
-    Log("LUN geometry: %u x %llu (ready=%d)", blockSize, blockCount,
-        ivars->lunPublished ? 1 : 0);
+    if (ivars->lunPublished) ivars->everPublished = true;
+
+    uint32_t newSize    = kLUNBlockSize;
+    uint64_t newCount   = kLUNBlockCount;
+    bool     newPresent = kMediumPresent;
+
+    // A capacity change while the medium stays present counts too: a daemon
+    // that reconnects to a differently-sized LUN without an intervening empty
+    // edge would otherwise leave the family serving stale capacity.
+    bool changed = (newPresent != oldPresent) ||
+                   (newPresent && (newSize != oldSize || newCount != oldCount));
+
+    Log("LUN geometry: %u x %llu (ready=%d) effective %u x %llu present=%d changed=%d",
+        blockSize, blockCount, ivars->lunPublished ? 1 : 0,
+        newSize, newCount, newPresent ? 1 : 0, changed ? 1 : 0);
 
     // The SCSI family probes the bus once, right after the controller starts.
     // If the daemon connects after that (the normal case — it has to log in to
@@ -640,7 +671,9 @@ iSCSIDext::SetLUNGeometry(uint32_t blockSize, uint64_t blockCount)
     // content until a TUR poll happens to notice the medium left (~3s) — and
     // a daemon bounce inside that window swaps the medium underneath a live
     // cache: newfs/fsck then validate against stale pages and fail with EIO.
-    if ((becameReady || becameEmpty) && ivars->publishQueue != nullptr) {
+    // What must NOT fire is a re-probe when nothing observable changed: that
+    // tears the media down and rebuilds it underneath whatever is using it.
+    if (changed && ivars->publishQueue != nullptr) {
         ivars->publishQueue->DispatchAsync(^{
             kern_return_t r = UserCallMediaParametersHaveChanged();
             Log("media parameters changed -> 0x%x", r);

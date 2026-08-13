@@ -46,11 +46,15 @@ Still open, and why this is not a daily driver yet:
   currently papers over that with a diagnostic build flag
   (`ISCSI_DEXT_FIXED_DISK_PROBE`) that hardcodes geometry; the real fix is to
   gate controller matching on the daemon being attached.
-- First access to a freshly mounted APFS volume usually hangs. During the hang
-  the dext receives nothing but TEST UNIT READY polls, so APFS is blocked on
-  something other than our I/O; it is not Spotlight, it is not fully
-  deterministic (one run listed the volume instantly), and in the worst cases
-  even `fork` stops working, which smells like a global kernel lock.
+- The first `stat()` of a freshly mounted APFS volume hangs. Mounting alone is
+  safe (verified untouched for 90 s and 153 s); it takes something reaching for
+  the volume. During the hang the dext receives no commands and its slot table
+  is provably empty, and APFS on a RAM disk in the same VM passes the identical
+  probe sequence — so neither our I/O path nor APFS itself is implicated. The
+  whole-box wedge is a pileup: everything that enumerates mounts (ssh login,
+  Finder, `ps`, `spindump`) queues behind the stuck vnode. `mount_apfs` is
+  still resident and blocking throughout, so the mount may never complete.
+  `scripts/vm-apfs-stack.sh` captures kernel stacks for it via dtrace.
 - `diskutil`'s partition-map rewrite still races a media re-probe
   (`Couldn't read partition map` / `failed to write superblock`).
 - Wipe the scratch LUN (`iscsictl wipe …`) before attaching, or auto-mount

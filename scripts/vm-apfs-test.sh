@@ -1,11 +1,18 @@
 #!/bin/bash
-# apfs-test2.sh — run ON the VM as root, detached.
+# vm-apfs-test.sh — run ON the VM as root. Does APFS actually work now that
+# flushes reach the device?
 #
-# Same goal as apfs-test.sh (does APFS actually work now that flushes reach the
-# device?) but routed around the known-separate `diskutil eraseDisk` re-probe
-# race: lay the partition map with ExFAT first, let it settle, then newfs_apfs
-# the already-probed slice. Every step is time-boxed so a wedge shows up as a
-# TIMEOUT line instead of hanging forever.
+# Routed around the known-separate `diskutil eraseDisk` re-probe race by
+# building the container on the whole device, so the only question left is
+# APFS itself. Every step is time-boxed, so a wedge shows up as a TIMEOUT line
+# instead of hanging forever.
+#
+# RUN IT STREAMED, NOT DETACHED:
+#     ssh VM "sudo -S zsh iSCSI/scripts/vm-apfs-test.sh" <<< PASS | tee local.log
+# When this test fails it can take the whole box down, and anything buffered in
+# a VM-side file is then lost to the power-cycle — /tmp is wiped on boot and a
+# page-cached tail never reaches disk. Lines that already crossed the ssh
+# connection survive, and that tail is the whole diagnosis.
 set -uo pipefail
 cd ~/iSCSI || exit 1
 mkdir -p /Users/herko/logs
@@ -39,6 +46,9 @@ echo "=== wipe"
 $CTL wipe "$PORTAL" --target "$TARGET" >/Users/herko/logs/apfs3-wipe.log 2>&1 || { echo WIPE-FAILED; exit 1; }
 
 echo "=== attach"
+# Truncate: the daemon log is APPENDED to, and the publish-wait below greps it.
+# A stale "published LUN" from the previous run makes that wait a silent no-op.
+: > "$LOG"
 # Wrapped so the daemon's exit status lands in the log. It has quietly gone
 # away mid-test more than once, and "the arena is gone" (sense 04/08/00 on
 # every read) is all the dext can tell us about why.
@@ -46,6 +56,16 @@ echo "=== attach"
   echo "ATTACH-EXIT rc=$?" >>"$LOG" ) &
 ATTACH=$!
 trap 'kill $ATTACH 2>/dev/null; pkill -f dext-attach 2>/dev/null' EXIT
+
+# Wait for the DAEMON, not just for the disk node. Under
+# ISCSI_DEXT_FIXED_DISK_PROBE the medium is present from controller start, so a
+# /dev/disk exists at boot with nothing behind it — polling for the node alone
+# hands us a disk whose every read fails 04/08/00 until login finishes.
+for _ in $(seq 1 45); do
+  grep -q "published LUN" "$LOG" 2>/dev/null && break
+  sleep 1
+done
+grep -q "published LUN" "$LOG" 2>/dev/null || { echo NO-PUBLISH; tail -5 "$LOG"; exit 1; }
 
 DISK=""
 for _ in $(seq 1 45); do
