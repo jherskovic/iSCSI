@@ -46,11 +46,14 @@ done
 [ -z "$DISK" ] && { echo NO-DISK; exit 1; }
 echo "=== disk: $DISK"
 
-newfs_apfs -v iSCSITest "/dev/$DISK" 2>&1 | sed 's/^/    /' \
-  || { echo NEWFS-FAILED; diskutil list "$DISK" 2>&1 | sed 's/^/    /'; exit 1; }
-# newfs_apfs is on the left of a pipe, so $? is sed's. Check the real status.
-[ "${PIPESTATUS[0]:-0}" -eq 0 ] || {
-  echo NEWFS-FAILED
+# Capture to a file rather than piping: `${PIPESTATUS[0]}` is BASH-only and this
+# runs under `sudo zsh`, so the check silently passed and a failed newfs was
+# reported as success.
+newfs_apfs -v iSCSITest "/dev/$DISK" > /Users/herko/logs/trace-newfs.out 2>&1
+NEWFS_RC=$?
+sed 's/^/    /' /Users/herko/logs/trace-newfs.out
+[ "$NEWFS_RC" -eq 0 ] || {
+  echo "NEWFS-FAILED rc=$NEWFS_RC"
   diskutil list "$DISK" 2>&1 | sed 's/^/    /'
   exit 1
 }

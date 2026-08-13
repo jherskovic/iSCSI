@@ -56,8 +56,15 @@ done
 [ -z "$DISK" ] && { echo NO-DISK; exit 1; }
 echo "=== disk: $DISK"
 
-newfs_apfs -v iSCSITest "/dev/$DISK" 2>&1 | sed 's/^/    /'
-[ "${PIPESTATUS[0]:-0}" -eq 0 ] || { echo NEWFS-FAILED; exit 1; }
+# Capture to a file rather than piping: `${PIPESTATUS[0]}` is BASH-only, and
+# this script is launched with `sudo zsh` (zsh spells it $pipestatus, lowercase).
+# The bash form expanded to nothing, `:-0` made the check pass, and a newfs that
+# had failed with EIO was reported as "newfs ok" — then the run died confusingly
+# at NO-VOLDEV several steps later.
+newfs_apfs -v iSCSITest "/dev/$DISK" > /Users/herko/logs/private-newfs.out 2>&1
+NEWFS_RC=$?
+sed 's/^/    /' /Users/herko/logs/private-newfs.out
+[ "$NEWFS_RC" -eq 0 ] || { echo "NEWFS-FAILED rc=$NEWFS_RC"; exit 1; }
 echo "=== newfs ok"
 sleep 3
 
