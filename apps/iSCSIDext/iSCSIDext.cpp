@@ -550,6 +550,11 @@ kern_return_t
 IMPL(iSCSIDext, UserReportMaximumTaskCount)
 {
     // DTS guidance: make this high and rely on bundled tasks; sized by ring.
+    //
+    // Tested at 1 (fully serialized, at most one task outstanding, so the family
+    // can never re-enter us mid-completion): APFS STILL WEDGED. Concurrency and
+    // re-entrancy in the inline completion path are therefore not the cause, and
+    // there is no reason to run with a crippled queue depth.
     *count = kISCSIRequestSlotCount;
     Log("UserReportMaximumTaskCount -> %u", *count);
     return kIOReturnSuccess;
