@@ -243,11 +243,38 @@ errored before printing. **`copyinstr` predicates are unusable during this
 hang** — select on `execname` instead, which is what the script now does by
 copying the trigger binary to a unique name.
 
-Still not caught: the wedging thread itself. The remaining difficulty is a
-race, not a tooling gap — background daemons (`diskarbitrationd`, `fseventsd`,
-the `deleted` daemon, Finder) reach the volume on their own and often wedge it
-before a deliberate trigger can run, so the trigger must be armed and launched
-before they get there.
+#### Sharper still: READDIR is the operation that wedges, and it is deterministic
+
+`scripts/vm-apfs-private.sh` mounts the volume with `mount_apfs` at
+`/Users/herko/mnt` instead of letting `diskutil` put it in `/Volumes`. Finder,
+Spotlight, fseventsd and diskarbitrationd all watch `/Volumes` and reach for a
+new volume on their own; out of `/Volumes` they are not in the race, and the
+experiment becomes repeatable. Result, reproduced across runs:
+
+| operation on the private mount root | result |
+|---|---|
+| `getattr` (stat) | **completes** |
+| `readdir` (`ls -a`) | **blocks forever** |
+
+So the wedging primitive is **readdir**, not getattr. The earlier reading —
+that the first `stat()` hangs — was an artifact of `/Volumes`: a daemon had
+already issued a readdir and wedged the volume, and the stat merely queued
+behind it. On a private mount the same stat sails through.
+
+This also gives a deterministic reproducer that no longer depends on winning a
+race against system daemons.
+
+Still not caught: the readdir thread's own trace. That is now purely a dtrace
+plumbing problem, and two of its traps are already burned in:
+- dtrace's stdout is block-buffered into an ssh pipe, so a low-volume trace
+  never flushes before the box wedges. Running it under `script` for a PTY is
+  the right idea.
+- but `script` inherits the ssh session's stdin (the heredoc feeding `sudo`),
+  hits EOF and exits instantly, taking dtrace with it — the giveaway is a lone
+  `^D` in the output. `tail -f /dev/null | script …` holds stdin open.
+Even with both fixed the trace came back empty, so the next attempt should
+verify dtrace is producing output on this box *before* wiring it to the
+experiment.
 
 ### Still open #2: the partition-map re-probe race
 
