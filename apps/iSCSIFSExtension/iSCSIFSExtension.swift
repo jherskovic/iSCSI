@@ -6,32 +6,37 @@
 //  instead of our DriverKit dext, which is how this backend routes around the
 //  wedge documented in docs/feedback-virtual-scsi-wedge.md.
 //
-//  ── CURRENT STAGE: PROTOTYPE ────────────────────────────────────────────────
-//  The single file served here is backed by a LOCAL FILE, not by iSCSI. That is
-//  deliberate. Two Backend A risks are untested and decide whether the design
-//  works at all, and neither involves iSCSI:
+//  The resource URL selects the backing store:
 //
-//    1. Will DiskImages attach a file that lives on an FSKit (non-local)
-//       volume at all?
-//    2. Does flush/sync propagate from the disk image down to this extension?
-//       (The barrier saga in docs/architecture.md is why this is verified
-//       rather than assumed — see `synchronize`, which logs every call.)
+//    iscsi://proto/lun0                      -> a local sparse file, no network.
+//                                               Verified working end to end and
+//                                               kept so FSKit problems can be
+//                                               separated from network ones.
+//    iscsi://[user@]host[:port]/<iqn>/<lun>  -> a real session, forwarded to
+//                                               iscsid over XPC.
 //
-//  Answering those with a local backing store keeps the failure surface small.
-//  Wiring reads/writes to iscsid over XPC is the next step, and is marked
-//  TODO(iscsi) below.
+//  Both Backend A risks have been settled (docs/backend-a-fskit-notes.md):
+//  DiskImages *will* attach a file living on an FSKit volume, and our read/write
+//  path is genuinely used — 123 writes / 38.9 MB in the reference run, 1 MiB max
+//  I/O, nothing offloaded behind our back.
 //
-//  API notes (see docs/backend-a-fskit-notes.md for the full reconnaissance):
+//  ⚠️ There is NO barrier signal. `synchronize` is never called — not by
+//  sync(8), not by fsync(), not by F_FULLFSYNC on the served file. The only
+//  durability hook is `closeItem` with no retained modes, so the iSCSI store
+//  issues SYNCHRONIZE CACHE there and the target should also be write-through.
+//  Do not add code that assumes a barrier will arrive.
+//
+//  API notes:
 //   - FSVolume.Operations is deprecated in macOS 27 in favour of FSVolumeHandler,
 //     but FSVolumeHandler is V3-only and the test VM runs 26.6.1, so this
 //     targets FSVolume.Operations on purpose.
-//   - FSGenericURLResource/FSPathURLResource are macOS 26.0. The Info.plist
-//     advertises both PathURL and generic-URL support so that the first mount
-//     attempt tells us empirically which one /sbin/mount hands over.
+//   - FSGenericURLResource is macOS 26.0. Every FS* Info.plist key must live
+//     inside EXAppExtensionAttributes or FSKit silently ignores it.
 //
 
 import FSKit
 import Foundation
+import iSCSIKit
 import os
 
 let fsLog = Logger(subsystem: "me.herko.iSCSIInitiator.fsext", category: "fs")
@@ -96,11 +101,22 @@ final class ISCSIFileSystemExtension: UnaryFileSystemExtension {
 
 /// The bytes behind `lun0.img`.
 ///
-/// TODO(iscsi): replace this with an XPC client to iscsid — `read(lba:count:)`,
-/// `write(lba:data:)`, `flush()`, `capacity()` — translating byte offset to
-/// LBA × blockSize. The protocol boundary is deliberately this narrow so the
-/// swap touches nothing else in this file.
-final class BackingStore {
+/// Two implementations: `BackingStore` (a local file, for prototyping and
+/// regression-testing the FSKit plumbing without a target) and `DaemonStore`
+/// (the real thing, forwarding to iscsid over XPC). The volume only ever sees
+/// this protocol.
+protocol LUNStore: AnyObject {
+    var byteCount: UInt64 { get }
+    var summary: String { get }
+    func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int
+    func write(_ data: Data, at offset: UInt64) throws -> Int
+    func flush() throws
+}
+
+/// A local sparse file. No iSCSI involved — used when the resource URL host is
+/// `proto`, which keeps a working configuration available for isolating FSKit
+/// problems from network ones.
+final class BackingStore: LUNStore {
     private let fd: Int32
     private let lock = NSLock()
     let byteCount: UInt64
@@ -203,6 +219,156 @@ final class BackingStore {
     }
 }
 
+// MARK: - Daemon-backed store (the real Backend A path)
+
+/// Forwards block I/O to `iscsid` over XPC, which owns the live iSCSI session.
+///
+/// The FSKit operations that call into this are reply-handler based but the
+/// `LUNStore` API is synchronous, so each call blocks on a semaphore with a
+/// timeout. That is deliberate: a hung daemon must surface as an I/O error
+/// rather than an unkillable filesystem, which is exactly the failure mode that
+/// made the DriverKit wedge so painful to diagnose.
+final class DaemonStore: LUNStore {
+    private let connection: NSXPCConnection
+    private let session: String
+    private let lock = NSLock()
+    let byteCount: UInt64
+
+    private(set) var readCount = 0
+    private(set) var writeCount = 0
+    private(set) var readBytes: UInt64 = 0
+    private(set) var writeBytes: UInt64 = 0
+    private(set) var flushCount = 0
+
+    /// Seconds to wait for any single daemon call.
+    private static let timeout: TimeInterval = 30
+
+    var summary: String {
+        lock.lock(); defer { lock.unlock() }
+        return "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B flushes=\(flushCount)"
+    }
+
+    /// Connects to iscsid, logs in to `target`/`lun` at `host:port`, and learns
+    /// the LUN geometry. Throws if any step fails, so `loadResource` can report
+    /// a real error rather than presenting an empty volume.
+    init(host: String, port: Int, target: String, lun: UInt64, chapUser: String?) throws {
+        connection = NSXPCConnection(machServiceName: iscsiDaemonServiceName, options: .privileged)
+        connection.remoteObjectInterface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
+        connection.resume()
+
+        let proxy = try Self.proxy(connection)
+
+        // Log in.
+        var handle: String?
+        var loginError: Error?
+        try Self.blocking { done in
+            proxy.login(host: host, port: NSNumber(value: port), targetIQN: target,
+                        lun: NSNumber(value: lun), chapUser: chapUser) { h, e in
+                handle = h; loginError = e; done()
+            }
+        }
+        if let loginError { throw loginError }
+        guard let handle else { throw POSIXError(.EIO) }
+        session = handle
+
+        // Learn geometry.
+        var blockSize: NSNumber = 0
+        var blockCount: NSNumber = 0
+        var capError: Error?
+        try Self.blocking { done in
+            proxy.capacity(session: handle) { bs, bc, e in
+                blockSize = bs; blockCount = bc; capError = e; done()
+            }
+        }
+        if let capError { throw capError }
+        byteCount = blockSize.uint64Value * blockCount.uint64Value
+        guard byteCount > 0 else { throw POSIXError(.EIO) }
+
+        fsLog.log("DaemonStore session=\(handle, privacy: .public) size=\(self.byteCount) blockSize=\(blockSize.uint64Value)")
+    }
+
+    deinit {
+        if let proxy = try? Self.proxy(connection) {
+            try? Self.blocking { done in proxy.logout(session: self.session) { _ in done() } }
+        }
+        connection.invalidate()
+    }
+
+    private static func proxy(_ connection: NSXPCConnection) throws -> ISCSIDaemonProtocol {
+        // A synchronous proxy would deadlock the reply-handler style used here;
+        // errors surface through the error handler instead.
+        guard let p = connection.remoteObjectProxyWithErrorHandler({ error in
+            fsLog.error("daemon XPC error: \(error.localizedDescription, privacy: .public)")
+        }) as? ISCSIDaemonProtocol else {
+            throw POSIXError(.ENOTCONN)
+        }
+        return p
+    }
+
+    /// Runs an async XPC call and waits for its reply, or throws ETIMEDOUT.
+    private static func blocking(_ body: (@escaping () -> Void) -> Void) throws {
+        let sem = DispatchSemaphore(value: 0)
+        body { sem.signal() }
+        if sem.wait(timeout: .now() + timeout) == .timedOut {
+            fsLog.error("daemon call timed out after \(Int(timeout))s")
+            throw POSIXError(.ETIMEDOUT)
+        }
+    }
+
+    func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int {
+        guard offset < byteCount else { return 0 }
+        let clamped = min(Int(byteCount - offset), min(length, buffer.count))
+        let proxy = try Self.proxy(connection)
+
+        var data: Data?
+        var err: Error?
+        try Self.blocking { done in
+            proxy.read(session: session, offset: NSNumber(value: offset),
+                       length: NSNumber(value: clamped)) { d, e in
+                data = d; err = e; done()
+            }
+        }
+        if let err { throw err }
+        guard let data else { throw POSIXError(.EIO) }
+        let n = min(data.count, clamped)
+        data.withUnsafeBytes { src in
+            buffer.baseAddress?.copyMemory(from: src.baseAddress!, byteCount: n)
+        }
+        lock.lock(); readCount += 1; readBytes += UInt64(n); lock.unlock()
+        return n
+    }
+
+    func write(_ data: Data, at offset: UInt64) throws -> Int {
+        guard offset < byteCount else { throw POSIXError(.ENOSPC) }
+        let clamped = min(Int(byteCount - offset), data.count)
+        let slice = clamped == data.count ? data : data.prefix(clamped)
+        let proxy = try Self.proxy(connection)
+
+        var err: Error?
+        try Self.blocking { done in
+            proxy.write(session: session, offset: NSNumber(value: offset), data: Data(slice)) { e in
+                err = e; done()
+            }
+        }
+        if let err { throw err }
+        lock.lock(); writeCount += 1; writeBytes += UInt64(clamped); lock.unlock()
+        return clamped
+    }
+
+    /// SYNCHRONIZE CACHE. FSKit never signals barriers (see
+    /// docs/backend-a-fskit-notes.md), so this only runs on final close — which
+    /// is why the target should also be configured write-through.
+    func flush() throws {
+        let proxy = try Self.proxy(connection)
+        var err: Error?
+        try Self.blocking { done in
+            proxy.flush(session: session) { e in err = e; done() }
+        }
+        if let err { throw err }
+        lock.lock(); flushCount += 1; lock.unlock()
+    }
+}
+
 // MARK: - Items
 
 /// A file or directory in the prototype volume. The volume is flat: a root
@@ -283,6 +449,32 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         return nil
     }
 
+    /// Chooses the backing store from the resource URL.
+    ///
+    ///   iscsi://proto/lun0                     → local file (prototype)
+    ///   iscsi://[user@]host[:port]/<iqn>/<lun> → real session via iscsid
+    ///
+    /// Keeping the `proto` host means the known-good local configuration stays
+    /// available for separating FSKit problems from network ones.
+    private func makeStore(for resource: FSResource, localPath: String) throws -> LUNStore {
+        guard let generic = resource as? FSGenericURLResource,
+              let host = generic.url.host, host != "proto" else {
+            return try BackingStore(path: localPath)
+        }
+        let url = generic.url
+        // Path is /<target-iqn>/<lun>; the IQN itself contains no slashes.
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 1 else {
+            fsLog.error("iscsi URL needs /<target-iqn>[/<lun>]")
+            throw POSIXError(.EINVAL)
+        }
+        let target = parts[0]
+        let lun = parts.count >= 2 ? (UInt64(parts[1]) ?? 0) : 0
+        fsLog.log("connecting to iscsid: host=\(host, privacy: .public) target=\(target, privacy: .public) lun=\(lun)")
+        return try DaemonStore(host: host, port: url.port ?? 3260,
+                               target: target, lun: lun, chapUser: url.user)
+    }
+
     func probeResource(resource: FSResource,
                        replyHandler reply: @escaping (FSProbeResult?, (any Error)?) -> Void) {
         guard backingPath(for: resource) != nil else {
@@ -301,7 +493,7 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             return
         }
         do {
-            let store = try BackingStore(path: path)
+            let store = try makeStore(for: resource, localPath: path)
             let volume = ProtoVolume(store: store)
             // The container state machine is notReady -> ready -> active, and
             // `loadResource` is the transition to *ready*: "ready, but
@@ -340,11 +532,11 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
 // reaches `synchronize`.
 final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations,
                          FSVolume.OpenCloseOperations {
-    private let store: BackingStore
+    private let store: LUNStore
     private let root: ProtoItem
     private let image: ProtoItem
 
-    init(store: BackingStore) {
+    init(store: LUNStore) {
         self.store = store
         self.root = ProtoItem(name: "/", type: .directory, id: .rootDirectory, size: 0)
         self.image = ProtoItem(name: kImageName, type: .file, id: kImageItemID, size: store.byteCount)

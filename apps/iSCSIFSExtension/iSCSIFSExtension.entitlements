@@ -10,5 +10,13 @@
     <!-- Talk to the daemon over XPC for iSCSI I/O. -->
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- A sandboxed extension cannot look up an arbitrary Mach service without
+         an explicit exception; without this, NSXPCConnection to iscsid fails.
+         The daemon does all the networking, so the extension itself never
+         opens a socket. -->
+    <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+    <array>
+        <string>me.herko.iSCSIInitiator.daemon</string>
+    </array>
 </dict>
 </plist>

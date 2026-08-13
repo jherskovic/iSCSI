@@ -1,5 +1,13 @@
 import Foundation
 
+// Lives in iSCSIKit rather than iSCSIDaemon so that *both* sides of the wire can
+// see it: the daemon implements it, and the FSKit app extension — which links
+// iSCSIKit but must not pull in the daemon's session engine — calls it.
+//
+// Gated to macOS because @objc/NSXPC requires the Objective-C runtime; the rest
+// of iSCSIKit stays portable and free of platform I/O.
+#if os(macOS)
+
 /// XPC surface the daemon exposes to clients (the FSKit extension, the CLI,
 /// and eventually the dext-side helper). Kept `@objc` and NSSecureCoding-
 /// friendly (Data/NSNumber/NSString) so it crosses the XPC boundary.
@@ -40,3 +48,5 @@ import Foundation
 
 /// The Mach service name the daemon registers and clients connect to.
 public let iscsiDaemonServiceName = "me.herko.iSCSIInitiator.daemon"
+
+#endif // os(macOS)
