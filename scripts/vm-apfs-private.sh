@@ -66,6 +66,25 @@ VOLDEV=$(diskutil info iSCSITest 2>/dev/null | awk '/Device Node:/{print $3}')
 [ -z "$VOLDEV" ] && { echo NO-VOLDEV; diskutil list | sed 's/^/    /'; exit 1; }
 echo "=== volume device: $VOLDEV"
 
+# Capture the dext's pids NOW, while the process table is still readable.
+# `ps`/`pgrep` both enumerate the proc list, which is one of the things that
+# piles up behind the wedge — looking the pid up afterwards just hangs. Pids are
+# stable for the life of the boot, so grabbing them here is enough.
+# One pid per line in a file, iterated with `while read`. Do NOT collect them
+# into a variable and `for p in $VAR` — this script is launched with `sudo zsh`,
+# and zsh does not word-split unquoted variables the way bash does, so the loop
+# runs once with p="243 263" and sample is handed a nonsense argument.
+DEXT_PIDFILE=/Users/herko/logs/dext-pids
+ps ax -o pid,comm | grep 'me.herko.iSCSIInitiator.dext' | grep -v grep \
+  | awk '{print $1}' > "$DEXT_PIDFILE"
+echo "=== dext pids: $(tr '\n' ' ' < "$DEXT_PIDFILE")"
+
+# Started now so it exists and is quiescent before anything wedges; sampled
+# later as the control described above.
+sleep 600 &
+CONTROL_PID=$!
+echo "=== control pid: $CONTROL_PID"
+
 # Everything the trigger needs must exist BEFORE the mount: once the box starts
 # wedging, even cp and fork become unreliable.
 # READDIR is the operation that wedges — getattr on the same mount completes.
@@ -218,6 +237,35 @@ else
 fi
 
 raw_io_probe
+
+# Where is the dext itself stuck?
+#
+# `sample` targets one process by pid and does NOT enumerate mounts, so unlike
+# spindump it survives here. Symbolicated user-space stacks say directly
+# whether a dext thread is parked inside our own code — the test for the theory
+# that UserProcessParallelTask blocks the default queue, which is also what
+# services NewUserClient and ExternalMethod and would explain why
+# `iscsictl dext-stats` hangs while the device is wedged.
+# Control: an ordinary process that touches nothing storage-related. If sample
+# works on IT but hangs on the dext, the dext is genuinely stuck. If sample
+# hangs on both, the wedge has simply defeated another inspection tool and says
+# nothing about the dext — the same ambiguity that made the silent log
+# unreadable. Do not interpret a hung dext sample without this.
+echo "=== sampling CONTROL process (plain sleep, pid $CONTROL_PID)"
+sample "$CONTROL_PID" 2 -file /Users/herko/logs/control-wedged.txt >/dev/null 2>&1
+if sed -n '/Call graph/,/Total number/p' /Users/herko/logs/control-wedged.txt 2>/dev/null | head -8; then
+  echo "CONTROL-SAMPLE-OK"
+else
+  echo "CONTROL-SAMPLE-FAILED"
+fi
+
+echo "=== sampling the dext process(es) while wedged"
+while read -r p; do
+  [ -n "$p" ] || continue
+  echo "--- dext pid $p"
+  sample "$p" 3 -file "/Users/herko/logs/dext-wedged-$p.txt" >/dev/null 2>&1
+  sed -n '/Call graph/,/Total number/p' "/Users/herko/logs/dext-wedged-$p.txt" 2>/dev/null | head -40
+done < "$DEXT_PIDFILE"
 
 sleep 5
 kill $DT 2>/dev/null
