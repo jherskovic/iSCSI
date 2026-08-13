@@ -17,7 +17,7 @@ software-controller throughput limit (see `docs/architecture.md`).
 | 3 | Session/connection engine, scriptable MockTarget, hostile-script suite | ✅ done |
 | 4 | `NetworkTransport` (TCP), `iscsictl`, iscsid daemon (BlockDevice + XPC) | ✅ **verified vs real TrueNAS**; daemon built + tested |
 | 5 | FSKit + `hdiutil` block-device backend | 🚧 skeleton scaffolded (needs Xcode signing + API reconciliation) |
-| 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **real disk, ExFAT works end-to-end**; APFS hangs the storage stack (see below) |
+| 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **real disk; ExFAT works end-to-end, APFS now formats and mounts**; see the open issues below |
 | 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
 
 141 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
@@ -31,12 +31,28 @@ runs on it**. Data integrity is CRC-verified byte-exact across thousands of
 ops including 16-way concurrent same-region storms, and the failure plumbing
 is sound (~30k tasks: no double completions, no watchdog misfires, no leaks).
 
-**Known blocker: APFS wedges the storage stack at mount** (ExFAT is fine).
-Root cause is narrowed to barriers — the kernel never sends SYNCHRONIZE CACHE
-to this device under any tested configuration, and APFS commits every
-transaction behind one. Evidence, ruled-out causes and next steps are in
-`docs/architecture.md` ("OPEN: APFS hangs"). Wipe the scratch LUN
-(`iscsictl wipe …`) before attaching, or the auto-mount re-triggers the hang.
+**The barrier bug is fixed.** APFS used to wedge the storage stack at mount
+because the kernel never sent SYNCHRONIZE CACHE to this device — and the cause
+turned out to be ours: presenting the LUN as *removable* media makes macOS's
+SCSI block driver record `WriteCacheState = No` and elide every flush in-kernel
+in a few microseconds, so APFS's barriers were silent no-ops. Presented as a
+fixed disk, flushes reach the wire (`tools/dkflush.c` measures this directly),
+`newfs_apfs` succeeds and the volume mounts. Full evidence and the measurement
+table are in `docs/architecture.md` ("The flush gap").
+
+Still open, and why this is not a daily driver yet:
+- Removable was itself a workaround for the 45-second `ClearNotReadyStatus`
+  trap that permanently kills a fixed disk not ready at probe. The dext
+  currently papers over that with a diagnostic build flag
+  (`ISCSI_DEXT_FIXED_DISK_PROBE`) that hardcodes geometry; the real fix is to
+  gate controller matching on the daemon being attached.
+- First access to a freshly mounted APFS volume hangs — and during that hang
+  the dext receives nothing but TEST UNIT READY polls, so APFS is blocked on
+  something other than our I/O. A stackshot is the next step.
+- `diskutil`'s partition-map rewrite still races a media re-probe
+  (`Couldn't read partition map` / `failed to write superblock`).
+- Wipe the scratch LUN (`iscsictl wipe …`) before attaching, or auto-mount
+  drags you straight back into whichever of these is unfixed.
 
 ## Building the app + extensions (Xcode)
 

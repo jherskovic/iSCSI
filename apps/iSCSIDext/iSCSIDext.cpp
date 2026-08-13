@@ -40,6 +40,26 @@
 // arena. 1 = bring-up scaffolding backed by an in-dext RAM buffer.
 #define ISCSI_DEXT_SCRATCH_DISK 0
 
+// DIAGNOSTIC BUILD, not a shipping mode. Present the LUN as a FIXED disk
+// (RMB=0) that is ready from the moment the controller starts, with geometry
+// hardcoded to the scratch target's. The point is to find out whether it is
+// the REMOVABLE modeling that suppresses the caching page: the block driver
+// runs its device init exactly once, and if a removable device is assumed to
+// have no write cache, the whole barrier/flush path never gets built. Reads
+// before the daemon attaches fail fast rather than parking, so an unattached
+// boot does not stall on the 16s task watchdog.
+#define ISCSI_DEXT_FIXED_DISK_PROBE 1
+#if ISCSI_DEXT_FIXED_DISK_PROBE
+enum : uint64_t { kProbeBlockCount = 10485760 };
+enum : uint32_t { kProbeBlockSize  = 4096 };
+#endif
+
+// Whether MODE SENSE page 08h reports a write cache (WCE=1). This decides
+// whether the kernel has any reason to emit SYNCHRONIZE CACHE at all: with
+// WCE=0 the block driver treats every flush as trivially satisfied and the
+// device sees nothing. Under investigation — see docs/architecture.md.
+#define kAdvertiseWriteCache 1
+
 enum {
     kScratchBlockSize = 512,
     kScratchBlocks    = 131072,               // 64 MiB — enough to format APFS
@@ -54,9 +74,17 @@ enum { kVirtualTargetID = 0, kInitiatorID = 7, kHighestTargetID = 7 };
 #if ISCSI_DEXT_SCRATCH_DISK
 #define kLUNBlockSize  ((uint32_t)kScratchBlockSize)
 #define kLUNBlockCount ((uint64_t)kScratchBlocks)
+#define kMediumPresent true
+#elif ISCSI_DEXT_FIXED_DISK_PROBE
+// Ready before the daemon exists, on hardcoded geometry, so the block driver's
+// once-per-device init sees a present medium.
+#define kLUNBlockSize  (ivars->lunPublished ? ivars->lunBlockSize  : kProbeBlockSize)
+#define kLUNBlockCount (ivars->lunPublished ? ivars->lunBlockCount : kProbeBlockCount)
+#define kMediumPresent true
 #else
 #define kLUNBlockSize  (ivars->lunBlockSize)
 #define kLUNBlockCount (ivars->lunBlockCount)
+#define kMediumPresent (ivars->lunPublished)
 #endif
 
 // Lifecycle of one slot in the parked-task table. Four contexts touch the
@@ -984,7 +1012,7 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         // Until the daemon publishes LUN geometry there is no medium behind
         // us. Reporting "becoming ready" makes the SCSI stack keep polling
         // (it retries every ~3s) instead of giving up on the device.
-        if (!ivars->lunPublished) {
+        if (!kMediumPresent) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
             resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x3A, 0x00);
         }
@@ -996,7 +1024,7 @@ IMPL(iSCSIDext, UserProcessParallelTask)
 #if ISCSI_DEXT_SCRATCH_DISK
         break; // RAM buffer is always coherent
 #else
-        if (!ivars->lunPublished) {
+        if (!kMediumPresent) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
             resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x3A, 0x00);
             break;
@@ -1035,7 +1063,11 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         // and goes away when it drops. Pair with sense 02/3A/00 (MEDIUM NOT
         // PRESENT), never 02/04/01 (BECOMING READY, which implies a bounded
         // wait).
+#if ISCSI_DEXT_FIXED_DISK_PROBE
+        inq[1] = 0x00;  // fixed disk — diagnostic build, see the flag's comment
+#else
         inq[1] = 0x80;  // RMB: removable medium
+#endif
         inq[2] = 0x05;  // SPC-3
         inq[3] = 0x02;  // response data format
         inq[4] = 31;    // additional length
@@ -1050,7 +1082,7 @@ IMPL(iSCSIDext, UserProcessParallelTask)
 
     case 0x25: { // READ CAPACITY (10)
 #if !ISCSI_DEXT_SCRATCH_DISK
-        if (!ivars->lunPublished) {
+        if (!kMediumPresent) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
             resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x3A, 0x00);
             break;
@@ -1073,7 +1105,7 @@ IMPL(iSCSIDext, UserProcessParallelTask)
             break;
         }
 #if !ISCSI_DEXT_SCRATCH_DISK
-        if (!ivars->lunPublished) {
+        if (!kMediumPresent) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
             resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x3A, 0x00);
             break;
@@ -1113,7 +1145,7 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         }
         resp.fBytesTransferred = length;
 #else
-        if (!ivars->lunPublished) {
+        if (!kMediumPresent) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
             resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x02, 0x3A, 0x00);
             break;
@@ -1121,6 +1153,15 @@ IMPL(iSCSIDext, UserProcessParallelTask)
         if (lba >= kLUNBlockCount) {
             resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
             resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x05, 0x21, 0x00);
+            break;
+        }
+        if (ivars->arena == nullptr) {
+            // Nobody to service this. Parking it would cost the caller a full
+            // watchdog interval per request; a hardware error is immediate and
+            // honest. (Only reachable in the fixed-disk diagnostic build, where
+            // the device claims to be ready before the daemon connects.)
+            resp.fCompletionStatus = kSCSITaskStatus_CHECK_CONDITION;
+            resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x04, 0x08, 0x00); // LU comm failure
             break;
         }
         uint64_t length = (uint64_t)blocks * kLUNBlockSize;
@@ -1147,17 +1188,25 @@ IMPL(iSCSIDext, UserProcessParallelTask)
 
     case 0x1A:   // MODE SENSE (6)
     case 0x5A: { // MODE SENSE (10)
-        // The caching page (08h, WCE=1) is LOAD-BEARING: without it the SCSI
-        // block driver decides the device has no write cache, its flush path
-        // becomes a no-op that never emits SYNCHRONIZE CACHE, and the FIRST
-        // APFS journal barrier (any fsync/unmount) wedges the storage stack
-        // waiting on a flush that cannot be delivered. Observed as "sustained
-        // I/O hangs the box" with an idle, healthy dext underneath.
+        // What the block driver actually does with this, measured on macOS 26:
+        // on every media arrival it sends exactly ONE MODE SENSE(6), page 0x3F,
+        // DBD=0, allocation length 4 — the mode parameter HEADER only — and
+        // never asks again, whatever mode data length we report back. So the
+        // header is the only thing it reads, and everything downstream (write
+        // cache state, FUA, the Barrier storage feature, whether a flush ioctl
+        // becomes a real SYNCHRONIZE CACHE) is decided from those 4 bytes. The
+        // caching page below is still built correctly for anyone who asks for
+        // it, but it is not what gates the flush path.
         const uint8_t page = cdb[2] & 0x3F;
         const bool six = (op == 0x1A);
         const bool dbd = (cdb[1] & 0x08) != 0;
         uint8_t mode[48] = {};
         uint64_t n = six ? 4 : 8;   // header
+
+        // Device-specific parameter byte: DPOFUA (bit 4) says READ/WRITE may
+        // carry DPO/FUA. Honest here — the daemon flushes the LUN when a task
+        // arrives with FUA set. WP (bit 7) stays clear: the LUN is writable.
+        mode[six ? 2 : 3] = 0x10;   // DPOFUA
 
         // Block descriptor (8 bytes) unless DBD asked it away. Real SCSI
         // disks ALWAYS return this, and the family's caching-page parser
@@ -1182,14 +1231,12 @@ IMPL(iSCSIDext, UserProcessParallelTask)
             uint8_t * pg = &mode[n];
             pg[0] = 0x08;  // caching page
             pg[1] = 0x12;  // page length (18 bytes follow)
-            // WCE=0. Empirically on macOS 26 (DriverKit SCSI controller,
-            // removable medium): WCE=1 — with OR without a block descriptor —
-            // makes the kernel reject the write issued right after
-            // DKIOCSYNCHRONIZECACHE with EIO in ~24µs (newfs_apfs's final
-            // superblock commit → every APFS format fails), while STILL never
-            // emitting SYNCHRONIZE CACHE to the device. WCE=0 is also the
-            // honest report: writes complete only after the target acks them.
-            pg[2] = 0x00;
+            // WCE (bit 2). Under test — see docs/architecture.md → "OPEN: APFS
+            // hangs". With WCE=0 the kernel elides flushes entirely: a raw
+            // DKIOCSYNCHRONIZECACHE on /dev/rdiskN returns success in ~25µs and
+            // no SYNCHRONIZE CACHE ever reaches the driver (tools/dkflush.c),
+            // and DKIOCGETFEATURES reports 0 — no barrier support at all.
+            pg[2] = kAdvertiseWriteCache ? 0x04 : 0x00;
             n += 20;
         }
         // Unknown pages: header-only response (benign), not CHECK CONDITION —
@@ -1197,6 +1244,13 @@ IMPL(iSCSIDext, UserProcessParallelTask)
 
         if (six) mode[0] = (uint8_t)(n - 1);
         else { mode[0] = (uint8_t)((n - 2) >> 8); mode[1] = (uint8_t)(n - 2); }
+        // The block driver asks for the caching page exactly once, on media
+        // arrival, and whatever it concludes there is what "WriteCacheState"
+        // and the whole barrier/flush path key off for the life of the medium.
+        // Log the request and what we returned; a too-small allocation length
+        // silently truncating the page away looks identical to WCE=0.
+        Log("MODE SENSE(%d) page=0x%02x dbd=%d alloc=%llu built=%llu",
+            six ? 6 : 10, page, dbd ? 1 : 0, avail, n);
         if (n > avail) n = avail;
         if (buf && n) memcpy(buf, mode, (size_t)n);
         resp.fBytesTransferred = n;
@@ -1231,9 +1285,15 @@ IMPL(iSCSIDext, UserProcessParallelTask)
     // it".
     if (resp.fCompletionStatus != kSCSITaskStatus_GOOD &&
         parallelRequest.fTargetID == kVirtualTargetID) {
-        Log("inline non-GOOD: op=0x%02x status=%u response=%u len=%llu",
+        // Sense included: "which CHECK CONDITION" is the whole diagnosis.
+        // 05/21/00 = LBA out of range, 02/3A/00 = no medium, 04/08/00 = no
+        // daemon behind us. They look identical from the storage stack.
+        Log("inline non-GOOD: op=0x%02x status=%u response=%u len=%llu sense=%02x/%02x/%02x",
             op, resp.fCompletionStatus, resp.fServiceResponse,
-            parallelRequest.fRequestedTransferCount);
+            parallelRequest.fRequestedTransferCount,
+            resp.fSenseLength > 2 ? (resp.fSenseBuffer[2] & 0x0F) : 0xFF,
+            resp.fSenseLength > 12 ? resp.fSenseBuffer[12] : 0xFF,
+            resp.fSenseLength > 13 ? resp.fSenseBuffer[13] : 0xFF);
     }
 
     OSSafeReleaseNULL(dataMD);

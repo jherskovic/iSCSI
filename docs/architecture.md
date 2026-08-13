@@ -88,25 +88,23 @@ sit on the identical iSCSIKit session engine.
 Each of these produced a system-wide wedge or nondeterministic corruption
 with a perfectly healthy dext underneath. Recorded so they never get re-broken:
 
-1. **Model the LUN as REMOVABLE media** (INQUIRY RMB=1, sense `02/3A/00`
-   MEDIUM NOT PRESENT while the daemon is detached). A fixed disk that is
-   NOT READY at probe gets exactly 45 s of `ClearNotReadyStatus` polling from
-   `IOSCSIPeripheralDeviceType00::start`, then `InitializeDeviceSupport` fails
-   PERMANENTLY — and the daemon usually logs in much later than 45 s after
-   boot. Removable media attaches with "no medium" and polls forever; the disk
-   appears whenever the daemon publishes and detaches cleanly when it drops.
-2. **MODE SENSE must serve a WELL-FORMED caching page with WCE=0.** Two
-   failure modes bracket this: (a) the original garbage MODE SENSE (header
-   only, wrong lengths) left the block driver's cache state arbitrary; (b)
-   WCE=1 is actively harmful — the kernel STILL never emitted SYNCHRONIZE
-   CACHE, `DKIOCSYNCHRONIZECACHE` returned success in 83 µs without touching
-   the device, and the very next write (newfs_apfs's final superblock commit)
-   was rejected in-kernel with EIO in 24 µs: deterministic "failed to write
-   superblock to block 0", format impossible. WCE=0 is also the honest
-   report: the daemon completes a write only after the target acks it, so no
-   host-visible volatile cache exists. Keep SYNCHRONIZE CACHE parked-and-
-   forwarded and honor FUA with a post-write flush for whenever the kernel
-   does send them.
+1. **A NOT-READY fixed disk at probe time is dead forever.**
+   `IOSCSIPeripheralDeviceType00::start` gives `ClearNotReadyStatus` exactly
+   45 s, then `InitializeDeviceSupport` fails PERMANENTLY — and the daemon
+   normally logs in much later than 45 s after boot. Modelling the LUN as
+   REMOVABLE media (INQUIRY RMB=1, sense `02/3A/00` MEDIUM NOT PRESENT while
+   detached) dodges this: the device attaches with "no medium" and polls
+   forever. **But removable costs you every barrier** — see "The flush gap"
+   below — so it is a stopgap, not the answer. The answer is to make the
+   medium present *before* the family probes.
+2. **The block driver reads the mode parameter HEADER and nothing else.** One
+   MODE SENSE(6), page 0x3F, DBD=0, allocation length 4, once per media
+   arrival, never repeated no matter what mode data length you report. So a
+   correct caching page is not sufficient for anything — it is never fetched.
+   Serve a well-formed response anyway (the original garbage one left the
+   driver's cache state arbitrary), but do not expect WCE, DPOFUA, or the
+   block descriptor to change behaviour. Keep SYNCHRONIZE CACHE parked-and-
+   forwarded and honour FUA with a post-write flush.
 3. **Preserve submission order for overlapping LBA ranges.** The kernel
    rewrites the same block back-to-back (GPT headers, APFS superblocks,
    journal heads) trusting device-order semantics. The dext hands tasks to
@@ -127,59 +125,95 @@ with a perfectly healthy dext underneath. Recorded so they never get re-broken:
    impossible. The daemon's per-task timeout (10 s) sits BELOW the dext
    watchdog (~16 s) so the clean CHECK CONDITION path fires first.
 
-## OPEN: APFS hangs; ExFAT works (the current blocker)
+## The flush gap: removable media silently disables barriers (root cause found)
 
-Status after a full day of instrumented testing on macOS 26.6.1 (dext v10):
-**ExFAT formats, mounts, and runs perfectly. APFS reproducibly wedges the
-storage stack the moment a volume is mounted** — not under load, at mount.
-Once wedged, anything touching the mount table (`mount`, `ls /Volumes`,
-`ioreg -c IOBlockStorageDevice`) blocks forever; bare ssh still answers. Only
-a VM power-cycle recovers it. Because a mounted-at-attach APFS volume
-re-triggers it, the scratch LUN must be wiped (`iscsictl wipe`) before
-attaching, or the box wedges on auto-mount.
+The symptom was: ExFAT works end to end, APFS wedges the whole storage stack
+at mount, and **the kernel has never once sent SYNCHRONIZE CACHE to this
+device** — measured with unconditional daemon-side `FLUSH` logging across
+formats, file writes, WCE=0 and WCE=1. ExFAT does not journal; APFS commits
+every transaction behind a barrier, so a barrier that never becomes a device
+command is exactly the difference between the two.
 
-What is ruled OUT (measured, not assumed):
-- Our task plumbing. ~30k tasks serviced: `wdFail=0`, `full=0`, no double
-  completions, no leaks; every parked task completes well inside the watchdog.
-- Data correctness. Write-vs-readback CRC32C cross-checks over thousands of
-  ops, including 16-way concurrent same-region storms: zero mismatches.
-- Short/truncated transfers. Every serviced op moves exactly its CDB length
-  (the short-transfer guards never fired).
-- The APFS *format* code path per se: `newfs_apfs` on an already-probed,
-  stable slice SUCCEEDS. It is `diskutil eraseDisk APFS` that fails
-  nondeterministically, because rewriting the partition map triggers a media
-  re-probe (INQUIRY / MODE SENSE / PREVENT-ALLOW / READ CAPACITY appear
-  mid-write-stream) that races the in-progress format; the losing write is
-  rejected in-kernel with EIO in ~24 µs, never reaching the driver.
+The suspicion was that `SCSIControllerDriverKit` cannot deliver a
+cache-synchronize to a user-space controller at all. **It can. The bug was
+ours: modelling the LUN as removable media.**
 
-The load-bearing observation: **the kernel has never once sent SYNCHRONIZE
-CACHE to this device** — confirmed by unconditional daemon-side logging
-(`FLUSH` lines) across full formats and file writes, with WCE=0 and WCE=1,
-despite `IOStorageFeatures = {Barrier=Yes, Unmap=Yes}`. ExFAT does not
-journal; APFS commits every transaction behind a barrier. A barrier request
-that is never translated into a device command — and whose waiter is never
-completed — would block APFS's commit path forever and cascade exactly the
-VFS-wide hang we see.
+The measurement chain, each step from `tools/dkflush.c` (raw-device
+`DKIOCSYNCHRONIZECACHE` / `DKIOCSYNCHRONIZE`, no filesystem in the picture):
 
-Next steps, in order:
-1. Determine whether `SCSIControllerDriverKit` can deliver a cache-synchronize
-   to a user-space controller AT ALL. If the family never converts the
-   IOStorage barrier into a `UserProcessParallelTask`, this is an Apple-side
-   gap of the same species as the single-segment limit (FB23814092), it
-   blocks every journaling filesystem on a DriverKit software HBA, and it
-   deserves a Feedback filing. Confirm by finding ANY condition that makes
-   0x35/0x91 arrive.
-2. Capture a stackshot DURING the hang, written to the (still-healthy) boot
-   volume, to name the thread APFS is blocked in. Start it on a delay before
-   mounting, since the shell is unusable afterwards.
-3. Fix the re-probe race structurally by making the medium present BEFORE the
-   family probes: keep the bootstrap nub always-matched with its own user
-   client, have the daemon publish geometry to IT, and only then set the
-   marker property that lets the `IOUserSCSIParallelInterfaceController`
-   personality match. The LUN is then a FIXED disk (RMB=0) that exists only
-   while the daemon is attached — real-HBA hot-plug semantics — which removes
-   the NOT-READY window, the removable-media polling, and the re-probe churn
-   in one move.
+| | removable (RMB=1) | fixed (RMB=0) |
+|---|---|---|
+| `WriteCacheState` on the Type00 node | `No` | `Yes` |
+| flush ioctl on `/dev/rdiskN` | returns success in 4–25 µs | 2–4 ms |
+| SYNCHRONIZE CACHE reaching the daemon | never, in any configuration | every time |
+
+The mechanism, from the dext's own CDB trace: on each media arrival the block
+driver sends **exactly one MODE SENSE(6), page 0x3F, DBD=0, allocation length
+4** — the mode parameter header alone — and never asks again, whatever mode
+data length we report back. For a removable device it stops there and records
+`WriteCacheState = No`; nothing downstream (write cache, FUA, the Barrier
+storage feature, whether `DKIOCSYNCHRONIZECACHE` becomes a real command) is
+ever built. Every flush is then satisfied in-kernel in microseconds and the
+device sees nothing, so APFS's barriers are silent no-ops.
+
+Things that look like they should matter and do not: WCE in the caching page
+(the page is never fetched), DPOFUA in the mode header, a block descriptor,
+`DKIOCGETFEATURES` (still reports `0x00000000` even when flushes are flowing —
+the internal disk reports `0x12 [barrier unmap]`, so it is not the gate).
+
+This puts the RMB=1 workaround and working barriers in direct conflict:
+removable was adopted to dodge the 45-second `ClearNotReadyStatus` trap that
+permanently fails a fixed disk which is NOT READY at probe (see lesson 1
+above), and the daemon normally logs in long after boot. The fix has to make
+the medium **present before the family probes**, not make the device
+removable. See "Next: make the LUN a fixed disk" below.
+
+With that fixed, APFS gets much further than it ever did:
+`newfs_apfs /dev/diskN` on the whole device succeeds, the container
+synthesizes, and `diskutil mount` **mounts the volume** — reproducibly, where
+before the mount itself wedged the box.
+
+### Still open #1: first access to the mounted volume hangs
+
+`ls -la /Volumes/iSCSITest` on the freshly mounted volume blocks and never
+returns; the box then slides into the familiar wedge (`ps`, `log show`, and
+anything touching the mount table hang; bare ssh still answers; only a
+power-cycle recovers). The decisive measurement: **during the hang the dext
+receives nothing but 3-second TEST UNIT READY polls — not one READ or WRITE**,
+and the daemon is still alive and connected (it logs no error, and its wrapper
+never records an exit). So whatever APFS is blocked on, it is not waiting on
+a command we failed to complete. Beware a red herring here: reads failing with
+sense `04/08/00` in the log are the *teardown* — the harness's trap kills the
+daemon, the arena goes away, and the dext fails everything after that.
+
+Next: a stackshot during the hang (`spindump`, started on a delay and written
+to the healthy boot volume, since the shell is unusable afterwards) to name
+the thread and the lock.
+
+### Still open #2: the partition-map re-probe race
+
+`diskutil eraseDisk` fails nondeterministically — `failed to write superblock
+to block 0: 5` or `Couldn't read partition map` — an EIO generated in-kernel
+that never reaches the driver, while every task the dext did receive completed
+cleanly (`wdFail=0`, `aborted=0`). Rewriting the partition map triggers a media
+re-probe that races the in-flight I/O. `newfs_apfs` on an already-probed slice,
+or on a whole device with no partition map at all, does not hit it. The
+structural fix below removes this race too.
+
+## Next: make the LUN a fixed disk that exists only while the daemon is attached
+
+Gate controller matching on the daemon: keep the bootstrap nub always-matched
+with its own user client, have the daemon publish geometry to IT, and only
+then set the marker property that lets the
+`IOUserSCSIParallelInterfaceController` personality match. The LUN becomes a
+FIXED disk (RMB=0) that appears when the daemon attaches and disappears when
+it drops — real-HBA hot-plug semantics. That removes the NOT-READY window, the
+removable-media polling, the re-probe churn, and the flush gap in one move.
+
+`ISCSI_DEXT_FIXED_DISK_PROBE` in the dext is the diagnostic stand-in for this:
+RMB=0 plus hardcoded geometry so the device is ready the instant the
+controller starts. It proves the mechanism but is not shippable — geometry
+must come from the daemon.
 
 Entitlements (all restricted, requested from Apple): `com.apple.developer.driverkit`,
 `.driverkit.family.scsicontroller`, `.driverkit.userclient-access` (daemon),

@@ -30,6 +30,15 @@ active_version() {
     | sed -E 's/.*\(([^)]*)\).*/\1/'
 }
 
+# "activated enabled" only means STAGED. While a row for an older version is
+# still "terminating for upgrade via delegate", that older dext is the one
+# actually executing — you will deploy new code, see DEPLOY-OK, and then spend
+# an hour debugging the previous build. Ask whether any stale row remains.
+stale_versions() {
+  ssh -o BatchMode=yes "$VM" "systemextensionsctl list | grep iSCSIDext | grep -v 'activated enabled'" \
+    | sed -E 's/.*\(([^)]*)\).*/\1/' | grep -v "/$1\$" || true
+}
+
 wanted_version() {
   plutil -extract CFBundleVersion raw apps/iSCSIDext/Info.plist
 }
@@ -54,5 +63,17 @@ if [[ "$(active_version)" != *"/$WANT" ]]; then
   sleep 20; wait_for_vm
 fi
 
-echo "== active: $(active_version) (wanted $WANT)"
-[[ "$(active_version)" == *"/$WANT" ]] && echo DEPLOY-OK || { echo DEPLOY-FAILED; exit 1; }
+[[ "$(active_version)" == *"/$WANT" ]] || { echo "DEPLOY-FAILED (staged $(active_version), wanted $WANT)"; exit 1; }
+
+# Reboot until the previous version stops holding the driver.
+for _ in 1 2 3; do
+  stale=$(stale_versions "$WANT")
+  [[ -z "$stale" ]] && break
+  echo "== v$WANT staged but $(echo "$stale" | tr '\n' ' ')still running; rebooting"
+  ssh -o BatchMode=yes "$VM" "echo '$PASS' | sudo -S reboot" >/dev/null 2>&1 || true
+  sleep 25; wait_for_vm; sleep 5
+done
+
+if [[ -n "$(stale_versions "$WANT")" ]]; then echo "DEPLOY-FAILED (old version won't release)"; exit 1; fi
+echo "== running: $(active_version)"
+echo DEPLOY-OK
