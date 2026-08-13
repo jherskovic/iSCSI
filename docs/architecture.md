@@ -245,31 +245,58 @@ errored before printing. **`copyinstr` predicates are unusable during this
 hang** — select on `execname` instead, which is what the script now does by
 copying the trigger binary to a unique name.
 
-#### What the wedge is NOT — every theory tested to destruction
+#### The reproducer, and everything ruled out
 
-Each line below is a controlled result, not an impression:
+**The wedge has nothing to do with iSCSI.** Built with `ISCSI_DEXT_SCRATCH_DISK 1`
+the dext serves a RAM buffer from its own memory — no daemon, no network, no
+target, 512-byte blocks, and every command answered INLINE without ever parking
+a task. APFS on that wedges identically. `scripts/vm-scratch-apfs.sh` is the
+whole reproducer: format, mount outside `/Volumes`, touch it twice.
 
-| ruled out | how |
+The failure needs APFS **and** our driver. Neither alone does it:
+
+| configuration | result |
 |---|---|
-| APFS being broken in this VM | identical probe sequence on a RAM-disk APFS volume passes completely |
-| the media re-probe | suppressed (`changed=0`, no re-probe fired); wedge reproduces |
-| our command path | `parked == fetched == completed == 1372`, `inflight=0` — every task completed exactly once |
-| short/truncated transfers | daemon fails them loudly on `length < byCDB`; **zero** SHORT WRITE/READ in the wedging run |
-| wrong byte counts | `serviceWrite` reports the full length; `fBytesTransferred` is correct |
+| APFS on our driver (iSCSI, 4Kn) | **wedges** |
+| APFS on our driver (scratch RAM, 512B, no daemon) | **wedges** |
+| APFS on an hdiutil RAM disk | works |
+| ExFAT on our driver, whole disk | works |
+| ExFAT on our driver, GPT slice (nested media) | works |
+
+Everything below is a controlled result, not an impression. Each killed a
+hypothesis that looked live at the time:
+
+| ruled out | method |
+|---|---|
+| APFS being broken in this VM | identical probe on an hdiutil RAM-disk APFS volume passes |
+| the media re-probe | suppressed (`changed=0`); wedge reproduces |
+| our command path | `parked == fetched == completed == 1372`, `inflight=0` |
+| short/truncated transfers | daemon fails them loudly; **zero** SHORT WRITE/READ in a wedging run |
+| wrong byte counts | `serviceWrite` reports full length; `fBytesTransferred` correct |
 | queue exhaustion | `cParkFull == 0` |
-| the dext being stuck | during a wedge its user-client open, 16 MiB arena map and `ExternalMethod` all return in **0 ms** |
-| **the barrier/flush path** | **`kAdvertiseWriteCache=0` A/B: daemon logged ZERO flushes, and the wedge happened anyway** |
+| the dext being stuck | user-client open, 16 MiB arena map and `ExternalMethod` all return in **0 ms** while wedged |
+| the barrier/flush path | `kAdvertiseWriteCache=0`: **zero** flushes logged, wedge unchanged |
+| power management | the framework declares no power callbacks at all |
+| a stalled task-management function | all six TMFs implemented, complete synchronously; `cAborted == 0` |
+| concurrency / re-entrancy | `MaximumTaskCount=1` (one task outstanding): still wedges |
+| command volume | ExFAT drives 303 data commands through the same driver; APFS wedges at 418 |
+| oversized transfers | largest request is 16 KiB against an advertised 64 KiB segment |
+| the nested media layer | ExFAT on a GPT slice passes |
 
-That last one also corrects the project's history. The wedge was blamed on
-missing barriers, and the barrier fix was real — flushes now reach the device,
-`newfs_apfs` and `diskutil mount` now succeed where they used to fail. But the
-wedge predates that change and survives turning flushes back off, so **the flush
-gap and the wedge were always two separate bugs**, found together and wrongly
-fused into one story.
+Opcode histograms from the identical scratch disk:
 
-What survives: the failure is positional, it is not APFS-specific (raw `dd` and
-flush ioctls hang identically), and our driver is provably healthy and
-responsive throughout while the layer above stops dispatching.
+```
+APFS  (wedges)  324 write  94 read  16 TUR  7 flush   total 441
+ExFAT (works)   273 write  30 read  18 TUR  1 flush   total 322
+```
+
+**Tools defeated by the wedge** — every one of these hangs once it happens, so
+none can be used to diagnose it: `spindump`, `log show`, `ps`, `pgrep`,
+`sample`, and `ioreg -l`. Two channels still work: a plain IOKit
+lookup/open/`ExternalMethod` (`tools/ukopen.c`), and lines that cross the ssh
+wire before the box degrades. Twice a *control* showed an apparent signal was
+nothing — `sample` hangs on an unrelated `sleep` process, and `ioreg -l` hangs
+on `IOHIDSystem` — so never read a hang here without one.
 
 #### The real shape: the FIRST access succeeds, the SECOND blocks — whatever they are
 

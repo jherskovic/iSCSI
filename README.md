@@ -46,20 +46,20 @@ Still open, and why this is not a daily driver yet:
   currently papers over that with a diagnostic build flag
   (`ISCSI_DEXT_FIXED_DISK_PROBE`) that hardcodes geometry; the real fix is to
   gate controller matching on the daemon being attached.
-- **After the first access to a freshly mounted volume, the device stops
-  serving I/O entirely.** It is positional rather than operation-specific — the
-  first access completes and the second blocks, in either order — and it is not
-  APFS-specific: during the wedge a raw `dd` of `/dev/rdiskN` and a raw flush
-  ioctl, neither of which touches APFS, hang the same way. Mounting alone is
-  safe (verified untouched for 90 s and 153 s). The first access drives a real
-  checkpoint (547 writes, 7 SYNCHRONIZE CACHEs) that our device completes, and
-  then nothing is ever dispatched to the dext again — so the jam sits above us
-  in the block/SCSI layer and is plausibly our own completion accounting (the
-  one watchdog line reads `parked=512 fetched=512 completed=511`). The
-  whole-box wedge is a pileup: everything that enumerates mounts (ssh login,
-  Finder, `ps`, `spindump`, even `loginwindow`) queues behind it.
-  `scripts/vm-apfs-private.sh` reproduces it deterministically by mounting
-  outside `/Volumes`, away from the daemons that otherwise race it.
+- **After the first access to a freshly mounted APFS volume, the device stops
+  serving I/O entirely** — and this has nothing to do with iSCSI. Built with
+  `ISCSI_DEXT_SCRATCH_DISK 1` the dext serves a RAM buffer from its own memory
+  (no daemon, no network, no target, every command answered inline) and APFS
+  wedges identically. It needs APFS *and* our driver: APFS on an hdiutil RAM
+  disk is fine, ExFAT on our driver is fine (whole disk or GPT slice), and the
+  failure is positional — the first access completes, the second blocks, in
+  either order. Raw `dd` and flush ioctls hang too, while the dext stays
+  provably healthy: it answers IOKit calls in 0 ms and its counters show every
+  task completed exactly once. Ruled out by controlled tests: barriers,
+  truncation, byte counts, completion accounting, task-management functions,
+  power management, concurrency, command volume, transfer size, and the nested
+  media layer — see `docs/architecture.md` for the matrix and the method for
+  each. `scripts/vm-scratch-apfs.sh` is the self-contained reproducer.
 - `diskutil`'s partition-map rewrite still races a media re-probe
   (`Couldn't read partition map` / `failed to write superblock`).
 - Wipe the scratch LUN (`iscsictl wipe …`) before attaching, or auto-mount
