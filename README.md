@@ -46,18 +46,20 @@ Still open, and why this is not a daily driver yet:
   currently papers over that with a diagnostic build flag
   (`ISCSI_DEXT_FIXED_DISK_PROBE`) that hardcodes geometry; the real fix is to
   gate controller matching on the daemon being attached.
-- On a freshly mounted APFS volume, **the first access succeeds and the second
-  one hangs — whatever they are**. getattr-then-readdir and readdir-then-getattr
-  both block on the second, so the operation is irrelevant; it is positional.
-  Mounting alone is safe (verified untouched for 90 s and 153 s). The first
-  access drives a real checkpoint — 547 writes and 7 SYNCHRONIZE CACHEs, all
-  completed cleanly — and APFS then wedges with an empty dext queue and no I/O
-  pending on us. APFS on a RAM disk in the same VM passes the identical probe
-  sequence, so neither our I/O path nor APFS itself is implicated on its own.
-  The whole-box wedge is a pileup: everything that enumerates mounts (ssh
-  login, Finder, `ps`, `spindump`, even `loginwindow`) queues behind the stuck
-  vnode. `scripts/vm-apfs-private.sh` reproduces it deterministically by
-  mounting outside `/Volumes`, away from the daemons that otherwise race it.
+- **After the first access to a freshly mounted volume, the device stops
+  serving I/O entirely.** It is positional rather than operation-specific — the
+  first access completes and the second blocks, in either order — and it is not
+  APFS-specific: during the wedge a raw `dd` of `/dev/rdiskN` and a raw flush
+  ioctl, neither of which touches APFS, hang the same way. Mounting alone is
+  safe (verified untouched for 90 s and 153 s). The first access drives a real
+  checkpoint (547 writes, 7 SYNCHRONIZE CACHEs) that our device completes, and
+  then nothing is ever dispatched to the dext again — so the jam sits above us
+  in the block/SCSI layer and is plausibly our own completion accounting (the
+  one watchdog line reads `parked=512 fetched=512 completed=511`). The
+  whole-box wedge is a pileup: everything that enumerates mounts (ssh login,
+  Finder, `ps`, `spindump`, even `loginwindow`) queues behind it.
+  `scripts/vm-apfs-private.sh` reproduces it deterministically by mounting
+  outside `/Volumes`, away from the daemons that otherwise race it.
 - `diskutil`'s partition-map rewrite still races a media re-probe
   (`Couldn't read partition map` / `failed to write superblock`).
 - Wipe the scratch LUN (`iscsictl wipe …`) before attaching, or auto-mount

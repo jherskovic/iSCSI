@@ -151,9 +151,15 @@ echo "=== mounted"
 ORDER=${ORDER:-readdir-first}
 echo "=== order: $ORDER"
 
+# Each trigger prints STARTED from userspace before exec'ing the real binary.
+# Without it, "blocked" is ambiguous between "the process ran and blocked in
+# the syscall on our volume" and "the PROCESS blocked in fork/exec and never
+# reached userspace at all" — which would make this about the second *process*
+# rather than the second *access*, a different bug. Several traced runs showed
+# no syscalls whatsoever from the blocking process, so this is a live question.
 do_readdir() {
   echo "=== readdir on the private mount root (traced)"
-  /tmp/wedgeprobe -a "$MNT" >/dev/null 2>&1 &
+  sh -c 'echo "    STARTED readdir"; exec /tmp/wedgeprobe -a "$1" >/dev/null 2>&1' _ "$MNT" &
   local p=$!
   sleep 25
   kill -0 $p 2>/dev/null && echo "READDIR-BLOCKED" || echo "READDIR-COMPLETED"
@@ -161,10 +167,46 @@ do_readdir() {
 
 do_getattr() {
   echo "=== getattr on the private mount root"
-  /tmp/statprobe "$MNT" >/dev/null 2>&1 &
+  sh -c 'echo "    STARTED getattr"; exec /tmp/statprobe "$1" >/dev/null 2>&1' _ "$MNT" &
   local p=$!
   sleep 15
   kill -0 $p 2>/dev/null && echo "GETATTR-BLOCKED" || echo "GETATTR-COMPLETED"
+}
+
+# THE decisive probe. "The dext's queue is empty" only rules out tasks stuck
+# INSIDE the dext; it cannot rule out one stuck ABOVE us, in IOSCSIParallelFamily
+# or IOBlockStorageDriver, that was never dispatched to UserProcessParallelTask.
+# A leaked completion or reused tag at the end of the checkpoint burst would
+# jam that queue, and the dext would see exactly the silence we observed.
+#
+# Raw I/O to the same device goes through the whole block/SCSI stack while
+# bypassing APFS entirely:
+#   completes -> the device stack is alive, APFS is stuck on something of its
+#                own, and "not our I/O" becomes kernel-visible rather than
+#                inferred from our own logs
+#   hangs     -> the family queue is jammed and this is plausibly OUR bug
+raw_io_probe() {
+  echo "=== RAW I/O PROBE (bypasses APFS; is the device stack alive?)"
+  echo "--- raw read of /dev/r$DISK"
+  dd if="/dev/r$DISK" of=/dev/null bs=4096 count=1 >/dev/null 2>&1 &
+  local p=$!
+  sleep 20
+  kill -0 $p 2>/dev/null && echo "RAWREAD-BLOCKED" || echo "RAWREAD-COMPLETED"
+
+  # Read-only: no --write, so it issues flush ioctls without scribbling on the
+  # device. Flushes are what the checkpoint ends in, so this asks specifically
+  # whether the barrier path still works while APFS is wedged.
+  if [ -x ./dkflush ]; then
+    echo "--- dkflush (flush ioctls only, read-only)"
+    ./dkflush "/dev/r$DISK" >/Users/herko/logs/private-dkflush.out 2>&1 &
+    local q=$!
+    sleep 20
+    if kill -0 $q 2>/dev/null; then echo "DKFLUSH-BLOCKED"; else
+      echo "DKFLUSH-COMPLETED"; sed 's/^/    /' /Users/herko/logs/private-dkflush.out | tail -8
+    fi
+  else
+    echo "--- dkflush not built; skipping"
+  fi
 }
 
 if [ "$ORDER" = "readdir-first" ]; then
@@ -174,6 +216,8 @@ else
   do_getattr
   do_readdir
 fi
+
+raw_io_probe
 
 sleep 5
 kill $DT 2>/dev/null

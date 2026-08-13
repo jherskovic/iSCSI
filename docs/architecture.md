@@ -202,10 +202,12 @@ What is known:
   enumerates mounts queues behind the stuck vnode — which is ssh login, Finder,
   `ps`, and `spindump`. That also explains the old "even `fork` stops working"
   reading: it is shell/login startup blocking, not process creation itself.
-- **`mount_apfs` is still resident and blocking during the hang**, long after
-  `diskutil mount` reported success — so the mount plausibly never completes
-  and everything else stacks up behind it. Treat as strong suspicion, not
-  settled: see the instrumentation caveat below.
+- ~~`mount_apfs` is still resident and blocking, so the mount may never
+  complete~~ — **retracted.** That came from a per-process sleep tally taken
+  with the disarm bug described below, which turned it into "threads that once
+  touched the path" rather than "threads blocked on it". On the private mount
+  `mount_apfs` plainly returns: the script proceeds past it and the first
+  access succeeds.
 - Red herring: reads failing with sense `04/08/00` in the log are the
   *teardown* — the harness's trap kills the daemon, the arena goes away, and
   the dext fails everything after that. They are not the cause.
@@ -281,11 +283,43 @@ The watchdog logs stats every ~30 s *whenever* anything is live, so at least one
 due tick passed after that final write with no stats line: **the queue was empty
 and nothing was outstanding**. No watchdog failures, no aborts.
 
-So the first access's checkpoint completes cleanly on our device, and APFS then
-wedges with **zero I/O pending on us**. Caveat worth keeping: absence of later
-log lines cannot by itself separate "dext idle" from "logging stalled with the
-box" — but the `/Volumes` runs showed the same empty-queue signature
-independently.
+#### RETRACTED: "APFS wedges with zero I/O pending on us"
+
+That conclusion was wrong, and the error is worth naming: **an empty dext queue
+rules out tasks stuck INSIDE the dext, not tasks stuck ABOVE it.** A request
+that `IOSCSIParallelFamily`/`IOBlockStorageDriver` never dispatches to
+`UserProcessParallelTask` is invisible from our logs, and produces exactly the
+silence that was read as "idle".
+
+The discriminator is raw I/O to the same device, which goes through the whole
+block/SCSI stack while bypassing APFS entirely. During the wedge:
+
+| probe | result |
+|---|---|
+| first access (readdir) | completes |
+| second access (getattr), STARTED printed from userspace | **blocks** |
+| `dd if=/dev/rdiskN bs=4096 count=1` | **blocks** |
+| `dkflush` (flush ioctls, read-only) | **blocks** |
+
+**The whole block device stops serving I/O after the first access.** This was
+never APFS-specific — raw reads and flushes that never touch APFS hang the same
+way. APFS on a RAM disk passing the probe sequence remains true and still rules
+out "APFS is broken in this VM", but it never implied our stack was healthy.
+
+So the jam is between the block layer and us, and it is plausibly **ours**. The
+shape that fits: a lost or mis-tagged completion at the end of the checkpoint
+burst leaks an outstanding slot, the family's queue depth never recovers, it
+stops dispatching, and the dext goes quiet because nothing is being handed to
+it. The single watchdog line is consistent — `parked=512 fetched=512
+completed=511`, one task unaccounted.
+
+Also settled by the same run: the blocking process prints STARTED from
+userspace before its syscall, so this is the second *access*, not the second
+*process* blocking in fork/exec.
+
+Next: instrument the completion path — confirm whether every task the dext
+fetches is completed exactly once with the right tag, and what queue depth we
+report to the family versus how many completions it has seen.
 
 #### Superseded: READDIR is the operation that wedges
 
