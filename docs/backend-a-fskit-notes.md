@@ -176,12 +176,56 @@ the message `Module %s is disabled!` are both in the `mount` binary). This is a
   that is a private interface behind an entitlement check.
 - There is no `defaults` domain for FSKit yet and no CLI equivalent was found.
 
-**Resolution: toggle it once in System Settings → General → Login Items &
-Extensions → File System Extensions.** This is a one-time action per install and
-needs GUI access to the VM. Everything else in the chain is already in place.
+The expected resolution is to toggle it once in System Settings → General →
+Login Items & Extensions → File System Extensions. **That did not work: the UI
+does not allow the switch to be turned on** (reported by the project owner
+on 2026-08-13). So the blocker is currently unresolved.
 
 Note this is a real product consideration, not just a test-rig annoyance: any
-user of this project will have to flip the same switch after installing.
+user of this project will have to get past the same gate after installing.
+
+### Evidence gathered so far on the dead toggle
+
+All of these were checked and are **healthy**, so none of them is the cause:
+
+| checked | result |
+|---|---|
+| code signature of the `.appex` | valid; Apple Development, team 4A27X5PJP3 |
+| `codesign --verify --deep --strict` on the app | valid on disk, satisfies its Designated Requirement |
+| `com.apple.developer.fskit.fsmodule` entitlement | present and `true` |
+| duplicate registrations | none — only `/Applications/…/iSCSIFSExtension.appex` |
+| crash reports | none, in either user or system DiagnosticReports |
+
+The one suggestive signal: `launchd` repeatedly logs *"remove all extension
+instances … total of 0 extension instances were found to remove"*. The extension
+is registered but has **never been instantiated even once**.
+
+### Ordered suspects for the dead toggle
+
+1. **Missing `EXExtensionPrincipalClass`.** Apple's `ftp` module declares it and
+   ours does not (a Swift `@main` + `UnaryFileSystemExtension` extension is
+   supposed to supply its entry point via ExtensionFoundation). If ExtensionKit
+   cannot resolve a principal class it cannot instantiate the extension, which
+   would explain both the zero instances and an inert switch. Try
+   `@objc(ISCSIFileSystemExtension)` on the class plus the matching plist key.
+2. **The app is a Debug build** carrying `get-task-allow` and a
+   `__preview.dylib`; a Release build signed for distribution may be required
+   before the system will enable a filesystem module.
+3. **`LSMinimumSystemVersion`** — Apple's module sets it; ours does not.
+4. Turning on private-data logging (`sudo log config --mode private_data:on`,
+   viable since SIP is off) would unmask `fskit_agent`'s "New module list
+   <private>" records and likely name the actual rejection reason. This was
+   about to be tried when the VM froze.
+
+### Not blocked on any of this
+
+`scripts/vm-diskimage-on-fskit.sh` answers Backend A's decisive question — will
+DiskImages attach a raw image living on an FSKit-served volume? — using Apple's
+`exfat` FSKit module via `mount -F`, which ships enabled. It therefore
+sidesteps the consent gate entirely. **It has not been run yet** (its first run
+found the `hdiutil` tab-padding bug, since fixed). Run it before investing more
+in the toggle: if DiskImages refuses there, Backend A is not viable in this
+shape and the toggle does not matter.
 
 ## Prototype plan (deliberately not the real extension)
 
