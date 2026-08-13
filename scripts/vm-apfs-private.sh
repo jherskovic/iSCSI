@@ -217,16 +217,35 @@ ioreg_probe() {
   #
   # Compare these against a healthy boot: a nonzero outstanding/pending count
   # here would name what the block driver is still waiting for.
-  # Only IOBlockStorageDriver's Statistics dict carries "Retries" keys, which is
-  # what separates it from the APFS volume statistics that otherwise flood this
-  # output with tens of thousands of characters per volume.
-  echo "=== IOBlockStorageDriver stats while wedged"
-  ioreg -c IOBlockStorageDriver -r -l -w0 2>&1 | grep -E '"Statistics".*Retries' | head -4
-  echo "IOREG-BLOCKSTORAGE-RETURNED"
-  echo "=== our SCSI peripheral device state while wedged"
-  ioreg -c IOSCSIPeripheralDeviceType00 -r -l -w0 2>&1 \
-    | grep -iE '"(BSD Name|Protocol Characteristics|Device Characteristics|IOMinimumSegment|Power|Ready)"' | head -8
-  echo "IOREG-PERIPHERAL-RETURNED"
+  # Bounded, and with a CONTROL, because ioreg hangs here too.
+  #
+  # ukopen's IOServiceGetMatchingService returns instantly while wedged, but
+  # that is only a lookup. `ioreg -l` SERIALIZES each object's properties, and
+  # IOBlockStorageDriver computes its Statistics dict on demand — so if that
+  # driver is stuck holding its own lock, serializing it blocks while a plain
+  # lookup does not.
+  #
+  # That distinction only means something with a control: if ioreg on an
+  # unrelated class ALSO hangs, the registry is globally unserializable and this
+  # says nothing. Same discipline that killed the sample-based conclusion.
+  bounded_ioreg() {   # bounded_ioreg <label> <class> <filter-regex>
+    local label="$1" cls="$2" re="$3"
+    echo "--- ioreg $label ($cls)"
+    ioreg -c "$cls" -r -l -w0 > "/Users/herko/logs/ioreg-$label.out" 2>&1 &
+    local ip=$!
+    local i=0
+    while kill -0 $ip 2>/dev/null; do
+      sleep 1; i=$((i+1))
+      [ $i -ge 25 ] && { kill -9 $ip 2>/dev/null; echo "IOREG-$label-HUNG"; return; }
+    done
+    grep -E "$re" "/Users/herko/logs/ioreg-$label.out" | head -4
+    echo "IOREG-$label-RETURNED after ${i}s"
+  }
+
+  # Control first: an unrelated class with no storage involvement.
+  bounded_ioreg CONTROL IOHIDSystem '"IOClass"|"IOProviderClass"'
+  bounded_ioreg BLOCKSTORAGE IOBlockStorageDriver '"Statistics".*Retries'
+  bounded_ioreg PERIPHERAL IOSCSIPeripheralDeviceType00 '"(BSD Name|Protocol Characteristics)"' 
   sync   # force the tee'd run log out; a forced power-off loses page cache
 }
 
