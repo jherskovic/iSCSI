@@ -246,6 +246,30 @@ raw_io_probe
 # that UserProcessParallelTask blocks the default queue, which is also what
 # services NewUserClient and ExternalMethod and would explain why
 # `iscsictl dext-stats` hangs while the device is wedged.
+# Is IOKit itself still alive while wedged?
+#
+# `iscsictl dext-stats` hangs during a wedge, which looked like proof that the
+# dext cannot service a request. It is not, until this runs: every other
+# inspection tool also hangs when wedged, and `sample` was shown to hang on an
+# unrelated process just as readily as on the dext. So try a lookup + user
+# client open against a service with nothing to do with storage.
+#
+#   returns  -> IOKit is live, and the dext's hang is specific to us
+#   hangs    -> IOKit is globally stuck, and the dext's hang means nothing
+#
+# A refused open still counts as "returns" — liveness is the question, not
+# access.
+if [ -x ./ukopen ]; then
+  echo "=== IOKit liveness while wedged: UNRELATED service (control)"
+  ./ukopen IOHIDSystem 2>&1 | sed 's/^/    /'
+  echo "IOKIT-CONTROL-RETURNED"
+  echo "=== IOKit liveness while wedged: OUR dext"
+  ./ukopen iSCSIDext 2>&1 | sed 's/^/    /'
+  echo "IOKIT-DEXT-RETURNED"
+else
+  echo "=== ukopen not built; skipping IOKit liveness probe"
+fi
+
 # Control: an ordinary process that touches nothing storage-related. If sample
 # works on IT but hangs on the dext, the dext is genuinely stuck. If sample
 # hangs on both, the wedge has simply defeated another inspection tool and says
