@@ -3,9 +3,11 @@
 A modern iSCSI initiator for macOS 26/27 on Apple Silicon. macOS ships no
 initiator; the old open-source option is a dead kext. This project puts the
 iSCSI/TCP protocol engine in a user-space Swift daemon and presents the LUN as
-a real block device — first via an FSKit/`hdiutil` backend (works today, full
-speed), and ultimately via a DriverKit virtual SCSI HBA once Apple lifts the
-software-controller throughput limit (see `docs/architecture.md`).
+a real block device — via an FSKit/`hdiutil` backend (implemented; the block
+device comes from Apple's DiskImages framework, so it sidesteps the DriverKit
+wedge, but it is not yet proven end-to-end), and ultimately via a DriverKit
+virtual SCSI HBA once Apple lifts the software-controller throughput limit (see
+`docs/architecture.md`).
 
 ## Status
 
@@ -16,7 +18,7 @@ software-controller throughput limit (see `docs/architecture.md`).
 | 2 | Negotiation engine, login state machine, CHAP | ✅ done |
 | 3 | Session/connection engine, scriptable MockTarget, hostile-script suite | ✅ done |
 | 4 | `NetworkTransport` (TCP), `iscsictl`, iscsid daemon (BlockDevice + XPC) | ✅ **verified vs real TrueNAS**; daemon built + tested |
-| 5 | FSKit + `hdiutil` block-device backend | 🚧 skeleton scaffolded (needs Xcode signing + API reconciliation) |
+| 5 | FSKit + `hdiutil` block-device backend | 🚧 module implemented, builds, signs, embeds, and is **discovered by FSKit**; blocked on a one-time System Settings enable before the first mount |
 | 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **real disk; ExFAT works end-to-end, APFS now formats and mounts**; see the open issues below |
 | 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
 

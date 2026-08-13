@@ -205,6 +205,23 @@ newfs_apfs -v backendA /dev/diskN
 
 and run the existing two-access probe from `vm-scratch-apfs.sh` against it.
 
+`scripts/vm-fskit-proto.sh` automates the whole sequence with every step
+bounded, and ends by grepping the extension's log for the resource kind it
+received and for `SYNCHRONIZE` calls — so one run answers both questions.
+
+### Ordered suspects if the first run fails
+
+Do not implement these speculatively; check them in order only against an actual
+failure:
+
+1. **Extension never launches at mount** → add `EXExtensionPrincipalClass`
+   (`$(PRODUCT_MODULE_NAME).ISCSIFileSystemExtension`). Apple's ftp module sets
+   it; a Swift `@main` extension is supposed not to need it.
+2. **Mount succeeds but no read/write calls arrive** → the likely causes are the
+   missing `FSVolumeOpenCloseOperations` conformance (the image is opened before
+   it is read) and the `inhibitKernelOffloadedIO` item attribute, which controls
+   whether the kernel bypasses the extension for data transfers.
+
 **Deferred, not blocking:** the loopback-writeback deadlock. Dirty pages of the
 disk image are written back through a userspace filesystem, which is the classic
 NFS-loopback hazard. Belongs in a soak test once the basic path works.
