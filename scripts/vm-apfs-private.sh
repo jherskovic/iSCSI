@@ -21,6 +21,12 @@
 # goes down and every copyinstr then fails with "invalid user access".
 set -uo pipefail
 cd ~/iSCSI || exit 1
+
+# Mirror all output to a file on the VM as well as stdout. The ssh pipeline that
+# normally carries this can be buffered by a downstream filter (only grep has
+# --line-buffered; cut and tail do not), and it dies with the box. A file on the
+# guest survives both and can be read from a second connection.
+exec > >(tee /Users/herko/logs/private-run.out) 2>&1
 mkdir -p /Users/herko/logs /Users/herko/mnt
 
 TARGET=${TARGET:-iqn.me.herko.planet-express:iscsi-driver-testing}
@@ -305,7 +311,10 @@ echo "IOREG-PERIPHERAL-RETURNED"
 # nothing about the dext — the same ambiguity that made the silent log
 # unreadable. Do not interpret a hung dext sample without this.
 echo "=== sampling CONTROL process (plain sleep, pid $CONTROL_PID)"
-sample "$CONTROL_PID" 2 -file /Users/herko/logs/control-wedged.txt >/dev/null 2>&1
+sample "$CONTROL_PID" 2 -file /Users/herko/logs/control-wedged.txt >/dev/null 2>&1 &
+csp=$!
+for _ in $(seq 1 20); do kill -0 $csp 2>/dev/null || break; sleep 1; done
+kill -9 $csp 2>/dev/null
 if sed -n '/Call graph/,/Total number/p' /Users/herko/logs/control-wedged.txt 2>/dev/null | head -8; then
   echo "CONTROL-SAMPLE-OK"
 else
@@ -316,8 +325,16 @@ echo "=== sampling the dext process(es) while wedged"
 while read -r p; do
   [ -n "$p" ] || continue
   echo "--- dext pid $p"
-  sample "$p" 3 -file "/Users/herko/logs/dext-wedged-$p.txt" >/dev/null 2>&1
-  sed -n '/Call graph/,/Total number/p' "/Users/herko/logs/dext-wedged-$p.txt" 2>/dev/null | head -40
+  # BOUNDED: sample is known to hang outright during a wedge (it hangs on an
+  # ordinary sleep process too), and macOS has no timeout(1). Without this the
+  # script never finishes, so nothing downstream of it ever runs and a pipeline
+  # reading our stdout never flushes.
+  sample "$p" 3 -file "/Users/herko/logs/dext-wedged-$p.txt" >/dev/null 2>&1 &
+  sp=$!
+  for _ in $(seq 1 20); do kill -0 $sp 2>/dev/null || break; sleep 1; done
+  if kill -0 $sp 2>/dev/null; then kill -9 $sp 2>/dev/null; echo "    SAMPLE-HUNG (expected)"; else
+    sed -n '/Call graph/,/Total number/p' "/Users/herko/logs/dext-wedged-$p.txt" 2>/dev/null | head -40
+  fi
 done < "$DEXT_PIDFILE"
 
 sleep 5
