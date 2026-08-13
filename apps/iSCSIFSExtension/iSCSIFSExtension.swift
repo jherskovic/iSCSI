@@ -244,7 +244,10 @@ final class DaemonStore: LUNStore {
     /// which is unaligned against a 4Kn LUN — so every request is realigned
     /// here. Skipping this makes the APFS probe fail with EIO while ordinary
     /// file reads still work, because the page cache happens to be aligned.
-    private let blockSize: UInt64
+    ///
+    /// The arithmetic lives in `BlockAligner` (iSCSIKit) so it can be unit
+    /// tested without a mounted volume and a live target.
+    private let aligner: BlockAligner
 
     private(set) var readCount = 0
     private(set) var writeCount = 0
@@ -294,8 +297,8 @@ final class DaemonStore: LUNStore {
         }
         if let capError { throw capError }
         byteCount = blockSize.uint64Value * blockCount.uint64Value
-        self.blockSize = blockSize.uint64Value
-        guard byteCount > 0, self.blockSize > 0 else { throw POSIXError(.EIO) }
+        guard byteCount > 0, blockSize.uint64Value > 0 else { throw POSIXError(.EIO) }
+        aligner = BlockAligner(blockSize: blockSize.uint64Value, capacity: byteCount)
 
         fsLog.log("DaemonStore session=\(handle, privacy: .public) size=\(self.byteCount) blockSize=\(blockSize.uint64Value)")
     }
@@ -356,23 +359,13 @@ final class DaemonStore: LUNStore {
         if let err { throw err }
     }
 
-    private func alignDown(_ v: UInt64) -> UInt64 { (v / blockSize) * blockSize }
-    private func alignUp(_ v: UInt64) -> UInt64 { ((v + blockSize - 1) / blockSize) * blockSize }
-
     func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int {
-        guard offset < byteCount else { return 0 }
-        let clamped = min(Int(byteCount - offset), min(length, buffer.count))
-        guard clamped > 0 else { return 0 }
+        guard let plan = aligner.plan(offset: offset, length: min(length, buffer.count)) else { return 0 }
 
-        // Widen to block boundaries, then slice out what was actually asked for.
-        let start = alignDown(offset)
-        let end = min(alignUp(offset + UInt64(clamped)), byteCount)
-        let data = try rawRead(offset: start, length: Int(end - start))
-
-        let skip = Int(offset - start)
-        let n = min(clamped, data.count - skip)
+        let data = try rawRead(offset: plan.alignedOffset, length: plan.alignedLength)
+        let n = min(plan.count, data.count - plan.skip)
         data.withUnsafeBytes { src in
-            buffer.baseAddress?.copyMemory(from: src.baseAddress! + skip, byteCount: n)
+            buffer.baseAddress?.copyMemory(from: src.baseAddress! + plan.skip, byteCount: n)
         }
         lock.lock(); readCount += 1; readBytes += UInt64(n); lock.unlock()
         return n
@@ -380,30 +373,23 @@ final class DaemonStore: LUNStore {
 
     func write(_ data: Data, at offset: UInt64) throws -> Int {
         guard offset < byteCount else { throw POSIXError(.ENOSPC) }
-        let clamped = min(Int(byteCount - offset), data.count)
-        guard clamped > 0 else { return 0 }
-        let payload = clamped == data.count ? data : Data(data.prefix(clamped))
+        guard let plan = aligner.plan(offset: offset, length: data.count) else { return 0 }
+        let payload = plan.count == data.count ? data : Data(data.prefix(plan.count))
 
-        let headAligned = offset % blockSize == 0
-        let tailAligned = (offset + UInt64(clamped)) % blockSize == 0
-
-        if headAligned && tailAligned {
-            try rawWrite(offset: offset, data: payload)
+        if plan.isExact {
+            try rawWrite(offset: plan.alignedOffset, data: payload)
         } else {
             // Read-modify-write the partial edge blocks. Serialised so two
             // partial writes to the same block cannot lose an update.
             ioLock.lock()
             defer { ioLock.unlock() }
-            let start = alignDown(offset)
-            let end = min(alignUp(offset + UInt64(clamped)), byteCount)
-            var block = try rawRead(offset: start, length: Int(end - start))
-            let skip = Int(offset - start)
-            block.replaceSubrange(skip ..< (skip + clamped), with: payload)
-            try rawWrite(offset: start, data: block)
+            var block = try rawRead(offset: plan.alignedOffset, length: plan.alignedLength)
+            block.replaceSubrange(plan.skip ..< (plan.skip + plan.count), with: payload)
+            try rawWrite(offset: plan.alignedOffset, data: block)
         }
 
-        lock.lock(); writeCount += 1; writeBytes += UInt64(clamped); lock.unlock()
-        return clamped
+        lock.lock(); writeCount += 1; writeBytes += UInt64(plan.count); lock.unlock()
+        return plan.count
     }
 
     /// SYNCHRONIZE CACHE. FSKit never signals barriers (see

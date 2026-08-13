@@ -22,7 +22,7 @@ Apple lifts the software-controller throughput limit (see
 | 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **real disk; ExFAT works end-to-end, APFS now formats and mounts**; see the open issues below |
 | 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
 
-141 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
+151 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
 clean over millions of inputs. The full protocol stack is **verified end-to-end
 against a real TrueNAS target** (login negotiation → INQUIRY → READ CAPACITY →
 write + SYNCHRONIZE CACHE → read-back verify → logout).
