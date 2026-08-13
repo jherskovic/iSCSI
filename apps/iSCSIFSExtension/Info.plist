@@ -17,8 +17,18 @@
         <key>EXExtensionPointIdentifier</key>
         <string>com.apple.fskit.fsmodule</string>
     </dict>
-    <key>FSSupportsBlockResources</key>
+    <!-- Backend A has no block device: the LUN is served as a file. Both URL
+         resource kinds are advertised so the first mount tells us empirically
+         which one /sbin/mount hands over (it recognises both keys). See
+         docs/backend-a-fskit-notes.md. -->
+    <key>FSSupportsPathURLs</key>
     <true/>
+    <key>FSSupportsGenericURLResources</key>
+    <true/>
+    <key>FSSupportedSchemes</key>
+    <array>
+        <string>iscsi</string>
+    </array>
     <key>FSShortName</key>
     <string>iSCSI</string>
 </dict>

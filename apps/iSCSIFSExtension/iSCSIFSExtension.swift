@@ -1,17 +1,33 @@
 //
 //  iSCSIFSExtension.swift
-//  Backend A: an FSKit module that presents each iSCSI LUN as a regular file
-//  whose reads/writes are serviced over iSCSI (via XPC to iscsid). The user
-//  then runs `hdiutil attach -imagekey diskimage-class=CRawDiskImage <file>`
-//  to obtain a real /dev/diskN — no DriverKit, no throughput ceiling.
+//  Backend A: an FSKit module that presents a LUN as a regular file, so that
+//  `hdiutil attach -imagekey diskimage-class=CRawDiskImage <file>` yields a real
+//  /dev/diskN. The block device then comes from Apple's DiskImages framework
+//  instead of our DriverKit dext, which is how this backend routes around the
+//  wedge documented in docs/feedback-virtual-scsi-wedge.md.
 //
-//  ⚠️ API RECONCILIATION NEEDED AT BUILD TIME: FSKit's documented model is
-//  built around *consuming* an FSBlockDeviceResource to implement a
-//  filesystem. Producing a block-device-backing file from a network source is
-//  the DTS-suggested stopgap (forum thread 837879) but has no shipping
-//  reference. Verify the exact resource/probe model against the installed
-//  FSKit before filling in the TODOs — the structure below is the intended
-//  shape, not a compile-verified implementation.
+//  ── CURRENT STAGE: PROTOTYPE ────────────────────────────────────────────────
+//  The single file served here is backed by a LOCAL FILE, not by iSCSI. That is
+//  deliberate. Two Backend A risks are untested and decide whether the design
+//  works at all, and neither involves iSCSI:
+//
+//    1. Will DiskImages attach a file that lives on an FSKit (non-local)
+//       volume at all?
+//    2. Does flush/sync propagate from the disk image down to this extension?
+//       (The barrier saga in docs/architecture.md is why this is verified
+//       rather than assumed — see `synchronize`, which logs every call.)
+//
+//  Answering those with a local backing store keeps the failure surface small.
+//  Wiring reads/writes to iscsid over XPC is the next step, and is marked
+//  TODO(iscsi) below.
+//
+//  API notes (see docs/backend-a-fskit-notes.md for the full reconnaissance):
+//   - FSVolume.Operations is deprecated in macOS 27 in favour of FSVolumeHandler,
+//     but FSVolumeHandler is V3-only and the test VM runs 26.6.1, so this
+//     targets FSVolume.Operations on purpose.
+//   - FSGenericURLResource/FSPathURLResource are macOS 26.0. The Info.plist
+//     advertises both PathURL and generic-URL support so that the first mount
+//     attempt tells us empirically which one /sbin/mount hands over.
 //
 
 import FSKit
@@ -20,38 +36,410 @@ import os
 
 let fsLog = Logger(subsystem: "me.herko.iSCSIInitiator.fsext", category: "fs")
 
-/// Extension entry point. The Info.plist declares this as the principal class.
+/// Name of the single file the volume exposes; this is what hdiutil attaches.
+private let kImageName = "lun0.img"
+
+/// Prototype image size (512 MiB), matching the dext's scratch disk so the
+/// existing probes in scripts/vm-scratch-apfs.sh compare like with like.
+private let kDefaultImageBytes: UInt64 = 512 * 1024 * 1024
+
+/// Block size reported through statfs. 512 keeps parity with the scratch dext.
+private let kBlockSize = 512
+
+// MARK: - Extension entry point
+
+/// The Info.plist declares this as the principal class.
 @main
 final class ISCSIFileSystemExtension: UnaryFileSystemExtension {
-    var fileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
-        ISCSIUnaryFileSystem()
+    var fileSystem: ISCSIUnaryFileSystem { ISCSIUnaryFileSystem() }
+}
+
+// MARK: - Backing store
+
+/// The bytes behind `lun0.img`.
+///
+/// TODO(iscsi): replace this with an XPC client to iscsid — `read(lba:count:)`,
+/// `write(lba:data:)`, `flush()`, `capacity()` — translating byte offset to
+/// LBA × blockSize. The protocol boundary is deliberately this narrow so the
+/// swap touches nothing else in this file.
+final class BackingStore {
+    private let fd: Int32
+    private let lock = NSLock()
+    let byteCount: UInt64
+
+    /// Opens (creating if needed) a sparse file of `kDefaultImageBytes`.
+    init(path: String) throws {
+        let opened = open(path, O_RDWR | O_CREAT, 0o644)
+        guard opened >= 0 else { throw POSIXError.Code(rawValue: errno).map { POSIXError($0) } ?? POSIXError(.EIO) }
+        fd = opened
+
+        var st = stat()
+        if fstat(fd, &st) == 0, st.st_size > 0 {
+            byteCount = UInt64(st.st_size)
+        } else {
+            // Sparse: ftruncate does not allocate blocks until written.
+            guard ftruncate(fd, off_t(kDefaultImageBytes)) == 0 else {
+                close(opened)
+                throw POSIXError(.EIO)
+            }
+            byteCount = kDefaultImageBytes
+        }
+        fsLog.log("BackingStore opened \(path, privacy: .public) size=\(self.byteCount)")
+    }
+
+    deinit { close(fd) }
+
+    func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int {
+        guard offset < byteCount else { return 0 }
+        let clamped = min(Int(byteCount - offset), length)
+        lock.lock(); defer { lock.unlock() }
+        let n = pread(fd, buffer.baseAddress, clamped, off_t(offset))
+        guard n >= 0 else { throw POSIXError(.EIO) }
+        return n
+    }
+
+    func write(_ data: Data, at offset: UInt64) throws -> Int {
+        guard offset < byteCount else { throw POSIXError(.ENOSPC) }
+        let clamped = min(Int(byteCount - offset), data.count)
+        lock.lock(); defer { lock.unlock() }
+        let n = data.withUnsafeBytes { raw in
+            pwrite(fd, raw.baseAddress, clamped, off_t(offset))
+        }
+        guard n >= 0 else { throw POSIXError(.EIO) }
+        return n
+    }
+
+    /// Whether a flush ever reaches us is precisely question (2) above.
+    func flush() throws {
+        lock.lock(); defer { lock.unlock() }
+        guard fcntl(fd, F_FULLFSYNC) == 0 else { throw POSIXError(.EIO) }
     }
 }
 
-/// One iSCSI-backed filesystem instance. Presents a flat volume containing a
-/// single file, `lun.img`, sized to the LUN capacity; reading/writing that
-/// file maps to SCSI READ/WRITE against the session held by iscsid.
-final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
-    /// Bridge to the daemon that owns the live iSCSI session. Reads/writes at
-    /// the file level become SCSI READ(16)/WRITE(16) over that session; the
-    /// FSKit file offset maps directly to LBA × blockSize.
-    private let daemon = DaemonBridge()
+// MARK: - Items
 
-    // TODO(fskit): implement the probe/load/mount operations required by the
-    // installed FSKit version:
-    //   - probeResource: claim our resource type (see API note above)
-    //   - loadResource / mount: attach to the daemon's session, learn capacity
-    //   - the volume's single FSItem read(into:at:)/write(from:at:) forward to
-    //     daemon.read(lba:count:) / daemon.write(lba:data:), translating byte
-    //     offset ↔ LBA and honoring the block size.
-    //   - sync/fsync → SCSI SYNCHRONIZE CACHE (crash consistency; see the
-    //     e2e crash-consistency test).
+/// A file or directory in the prototype volume. The volume is flat: a root
+/// directory containing exactly one file.
+final class ProtoItem: FSItem {
+    let name: FSFileName
+    let itemType: FSItem.ItemType
+    let itemID: FSItem.Identifier
+    var size: UInt64
+
+    init(name: String, type: FSItem.ItemType, id: FSItem.Identifier, size: UInt64) {
+        self.name = FSFileName(string: name)
+        self.itemType = type
+        self.itemID = id
+        self.size = size
+        super.init()
+    }
+
+    func attributes(matching request: FSItem.GetAttributesRequest) -> FSItem.Attributes {
+        let a = FSItem.Attributes()
+        let want = request.wantedAttributes
+        if want.contains(.type) { a.type = itemType }
+        if want.contains(.mode) { a.mode = itemType == .directory ? 0o755 : 0o644 }
+        if want.contains(.linkCount) { a.linkCount = 1 }
+        if want.contains(.uid) { a.uid = 0 }
+        if want.contains(.gid) { a.gid = 0 }
+        if want.contains(.flags) { a.flags = 0 }
+        if want.contains(.size) { a.size = size }
+        if want.contains(.allocSize) { a.allocSize = size }
+        if want.contains(.fileID) { a.fileID = itemID }
+        if want.contains(.parentID) {
+            a.parentID = itemType == .directory ? .parentOfRoot : .rootDirectory
+        }
+        let now = timespec(tv_sec: time(nil), tv_nsec: 0)
+        if want.contains(.accessTime) { a.accessTime = now }
+        if want.contains(.modifyTime) { a.modifyTime = now }
+        if want.contains(.changeTime) { a.changeTime = now }
+        if want.contains(.birthTime) { a.birthTime = now }
+        return a
+    }
 }
 
-/// XPC client to iscsid. The daemon owns the ISCSISession from iSCSIKit and
-/// exposes block read/write/flush/capacity over a Mach service.
-struct DaemonBridge {
-    // TODO: NSXPCConnection to "me.herko.iSCSIInitiator.daemon" with a shared
-    // @objc protocol: capacity() -> (blockSize, blockCount),
-    // read(lba, count) -> Data, write(lba, Data), flush().
+/// Stable ID for the one file; root is FSItem.Identifier.rootDirectory (2).
+private let kImageItemID = FSItem.Identifier(rawValue: 3)!
+
+// MARK: - File system
+
+final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
+
+    /// Resolves the backing path from whichever resource kind FSKit hands us,
+    /// and logs which one it was — that answers, empirically, which Info.plist
+    /// resource key `/sbin/mount` actually honours.
+    private func backingPath(for resource: FSResource) -> String? {
+        if let pathURL = resource as? FSPathURLResource {
+            fsLog.log("resource: FSPathURLResource \(pathURL.url.absoluteString, privacy: .public)")
+            return pathURL.url.path
+        }
+        if let generic = resource as? FSGenericURLResource {
+            let url = generic.url
+            fsLog.log("resource: FSGenericURLResource \(url.absoluteString, privacy: .public)")
+            // TODO(iscsi): this URL is the target/LUN identifier; hand it to
+            // iscsid instead of mapping it onto a local file.
+            let tag = url.lastPathComponent.isEmpty ? "default" : url.lastPathComponent
+            return "/Users/Shared/iscsi-proto-\(tag).img"
+        }
+        fsLog.error("resource: unsupported kind \(String(describing: type(of: resource)), privacy: .public)")
+        return nil
+    }
+
+    func probeResource(resource: FSResource,
+                       replyHandler reply: @escaping (FSProbeResult?, (any Error)?) -> Void) {
+        guard backingPath(for: resource) != nil else {
+            reply(FSProbeResult.notRecognized, nil)
+            return
+        }
+        let containerID = FSContainerIdentifier(uuid: UUID())
+        reply(FSProbeResult.usable(name: "iSCSIProto", containerID: containerID), nil)
+    }
+
+    func loadResource(resource: FSResource,
+                      options: FSTaskOptions,
+                      replyHandler reply: @escaping (FSVolume?, (any Error)?) -> Void) {
+        guard let path = backingPath(for: resource) else {
+            reply(nil, fs_errorForPOSIXError(ENOTSUP))
+            return
+        }
+        do {
+            let store = try BackingStore(path: path)
+            let volume = ProtoVolume(store: store)
+            containerStatus = .active(status: fs_errorForPOSIXError(0))
+            fsLog.log("loadResource ok, volume ready")
+            reply(volume, nil)
+        } catch {
+            fsLog.error("loadResource failed: \(error.localizedDescription, privacy: .public)")
+            reply(nil, fs_errorForPOSIXError(EIO))
+        }
+    }
+
+    func unloadResource(resource: FSResource,
+                        options: FSTaskOptions,
+                        replyHandler reply: @escaping ((any Error)?) -> Void) {
+        fsLog.log("unloadResource")
+        reply(nil)
+    }
+}
+
+// MARK: - Volume
+
+final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations {
+    private let store: BackingStore
+    private let root: ProtoItem
+    private let image: ProtoItem
+
+    init(store: BackingStore) {
+        self.store = store
+        self.root = ProtoItem(name: "/", type: .directory, id: .rootDirectory, size: 0)
+        self.image = ProtoItem(name: kImageName, type: .file, id: kImageItemID, size: store.byteCount)
+        super.init(volumeID: FSVolume.Identifier(uuid: UUID()),
+                   volumeName: FSFileName(string: "iSCSIProto"))
+    }
+
+    // MARK: FSVolumePathConfOperations
+
+    var maximumLinkCount: Int { 1 }
+    var maximumNameLength: Int { 255 }
+    var restrictsOwnershipChanges: Bool { true }
+    var truncatesLongNames: Bool { false }
+    var maximumFileSize: UInt64 { store.byteCount }
+
+    // MARK: FSVolume.Operations
+
+    var supportedVolumeCapabilities: FSVolume.SupportedCapabilities {
+        let caps = FSVolume.SupportedCapabilities()
+        caps.supportsPersistentObjectIDs = true
+        caps.supports64BitObjectIDs = true
+        caps.supportsSparseFiles = true
+        caps.supportsHiddenFiles = true
+        caps.caseFormat = .sensitive
+        return caps
+    }
+
+    var volumeStatistics: FSStatFSResult {
+        let s = FSStatFSResult(fileSystemTypeName: "iSCSIProto")
+        let blocks = store.byteCount / UInt64(kBlockSize)
+        s.blockSize = kBlockSize
+        s.ioSize = 1 << 20
+        s.totalBlocks = blocks
+        s.availableBlocks = 0
+        s.freeBlocks = 0
+        s.usedBlocks = blocks
+        s.totalBytes = store.byteCount
+        s.availableBytes = 0
+        s.freeBytes = 0
+        s.usedBytes = store.byteCount
+        s.totalFiles = 1
+        s.freeFiles = 0
+        return s
+    }
+
+    func activate(options: FSTaskOptions,
+                  replyHandler reply: @escaping (FSItem?, (any Error)?) -> Void) {
+        fsLog.log("activate")
+        reply(root, nil)
+    }
+
+    func deactivate(options: FSDeactivateOptions,
+                    replyHandler reply: @escaping ((any Error)?) -> Void) {
+        fsLog.log("deactivate")
+        reply(nil)
+    }
+
+    func mount(options: FSTaskOptions, replyHandler reply: @escaping ((any Error)?) -> Void) {
+        fsLog.log("mount")
+        reply(nil)
+    }
+
+    func unmount(replyHandler reply: @escaping () -> Void) {
+        fsLog.log("unmount")
+        try? store.flush()
+        reply()
+    }
+
+    /// Question (2): does a flush from the attached disk image reach us?
+    /// Logged unconditionally so the answer is visible even if nothing else is.
+    func synchronize(flags: FSSyncFlags, replyHandler reply: @escaping ((any Error)?) -> Void) {
+        fsLog.log("SYNCHRONIZE flags=\(flags.rawValue)")
+        do {
+            try store.flush()
+            reply(nil)
+        } catch {
+            reply(fs_errorForPOSIXError(EIO))
+        }
+    }
+
+    func lookupItem(named name: FSFileName,
+                    inDirectory directory: FSItem,
+                    replyHandler reply: @escaping (FSItem?, FSFileName?, (any Error)?) -> Void) {
+        guard name.string == kImageName else {
+            reply(nil, nil, fs_errorForPOSIXError(ENOENT))
+            return
+        }
+        reply(image, image.name, nil)
+    }
+
+    func reclaimItem(_ item: FSItem, replyHandler reply: @escaping ((any Error)?) -> Void) {
+        reply(nil)
+    }
+
+    func getAttributes(_ desiredAttributes: FSItem.GetAttributesRequest,
+                       of item: FSItem,
+                       replyHandler reply: @escaping (FSItem.Attributes?, (any Error)?) -> Void) {
+        guard let proto = item as? ProtoItem else {
+            reply(nil, fs_errorForPOSIXError(EINVAL))
+            return
+        }
+        reply(proto.attributes(matching: desiredAttributes), nil)
+    }
+
+    func setAttributes(_ newAttributes: FSItem.SetAttributesRequest,
+                       on item: FSItem,
+                       replyHandler reply: @escaping (FSItem.Attributes?, (any Error)?) -> Void) {
+        // The image is fixed-size; accept and report current state rather than
+        // failing, since disk-image attach may set timestamps.
+        guard let proto = item as? ProtoItem else {
+            reply(nil, fs_errorForPOSIXError(EINVAL))
+            return
+        }
+        let request = FSItem.GetAttributesRequest()
+        request.wantedAttributes = [.type, .mode, .size, .fileID, .parentID, .linkCount]
+        reply(proto.attributes(matching: request), nil)
+    }
+
+    func enumerateDirectory(_ directory: FSItem,
+                            startingAt cookie: FSDirectoryCookie,
+                            verifier: FSDirectoryVerifier,
+                            attributes: FSItem.GetAttributesRequest?,
+                            packer: FSDirectoryEntryPacker,
+                            replyHandler reply: @escaping (FSDirectoryVerifier, (any Error)?) -> Void) {
+        // Per the header: pack "." and ".." only when `attributes` is nil.
+        var next: UInt64 = cookie.rawValue
+        let verifierOut = FSDirectoryVerifier(rawValue: 1)
+
+        if next == 0 {
+            if attributes == nil {
+                _ = packer.packEntry(name: FSFileName(string: "."), itemType: .directory,
+                                     itemID: .rootDirectory, nextCookie: FSDirectoryCookie(rawValue: 1),
+                                     attributes: nil)
+                _ = packer.packEntry(name: FSFileName(string: ".."), itemType: .directory,
+                                     itemID: .parentOfRoot, nextCookie: FSDirectoryCookie(rawValue: 2),
+                                     attributes: nil)
+            }
+            _ = packer.packEntry(name: image.name, itemType: .file, itemID: kImageItemID,
+                                 nextCookie: FSDirectoryCookie(rawValue: 3),
+                                 attributes: attributes.map { image.attributes(matching: $0) })
+            next = 3
+        }
+        reply(verifierOut, nil)
+    }
+
+    // MARK: FSVolume.ReadWriteOperations
+
+    func read(from item: FSItem,
+              at offset: off_t,
+              length: Int,
+              into buffer: FSMutableFileDataBuffer,
+              replyHandler reply: @escaping (Int, (any Error)?) -> Void) {
+        do {
+            let n = try buffer.withUnsafeMutableBytes { raw -> Int in
+                try store.read(into: raw, at: UInt64(offset), length: min(length, raw.count))
+            }
+            reply(n, nil)
+        } catch {
+            reply(0, fs_errorForPOSIXError(EIO))
+        }
+    }
+
+    func write(contents: Data,
+               to item: FSItem,
+               at offset: off_t,
+               replyHandler reply: @escaping (Int, (any Error)?) -> Void) {
+        do {
+            reply(try store.write(contents, at: UInt64(offset)), nil)
+        } catch {
+            reply(0, fs_errorForPOSIXError(EIO))
+        }
+    }
+
+    // MARK: Unsupported mutations
+    //
+    // The volume is a fixed, single-file namespace: the image file is created
+    // by `loadResource` and never renamed, deleted, or joined by siblings.
+
+    func createItem(named name: FSFileName, type: FSItem.ItemType, inDirectory directory: FSItem,
+                    attributes newAttributes: FSItem.SetAttributesRequest,
+                    replyHandler reply: @escaping (FSItem?, FSFileName?, (any Error)?) -> Void) {
+        reply(nil, nil, fs_errorForPOSIXError(EROFS))
+    }
+
+    func createSymbolicLink(named name: FSFileName, inDirectory directory: FSItem,
+                            attributes newAttributes: FSItem.SetAttributesRequest,
+                            linkContents contents: FSFileName,
+                            replyHandler reply: @escaping (FSItem?, FSFileName?, (any Error)?) -> Void) {
+        reply(nil, nil, fs_errorForPOSIXError(ENOTSUP))
+    }
+
+    func createLink(to item: FSItem, named name: FSFileName, inDirectory directory: FSItem,
+                    replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void) {
+        reply(nil, fs_errorForPOSIXError(ENOTSUP))
+    }
+
+    func renameItem(_ item: FSItem, inDirectory sourceDirectory: FSItem, named sourceName: FSFileName,
+                    to destinationName: FSFileName, inDirectory destinationDirectory: FSItem,
+                    overItem: FSItem?,
+                    replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void) {
+        reply(nil, fs_errorForPOSIXError(EROFS))
+    }
+
+    func removeItem(_ item: FSItem, named name: FSFileName, fromDirectory directory: FSItem,
+                    replyHandler reply: @escaping ((any Error)?) -> Void) {
+        reply(fs_errorForPOSIXError(EROFS))
+    }
+
+    func readSymbolicLink(_ item: FSItem,
+                          replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void) {
+        reply(nil, fs_errorForPOSIXError(EINVAL))
+    }
 }
