@@ -12,24 +12,34 @@
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <!-- Every FS* key must live INSIDE EXAppExtensionAttributes. At the top
+         level they are silently ignored. Shape copied from Apple's shipping
+         URL-resource module, /System/Library/ExtensionKit/Extensions/
+         com.apple.fskit.ftp.appex — which, like Backend A, is a filesystem with
+         no block device behind it. See docs/backend-a-fskit-notes.md. -->
     <key>EXAppExtensionAttributes</key>
     <dict>
         <key>EXExtensionPointIdentifier</key>
         <string>com.apple.fskit.fsmodule</string>
+        <key>FSShortName</key>
+        <string>iSCSI</string>
+        <!-- Backend A serves the LUN as a file; there is no block device. -->
+        <key>FSSupportsBlockResources</key>
+        <false/>
+        <key>FSSupportsGenericURLResources</key>
+        <true/>
+        <key>FSSupportsPathURLs</key>
+        <false/>
+        <key>FSRequiresSecurityScopedPathURLResources</key>
+        <false/>
+        <key>FSSupportedSchemes</key>
+        <array>
+            <string>iscsi</string>
+        </array>
+        <key>FSMediaTypes</key>
+        <dict/>
+        <key>FSPersonalities</key>
+        <dict/>
     </dict>
-    <!-- Backend A has no block device: the LUN is served as a file. Both URL
-         resource kinds are advertised so the first mount tells us empirically
-         which one /sbin/mount hands over (it recognises both keys). See
-         docs/backend-a-fskit-notes.md. -->
-    <key>FSSupportsPathURLs</key>
-    <true/>
-    <key>FSSupportsGenericURLResources</key>
-    <true/>
-    <key>FSSupportedSchemes</key>
-    <array>
-        <string>iscsi</string>
-    </array>
-    <key>FSShortName</key>
-    <string>iSCSI</string>
 </dict>
 </plist>
