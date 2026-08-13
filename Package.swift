@@ -4,6 +4,12 @@ import PackageDescription
 let package = Package(
     name: "iSCSI",
     platforms: [.macOS(.v15)],
+    // The Xcode targets (iSCSIFSExtension, and anything else that links shared
+    // protocol types) can only consume iSCSIKit if it is a *product*; as a bare
+    // target it resolves to "Missing package product 'iSCSIKit'".
+    products: [
+        .library(name: "iSCSIKit", targets: ["iSCSIKit"]),
+    ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
     ],
