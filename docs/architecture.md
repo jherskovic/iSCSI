@@ -368,10 +368,34 @@ Caveat: `DextBridge.open()` both matches the service and maps the arena, so a
 hang there is consistent with a blocked default queue but does not by itself
 name the blocking call.
 
-Next: find what blocks that queue. `UserGetDataBuffer` is the prime suspect —
-it is only obtainable inside `UserProcessParallelTask`, it is called on every
-data-bearing task, and a blocking call there would stall the queue that
-services both new tasks and user-client requests.
+#### `sample` is defeated by the wedge too — and that nearly became a false conclusion
+
+`sample` targets a single process by pid and does not enumerate mounts, so it
+looked like the way to see the dext's own thread stacks. During a wedge it
+hangs on the dext and never returns.
+
+That is NOT evidence about the dext. A control run sampling an ordinary `sleep`
+process, started before the wedge, **hangs identically**. `sample` simply stops
+working once the box is wedged — the fifth inspection tool to do so, after
+`spindump`, `log show`, `ps`, and `pgrep`. Reading the dext's hang as "the dext
+is stuck" would have repeated exactly the mistake that produced the retracted
+"not our I/O" claim.
+
+**The same gap applies to the `dext-stats` result above, and is not yet
+closed.** That command hangs during a wedge and returns in ~7 s on a healthy
+box — but the healthy-box control only proves the tool works when the box is
+healthy. It does not rule out that *any* IOKit user-client open hangs once the
+box is wedged, for reasons having nothing to do with our dext. The missing
+control is to open a user client on an unrelated driver during a wedge and see
+whether that hangs too. Until that runs, "the dext cannot service a request"
+is a hypothesis, not a finding.
+
+The standing suspect for what blocks the queue remains `UserGetDataBuffer`: it
+is only obtainable inside `UserProcessParallelTask`, it is called on every
+data-bearing task, and it is a re-entrant upcall into the family from inside a
+family callback. The awkward part for that theory is that it survives ~1100
+tasks first, so it would have to be state-dependent rather than a plain lock
+inversion.
 
 **Tooling trap worth remembering:** `vm-restore-baseline.sh` rolls back the
 whole guest disk, which includes the deployed dext, the built binaries and the
