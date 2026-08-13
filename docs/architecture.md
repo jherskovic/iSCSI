@@ -243,7 +243,34 @@ errored before printing. **`copyinstr` predicates are unusable during this
 hang** — select on `execname` instead, which is what the script now does by
 copying the trigger binary to a unique name.
 
-#### Sharper still: READDIR is the operation that wedges, and it is deterministic
+#### The real shape: the FIRST access succeeds, the SECOND blocks — whatever they are
+
+Swapping the order of the two probes settles it:
+
+| order | first access | second access |
+|---|---|---|
+| getattr → readdir | **completes** | **blocks** |
+| readdir → getattr | **completes** | **blocks** |
+
+**The operation is irrelevant.** It was never "statfs hangs", never "getattr
+hangs", never "readdir hangs" — each of those was just whichever probe happened
+to run second. Something about completing the first access wedges the volume
+for everything that follows.
+
+This also explains the dtrace results that looked contradictory: the blocked
+process never entered `apfs_vnop_readdir` (716 enters, 716 returns, all
+balanced), and no APFS vnop was ever left outstanding by it. It is not stuck
+*inside* an APFS operation; it never gets to start one.
+
+Corollary for interpreting the older `/Volumes` runs: there, system daemons
+supplied the first access, so the deliberate probe was always the second one
+and always hung — which is exactly why the trigger kept appearing to be
+whichever syscall was tried.
+
+#### Superseded: READDIR is the operation that wedges
+
+Kept because the reasoning below is what produced the deterministic private
+mount, but the conclusion is wrong — see the ordering table above.
 
 `scripts/vm-apfs-private.sh` mounts the volume with `mount_apfs` at
 `/Users/herko/mnt` instead of letting `diskutil` put it in `/Volumes`. Finder,
