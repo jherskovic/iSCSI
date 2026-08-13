@@ -36,6 +36,31 @@
         <array>
             <string>iscsi</string>
         </array>
+        <!-- Declares that the module supports the mount/activate operation.
+             Without it, mount(8) rejects the module with "Filesystem <name>
+             does not support operation mount" — which is exactly why Apple's
+             own exfat module cannot be mounted with `mount -F` while msdos and
+             ftp can: exfat is the one that omits this key. "o:" matches ftp,
+             the closest analogue (generic-URL resource, no block device). -->
+        <key>FSActivateOptionSyntax</key>
+        <dict>
+            <key>shortOptions</key>
+            <string>o:</string>
+        </dict>
+        <!-- Check/format syntax matched to ftp as well. fskit_agent validates
+             modules at startup and silently prunes rejected ones from
+             enabledModules.plist, so the declaration is kept identical to a
+             known-good shipping module rather than minimal. -->
+        <key>FSCheckOptionSyntax</key>
+        <dict>
+            <key>shortOptions</key>
+            <string>nqy</string>
+        </dict>
+        <key>FSFormatOptionSyntax</key>
+        <dict>
+            <key>shortOptions</key>
+            <string>v</string>
+        </dict>
         <key>FSMediaTypes</key>
         <dict/>
         <key>FSPersonalities</key>

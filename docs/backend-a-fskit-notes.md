@@ -292,8 +292,42 @@ plutil -insert 0 -string me.herko.iSCSIInitiator.fsext "$G/enabledModules.plist"
 killall fskit_agent      # force a reload
 ```
 
-Untested — writing to this file needs approval. It may also be re-read only at
-agent start, or validated against something else on use.
+**This works, but only transiently** — and the transient success was extremely
+informative. After adding the bundle ID, deduplicating the LaunchServices
+registrations and rebooting, the module *was* enabled: `mount` stopped saying
+"is disabled!" and instead said **"Filesystem iSCSI does not support operation
+mount"**.
+
+That is the identical error Apple's own `exfat` module gives, and `exfat` is the
+one module that omits **`FSActivateOptionSyntax`**. So that key is what declares
+mount/activate support. It has been added (matched to `ftp`'s `"o:"`).
+
+### fskit_agent prunes modules it rejects
+
+On the next boot, `fskit_agent` **rewrote `enabledModules.plist` and removed our
+bundle ID**, leaving only Apple's five. So the file is not merely a mirror: the
+agent validates each entry at startup and silently drops the ones it rejects.
+
+That is almost certainly the same validation that makes the System Settings
+switch refuse to turn on — the UI is not broken, the module is being judged
+ineligible.
+
+Sequence observed:
+
+| state | result |
+|---|---|
+| bundle ID added, deduped, rebooted (no `FSActivateOptionSyntax`) | **enabled**; fails with "does not support operation mount" |
+| rebuilt + reinstalled the app | registration lost entirely — "No extension with fsShortName found" |
+| `pluginkit -a` to re-register (new UUID) | back to "is disabled" |
+| rebooted | entry **pruned** from `enabledModules.plist` |
+
+Two operational gotchas this exposed: replacing `/Applications/iSCSIApp.app`
+drops the pluginkit registration (re-add the `.appex` explicitly), and enablement
+does not survive re-registration.
+
+Next step being tried: match Apple's `ftp` module declaration *exactly*, adding
+the `FSCheckOptionSyntax` and `FSFormatOptionSyntax` dicts that were still
+missing, on the theory that the agent's validation wants a complete declaration.
 
 ### Still open
 
