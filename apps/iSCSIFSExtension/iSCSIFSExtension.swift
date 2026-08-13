@@ -261,11 +261,16 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         do {
             let store = try BackingStore(path: path)
             let volume = ProtoVolume(store: store)
-            // `.active` is the no-error status. Do NOT use
-            // `.active(status: fs_errorForPOSIXError(0))` — that attaches a real
-            // NSError with POSIX code 0, and mount rejects the load with
-            // "Undefined error: 0".
-            containerStatus = .active
+            // The container state machine is notReady -> ready -> active, and
+            // `loadResource` is the transition to *ready*: "ready, but
+            // inactive". `.active` means a volume is already active, and FSKit
+            // rejects the load with "unexpected container state" (surfaced by
+            // mount as "Protocol not supported").
+            //
+            // Use the no-error form. `.ready(status: fs_errorForPOSIXError(0))`
+            // would attach a real NSError with POSIX code 0, which FSKit reports
+            // as "Undefined error: 0".
+            containerStatus = .ready
             fsLog.log("loadResource ok, volume ready")
             reply(volume, nil)
         } catch {
