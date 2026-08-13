@@ -59,7 +59,8 @@ Still open, and why this is not a daily driver yet:
   truncation, byte counts, completion accounting, task-management functions,
   power management, concurrency, command volume, transfer size, and the nested
   media layer — see `docs/architecture.md` for the matrix and the method for
-  each. `scripts/vm-scratch-apfs.sh` is the self-contained reproducer.
+  each. `scripts/vm-scratch-apfs.sh` is the self-contained reproducer, and
+  `docs/feedback-virtual-scsi-wedge.md` is a ready-to-file Feedback draft.
 - `diskutil`'s partition-map rewrite still races a media re-probe
   (`Couldn't read partition map` / `failed to write superblock`).
 - Wipe the scratch LUN (`iscsictl wipe …`) before attaching, or auto-mount
