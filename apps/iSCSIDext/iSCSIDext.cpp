@@ -38,7 +38,11 @@
 // ---------------------------------------------------------------------------
 // 0 = real path: READ/WRITE/SYNC CACHE are forwarded to iscsid over the shared
 // arena. 1 = bring-up scaffolding backed by an in-dext RAM buffer.
-#define ISCSI_DEXT_SCRATCH_DISK 0
+// Set to 1 for the scratch-disk ISOLATION EXPERIMENT (scripts/vm-scratch-apfs.sh):
+// serve a RAM buffer from inside the dext, removing the daemon, the network,
+// the iSCSI target and the 4Kn block size in one step. If APFS wedges on that
+// too, the bug is in our SCSI emulation and the reproducer becomes tiny.
+#define ISCSI_DEXT_SCRATCH_DISK 1
 
 // DIAGNOSTIC BUILD, not a shipping mode. Present the LUN as a FIXED disk
 // (RMB=0) that is ready from the moment the controller starts, with geometry
@@ -74,7 +78,7 @@ enum : uint32_t { kProbeBlockSize  = 4096 };
 
 enum {
     kScratchBlockSize = 512,
-    kScratchBlocks    = 131072,               // 64 MiB — enough to format APFS
+    kScratchBlocks    = 1048576,              // 512 MiB — 64 MiB is thin for APFS
 };
 #define kScratchBytes ((uint64_t)kScratchBlockSize * kScratchBlocks)
 
