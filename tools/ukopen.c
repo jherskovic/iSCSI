@@ -131,6 +131,13 @@ int main(int argc, char ** argv)
                    (unsigned long long)out[3], (unsigned long long)out[8],
                    (unsigned long long)out[10]);
         }
+        /* out[11] is the truncated-transfer count: requests shortened to one
+           physical segment. Nonzero here would make short transfers the prime
+           suspect for why the family stops dispatching. */
+        if (cr == KERN_SUCCESS && outCount >= 12) {
+            printf("%-18s   TRUNCATED-TRANSFERS=%llu\n",
+                   cls, (unsigned long long)out[11]);
+        }
         IOServiceClose(conn);
     }
 

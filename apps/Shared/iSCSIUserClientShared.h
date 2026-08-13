@@ -58,7 +58,8 @@ enum {
     kISCSIStatsInflight      = 8, // slots currently Parked or Fetched
     kISCSIStatsZombies       = 9,
     kISCSIStatsWatchdogTick  = 10, // proves the watchdog thread is still running
-    kISCSIStatsScalarCount   = 11
+    kISCSIStatsTruncated     = 11, // transfers shortened to one physical segment
+    kISCSIStatsScalarCount   = 12
 };
 
 // Scalar output order for kISCSIUserClientFetchTask.

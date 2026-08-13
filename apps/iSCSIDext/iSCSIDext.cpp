@@ -214,6 +214,9 @@ struct iSCSIDext_IVars
     uint64_t cAborted;       // tasks failed by TMF/stop/disconnect paths
     uint64_t cZombieLate;    // zombie slots freed by a late daemon completion
     uint64_t cZombieExpired; // zombie slots freed by quarantine expiry
+    // Transfers shortened because the request spanned more than one physical
+    // segment (FB23814092). Leading suspect for the wedge — see the log site.
+    uint64_t cTruncated;
 };
 
 static inline void CountUp(uint64_t * counter)
@@ -709,6 +712,7 @@ iSCSIDext::CopyStats(uint64_t * out, uint32_t count)
     // says whether the dext's own thread is still running — which is precisely
     // what a stopped log heartbeat cannot distinguish from logging having died.
     out[kISCSIStatsWatchdogTick]  = __atomic_load_n(&ivars->watchdogTick, __ATOMIC_RELAXED);
+    out[kISCSIStatsTruncated]     = __atomic_load_n(&ivars->cTruncated, __ATOMIC_RELAXED);
 }
 
 bool
@@ -1040,7 +1044,24 @@ IMPL(iSCSIDext, UserProcessParallelTask)
             IOAddressSegment seg = {};
             if (dataMD->GetAddressRange(&seg) == kIOReturnSuccess && seg.address != 0) {
                 buf = reinterpret_cast<uint8_t *>(seg.address);
-                if (seg.length < avail) avail = seg.length;
+                if (seg.length < avail) {
+                    // We can only move ONE physical segment (FB23814092), so a
+                    // request spanning more than one gets silently shortened
+                    // and completed with fBytesTransferred < requested.
+                    //
+                    // This is the leading suspect for the wedge: we complete
+                    // every task and stay responsive, yet the family stops
+                    // dispatching. A short transfer it does not expect would do
+                    // that, and it is state-dependent on buffer fragmentation —
+                    // which fits a failure that survives ~1100 tasks and then
+                    // never recovers. Logged and counted so a truncation can be
+                    // correlated against the exact moment I/O stops.
+                    CountUp(&ivars->cTruncated);
+                    Log("TRUNCATED transfer: op=0x%02x requested=%llu segment=%llu "
+                        "(short by %llu)",
+                        op, avail, seg.length, avail - seg.length);
+                    avail = seg.length;
+                }
             }
         } else {
             Log("UserGetDataBuffer failed: 0x%x", bret);
