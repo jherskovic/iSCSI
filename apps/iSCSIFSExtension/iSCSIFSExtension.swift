@@ -48,7 +48,16 @@ private let kBlockSize = 512
 
 /// Fixed directory for prototype backing files. Nothing derived from a resource
 /// URL is ever allowed to change this.
-private let kProtoBackingDir = "/Users/Shared"
+///
+/// It must live inside the extension's sandbox container: the appex is built
+/// with `com.apple.security.app-sandbox`, so opening a path under /Users/Shared
+/// fails with EPERM and `loadResource` reports "Operation not permitted".
+/// For a sandboxed extension `NSHomeDirectory()` is the container root.
+///
+/// This is prototype-only storage. Nothing outside the extension ever needs to
+/// see it — the bytes are served *as* a file by this filesystem, so the backing
+/// store does not have to be visible to hdiutil or anyone else.
+private let kProtoBackingDir = NSHomeDirectory() + "/Documents"
 
 /// Reduces a caller-supplied URL to a single safe filename component.
 ///
@@ -102,6 +111,9 @@ final class BackingStore {
     /// directory, so without it anyone could plant a symlink there and redirect
     /// this extension's writes to a file of their choosing.
     init(path: String) throws {
+        // The container's Documents directory may not exist on first use.
+        try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                 withIntermediateDirectories: true)
         let opened = open(path, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
         guard opened >= 0 else { throw POSIXError.Code(rawValue: errno).map { POSIXError($0) } ?? POSIXError(.EIO) }
         fd = opened
@@ -246,7 +258,9 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             fsLog.log("loadResource ok, volume ready")
             reply(volume, nil)
         } catch {
-            fsLog.error("loadResource failed: \(error.localizedDescription, privacy: .public)")
+            // Include the path: the first real failure here was a sandbox EPERM,
+            // which is indistinguishable from any other I/O error without it.
+            fsLog.error("loadResource failed for \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             reply(nil, fs_errorForPOSIXError(EIO))
         }
     }

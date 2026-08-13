@@ -325,9 +325,53 @@ Two operational gotchas this exposed: replacing `/Applications/iSCSIApp.app`
 drops the pluginkit registration (re-add the `.appex` explicitly), and enablement
 does not survive re-registration.
 
-Next step being tried: match Apple's `ftp` module declaration *exactly*, adding
-the `FSCheckOptionSyntax` and `FSFormatOptionSyntax` dicts that were still
-missing, on the theory that the agent's validation wants a complete declaration.
+### The rule: the enabled entry must be written AFTER the last registration
+
+Four observations fix the ordering:
+
+| sequence | outcome |
+|---|---|
+| insert entry → dedup → reboot | **enabled** |
+| insert entry → reboot | **enabled** (entry survived) |
+| `pluginkit -a` (new UUID) → reboot | entry **pruned** |
+| in-place update → `pluginkit -a` → reboot | entry **pruned** |
+
+So `fskit_agent` keeps an entry only if it postdates the module's current
+pluginkit registration; an entry that predates it is treated as stale and
+dropped. It was never about the Info.plist declaration.
+
+**Working recipe** (a rebuild invalidates the registration, so all four steps
+are needed every time):
+
+```sh
+# 1. install in place — do NOT rm -rf the app, that drops the registration
+sudo rsync -a --delete <DerivedData>/iSCSIApp.app/ /Applications/iSCSIApp.app/
+# 2. re-register the extension
+pluginkit -a /Applications/iSCSIApp.app/Contents/Extensions/iSCSIFSExtension.appex
+# 3. NOW add the enabled entry (must come after step 2)
+G=~/Library/Group\ Containers/group.com.apple.fskit.settings
+plutil -insert 0 -string me.herko.iSCSIInitiator.fsext "$G/enabledModules.plist"
+# 4. reboot
+sudo reboot
+```
+
+### First successful invocation of our module
+
+With the module enabled, `mount -F -t iSCSI iscsi://proto/lun0` reached our code:
+
+```
+resource: FSGenericURLResource iscsi://proto/lun0
+loadResource failed: ... Operation not permitted
+```
+
+This confirms the whole chain — the generic-URL resource model works, and FSKit
+hands us exactly the `FSGenericURLResource` the design assumed.
+
+The EPERM was ours: the appex is built with `com.apple.security.app-sandbox`, so
+the backing file could not be created under `/Users/Shared`. Fixed by moving it
+into the container (`NSHomeDirectory()/Documents`). This is prototype-only
+storage — nothing outside the extension ever needs to see it, since the bytes
+are served *as* a file by the filesystem itself.
 
 ### Still open
 
