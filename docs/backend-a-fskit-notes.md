@@ -217,7 +217,56 @@ is registered but has **never been instantiated even once**.
    <private>" records and likely name the actual rejection reason. This was
    about to be tried when the VM froze.
 
-## VERDICT: Backend A's mechanism is sound (verified 2026-08-13, macOS 26.6.1)
+## END TO END ON OUR OWN MODULE (2026-08-13, macOS 26.6.1)
+
+Our FSKit module mounts and the whole Backend A stack runs on it:
+
+```
+iscsi://proto/lun0 on /Users/herko/fsmnt (iSCSIProto, ..., fskit, mounted by herko)
+-rw-r--r--  1 herko  staff  536870912  lun0.img
+```
+
+| step | result |
+|---|---|
+| `mount -F -t iSCSI iscsi://proto/lun0` | **mounts**; lifecycle logs `loadResource` → `activate` → `mount` |
+| `lun0.img` visible at the declared size | 536870912 bytes |
+| `hdiutil attach -imagekey diskimage-class=CRawDiskImage` | attaches → `/dev/disk8` |
+| `newfs_apfs` + `mount_apfs` | both succeed |
+| positional probe (readdir, then getattr) | **both complete** — no wedge |
+| 32 MiB random write → unmount → detach → reattach → remount → SHA-256 | **byte-exact match** |
+
+### Bugs found and fixed getting here, in order
+
+Each cycle failed one layer deeper, which is what a sound stack looks like:
+
+| symptom | cause |
+|---|---|
+| `Module … is disabled!` | enablement ordering (below) |
+| `Filesystem iSCSI does not support operation mount` | missing `FSActivateOptionSyntax` |
+| `loadResource failed: Operation not permitted` | sandboxed appex cannot write `/Users/Shared`; moved into the container |
+| `Loading resource: Undefined error: 0` | `.active(status: fs_errorForPOSIXError(0))` attaches a real NSError with POSIX code 0; use the no-error form |
+| `Loading resource: Protocol not supported` | `fskitd` logged *"unexpected container state"*: the state machine is notReady → ready → active, and `loadResource` is the transition to **ready**, not active |
+
+`mount`'s error text is consistently less useful than `fskitd`'s log. When stuck,
+read `log show --predicate 'process == "fskitd"'`.
+
+### Open: flush does not reach our `synchronize`
+
+The extension logs every `synchronize` call, and across a full run — including a
+`sync` on the APFS volume and 32 MiB of writes — **not one was logged**. Data
+integrity still held across the teardown cycle, because unmount flushes through
+the normal write path.
+
+So this is not a data-loss bug in the tested path, but the crash-consistency
+question is open: whether an APFS barrier on the disk image becomes a durable
+flush of the backing file. Given the barrier saga in `architecture.md`, verify
+before trusting it. Note also that reads/writes are not currently logged, so
+their absence from the log says nothing — only `synchronize` is instrumented.
+
+`FSSupportsKernelOffloadedIO` (declared by Apple's msdos module) and the
+`inhibitKernelOffloadedIO` item attribute are the first things to look at.
+
+## Earlier: mechanism proven against Apple's module (same day)
 
 The two questions that decide Backend A have been answered **yes**, without
 needing our own module enabled — Apple's `msdos` FSKit module provides a
