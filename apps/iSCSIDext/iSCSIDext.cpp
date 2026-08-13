@@ -828,10 +828,16 @@ iSCSIDext::WatchdogLoop()
         if (timedOut != 0) {
             Log("watchdog: failed %u task(s) the daemon never answered", timedOut);
         }
-        // A stats heartbeat every ~30s while anything is happening, and
-        // immediately on any watchdog action — diagnosable from `log stream`.
+        // A stats heartbeat every ~30s, and immediately on any watchdog action.
+        //
+        // Logged UNCONDITIONALLY, not just while work is in flight. Gating it
+        // on `live != 0 || zombies != 0` made the counters go silent during a
+        // wedge — precisely the moment they are worth having — and that
+        // silence was misread as "our queue is idle, so the stall is not ours".
+        // It is not evidence either way: a request the family never dispatches
+        // to us leaves our table empty and our log quiet.
         bool due = (tick - lastStatsTick) >= 15;
-        if (timedOut != 0 || (due && (live != 0 || zombies != 0))) {
+        if (timedOut != 0 || due) {
             lastStatsTick = tick;
             Log("stats: parked=%llu full=%llu fetched=%llu completed=%llu "
                 "wdFail=%llu aborted=%llu zLate=%llu zExpired=%llu "

@@ -317,9 +317,33 @@ Also settled by the same run: the blocking process prints STARTED from
 userspace before its syscall, so this is the second *access*, not the second
 *process* blocking in fork/exec.
 
-Next: instrument the completion path — confirm whether every task the dext
-fetches is completed exactly once with the right tag, and what queue depth we
-report to the family versus how many completions it has seen.
+Reading the code did not find a defect: `fControllerTaskIdentifier` is set from
+the slot's stored `controllerTaskID` on every path, inline tasks return
+`Request_In_Process` and complete through the OSAction exactly as documented,
+and double completion is guarded by a CAS state machine. We advertise
+`UserReportMaximumTaskCount = 256` and the counters show slots recycling well
+past that (`parked=1109`), so the pool is not simply leaking per task.
+
+So the watchdog counters were made to log **unconditionally** (v18) to catch
+the state at wedge time. What that showed, streamed off-box:
+
+- idle heartbeat works: `stats: parked=0 … inflight=0` logs with no activity
+- mid-burst: `parked=1109 fetched=1108 completed=1108 inflight=1 wdFail=0`
+- **then the heartbeat stops entirely at the wedge** — no further stats lines,
+  though v18 emits one every ~30 s regardless of queue state
+
+**The measurement is still ambiguous, and more runs will not fix it.** The
+heartbeat stopping is consistent with the dext itself stalling *and* with log
+delivery dying; during the wedge `log show` also hangs, so the unified log
+cannot arbitrate. The persisted log is worse still: after a forced power-off the
+entire wedge window is missing (only the pre-run "watchdog: running" lines
+survive), because logd never flushed it.
+
+Next, and it is a tooling change rather than another experiment: **expose the
+counters through the user client** as a scalar `ExternalMethod` so `iscsictl`
+can read them directly from the dext. That path does not depend on logging, on
+logd, or on the unified log surviving a power-cycle — and bare ssh still works
+during the wedge, so it can actually be queried while the device is stuck.
 
 #### Superseded: READDIR is the operation that wedges
 
