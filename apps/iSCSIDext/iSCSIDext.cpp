@@ -58,6 +58,18 @@ enum : uint32_t { kProbeBlockSize  = 4096 };
 // whether the kernel has any reason to emit SYNCHRONIZE CACHE at all: with
 // WCE=0 the block driver treats every flush as trivially satisfied and the
 // device sees nothing. Under investigation — see docs/architecture.md.
+// Whether MODE SENSE page 08h reports a write cache (WCE=1). This decides
+// whether the kernel emits SYNCHRONIZE CACHE at all: with WCE=0 the block
+// driver treats every flush as trivially satisfied and the device never sees
+// one — which is exactly the data-unsafe state described in "The flush gap".
+// Keep this at 1.
+//
+// It was set to 0 once as a controlled A/B, to test whether the post-mount
+// wedge lived in the barrier machinery. Result: with WCE=0 the daemon logged
+// ZERO flushes, confirming the path was genuinely off, and the wedge happened
+// anyway (first access completed, second blocked). Barriers are exonerated —
+// and since the wedge predates the fixed-disk change, the flush gap and the
+// wedge were always two separate bugs that happened to be found together.
 #define kAdvertiseWriteCache 1
 
 enum {

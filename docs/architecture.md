@@ -245,6 +245,32 @@ errored before printing. **`copyinstr` predicates are unusable during this
 hang** — select on `execname` instead, which is what the script now does by
 copying the trigger binary to a unique name.
 
+#### What the wedge is NOT — every theory tested to destruction
+
+Each line below is a controlled result, not an impression:
+
+| ruled out | how |
+|---|---|
+| APFS being broken in this VM | identical probe sequence on a RAM-disk APFS volume passes completely |
+| the media re-probe | suppressed (`changed=0`, no re-probe fired); wedge reproduces |
+| our command path | `parked == fetched == completed == 1372`, `inflight=0` — every task completed exactly once |
+| short/truncated transfers | daemon fails them loudly on `length < byCDB`; **zero** SHORT WRITE/READ in the wedging run |
+| wrong byte counts | `serviceWrite` reports the full length; `fBytesTransferred` is correct |
+| queue exhaustion | `cParkFull == 0` |
+| the dext being stuck | during a wedge its user-client open, 16 MiB arena map and `ExternalMethod` all return in **0 ms** |
+| **the barrier/flush path** | **`kAdvertiseWriteCache=0` A/B: daemon logged ZERO flushes, and the wedge happened anyway** |
+
+That last one also corrects the project's history. The wedge was blamed on
+missing barriers, and the barrier fix was real — flushes now reach the device,
+`newfs_apfs` and `diskutil mount` now succeed where they used to fail. But the
+wedge predates that change and survives turning flushes back off, so **the flush
+gap and the wedge were always two separate bugs**, found together and wrongly
+fused into one story.
+
+What survives: the failure is positional, it is not APFS-specific (raw `dd` and
+flush ioctls hang identically), and our driver is provably healthy and
+responsive throughout while the layer above stops dispatching.
+
 #### The real shape: the FIRST access succeeds, the SECOND blocks — whatever they are
 
 Swapping the order of the two probes settles it:
