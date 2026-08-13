@@ -46,6 +46,35 @@ private let kDefaultImageBytes: UInt64 = 512 * 1024 * 1024
 /// Block size reported through statfs. 512 keeps parity with the scratch dext.
 private let kBlockSize = 512
 
+/// Fixed directory for prototype backing files. Nothing derived from a resource
+/// URL is ever allowed to change this.
+private let kProtoBackingDir = "/Users/Shared"
+
+/// Reduces a caller-supplied URL to a single safe filename component.
+///
+/// An FSKit resource URL is caller-influenced input: `iscsi://h/../../etc/x`
+/// would otherwise let a mount request pick the file this extension creates and
+/// writes. Only `[A-Za-z0-9._-]` survives, `.` and `..` are rejected outright,
+/// and the result is length-bounded — so the value can never contain a path
+/// separator or traverse upward.
+private func safeTag(from url: URL) -> String {
+    let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+    let filtered = String(url.lastPathComponent.filter { allowed.contains($0) }.prefix(64))
+    if filtered.isEmpty || filtered == "." || filtered == ".." { return "default" }
+    return filtered
+}
+
+/// Describes a URL for logging without leaking credentials.
+///
+/// An iSCSI URL may carry `user:password@host`; `absoluteString` would put that
+/// straight into the system log, which is readable beyond this process.
+private func redact(_ url: URL) -> String {
+    var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+    parts?.user = nil
+    parts?.password = nil
+    return parts?.string ?? url.scheme.map { "\($0)://<redacted>" } ?? "<redacted>"
+}
+
 // MARK: - Extension entry point
 
 /// The Info.plist declares this as the principal class.
@@ -68,8 +97,12 @@ final class BackingStore {
     let byteCount: UInt64
 
     /// Opens (creating if needed) a sparse file of `kDefaultImageBytes`.
+    ///
+    /// `O_NOFOLLOW` is deliberate: the backing path lives in a world-writable
+    /// directory, so without it anyone could plant a symlink there and redirect
+    /// this extension's writes to a file of their choosing.
     init(path: String) throws {
-        let opened = open(path, O_RDWR | O_CREAT, 0o644)
+        let opened = open(path, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
         guard opened >= 0 else { throw POSIXError.Code(rawValue: errno).map { POSIXError($0) } ?? POSIXError(.EIO) }
         fd = opened
 
@@ -168,18 +201,22 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
     /// Resolves the backing path from whichever resource kind FSKit hands us,
     /// and logs which one it was — that answers, empirically, which Info.plist
     /// resource key `/sbin/mount` actually honours.
+    ///
+    /// The resource URL is caller-influenced, so the generic-URL branch never
+    /// interpolates it into a path directly: `safeTag` reduces it to a single
+    /// bounded `[A-Za-z0-9._-]` component, which cannot contain `/` or `..` and
+    /// so cannot escape the fixed directory.
     private func backingPath(for resource: FSResource) -> String? {
         if let pathURL = resource as? FSPathURLResource {
-            fsLog.log("resource: FSPathURLResource \(pathURL.url.absoluteString, privacy: .public)")
+            fsLog.log("resource: FSPathURLResource \(redact(pathURL.url), privacy: .public)")
             return pathURL.url.path
         }
         if let generic = resource as? FSGenericURLResource {
             let url = generic.url
-            fsLog.log("resource: FSGenericURLResource \(url.absoluteString, privacy: .public)")
+            fsLog.log("resource: FSGenericURLResource \(redact(url), privacy: .public)")
             // TODO(iscsi): this URL is the target/LUN identifier; hand it to
             // iscsid instead of mapping it onto a local file.
-            let tag = url.lastPathComponent.isEmpty ? "default" : url.lastPathComponent
-            return "/Users/Shared/iscsi-proto-\(tag).img"
+            return "\(kProtoBackingDir)/iscsi-proto-\(safeTag(from: url)).img"
         }
         fsLog.error("resource: unsupported kind \(String(describing: type(of: resource)), privacy: .public)")
         return nil
