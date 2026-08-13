@@ -46,15 +46,18 @@ Still open, and why this is not a daily driver yet:
   currently papers over that with a diagnostic build flag
   (`ISCSI_DEXT_FIXED_DISK_PROBE`) that hardcodes geometry; the real fix is to
   gate controller matching on the daemon being attached.
-- The first `stat()` of a freshly mounted APFS volume hangs. Mounting alone is
-  safe (verified untouched for 90 s and 153 s); it takes something reaching for
-  the volume. During the hang the dext receives no commands and its slot table
-  is provably empty, and APFS on a RAM disk in the same VM passes the identical
-  probe sequence — so neither our I/O path nor APFS itself is implicated. The
-  whole-box wedge is a pileup: everything that enumerates mounts (ssh login,
-  Finder, `ps`, `spindump`) queues behind the stuck vnode. `mount_apfs` is
-  still resident and blocking throughout, so the mount may never complete.
-  `scripts/vm-apfs-stack.sh` captures kernel stacks for it via dtrace.
+- On a freshly mounted APFS volume, **the first access succeeds and the second
+  one hangs — whatever they are**. getattr-then-readdir and readdir-then-getattr
+  both block on the second, so the operation is irrelevant; it is positional.
+  Mounting alone is safe (verified untouched for 90 s and 153 s). The first
+  access drives a real checkpoint — 547 writes and 7 SYNCHRONIZE CACHEs, all
+  completed cleanly — and APFS then wedges with an empty dext queue and no I/O
+  pending on us. APFS on a RAM disk in the same VM passes the identical probe
+  sequence, so neither our I/O path nor APFS itself is implicated on its own.
+  The whole-box wedge is a pileup: everything that enumerates mounts (ssh
+  login, Finder, `ps`, `spindump`, even `loginwindow`) queues behind the stuck
+  vnode. `scripts/vm-apfs-private.sh` reproduces it deterministically by
+  mounting outside `/Volumes`, away from the daemons that otherwise race it.
 - `diskutil`'s partition-map rewrite still races a media re-probe
   (`Couldn't read partition map` / `failed to write superblock`).
 - Wipe the scratch LUN (`iscsictl wipe …`) before attaching, or auto-mount

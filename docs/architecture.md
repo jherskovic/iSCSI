@@ -267,6 +267,26 @@ supplied the first access, so the deliberate probe was always the second one
 and always hung — which is exactly why the trigger kept appearing to be
 whichever syscall was tried.
 
+What the first access actually does, from the dext's log streamed off-box
+during a wedge (`/usr/bin/log stream --predicate 'eventMessage CONTAINS
+"iSCSIDext"'`, which must be streamed — a wedged box cannot serve `log show`):
+
+- the first access drives a real checkpoint: **547 WRITEs and 7 SYNCHRONIZE
+  CACHEs**, ending in two 4 KiB writes at 09:52:29.714
+- the watchdog's stats line appears exactly **once**, mid-burst:
+  `parked=512 fetched=512 completed=511 inflight=1 wdFail=0 aborted=0 zombies=0`
+- then nothing at all, while the second access blocks ~35 s later
+
+The watchdog logs stats every ~30 s *whenever* anything is live, so at least one
+due tick passed after that final write with no stats line: **the queue was empty
+and nothing was outstanding**. No watchdog failures, no aborts.
+
+So the first access's checkpoint completes cleanly on our device, and APFS then
+wedges with **zero I/O pending on us**. Caveat worth keeping: absence of later
+log lines cannot by itself separate "dext idle" from "logging stalled with the
+box" — but the `/Volumes` runs showed the same empty-queue signature
+independently.
+
 #### Superseded: READDIR is the operation that wedges
 
 Kept because the reasoning below is what produced the deterministic private
