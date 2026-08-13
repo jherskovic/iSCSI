@@ -13,6 +13,7 @@
 		4E0D9AEC2C32868C1A6D1BB6 /* iSCSIUserClient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E988EFDBF4855884F248B81E /* iSCSIUserClient.cpp */; };
 		79ED20D3D81F09EA8410D7AA /* iSCSIDext.dext in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = F9E5E4079C9AAECB94704229 /* iSCSIDext.dext */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		7DF0B704FFA3482AABAFE5F3 /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1930AC270A5C69BFDB1258AA /* iSCSIKit */; };
+		AA01FE00000000000000E001 /* iSCSIFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		83E3A3242A55B4C0F8AA573B /* ExtensionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB19582709CC88A804AB9C0C /* ExtensionController.swift */; };
 		AF1FD391FC1153FBE7F490E4 /* iSCSIBootstrap.iig in Sources */ = {isa = PBXBuildFile; fileRef = EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */; };
 		D0275F7018B35D408AE1692A /* iSCSIBootstrap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */; };
@@ -28,6 +29,13 @@
 			remoteGlobalIDString = 34B4B33589792E2B507EFB6B;
 			remoteInfo = iSCSIDext;
 		};
+		AA01FE00000000000000E003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4FDC03CF97A85A16B4901D8D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB773D208684E53219196A1E;
+			remoteInfo = iSCSIFSExtension;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -40,6 +48,17 @@
 				79ED20D3D81F09EA8410D7AA /* iSCSIDext.dext in Embed System Extensions */,
 			);
 			name = "Embed System Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA01FE00000000000000E002 /* Embed ExtensionKit Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				AA01FE00000000000000E001 /* iSCSIFSExtension.appex in Embed ExtensionKit Extensions */,
+			);
+			name = "Embed ExtensionKit Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -179,11 +198,13 @@
 			buildPhases = (
 				88BC9DAC7C07876216195078 /* Sources */,
 				6355023C84E47668F08726A3 /* Embed System Extensions */,
+				AA01FE00000000000000E002 /* Embed ExtensionKit Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				4985FA4100BEC3C5F28DA5AB /* PBXTargetDependency */,
+				AA01FE00000000000000E004 /* PBXTargetDependency */,
 			);
 			name = iSCSIApp;
 			packageProductDependencies = (
@@ -296,6 +317,11 @@
 			isa = PBXTargetDependency;
 			target = 34B4B33589792E2B507EFB6B /* iSCSIDext */;
 			targetProxy = 90AF1320B674FE98B916DE26 /* PBXContainerItemProxy */;
+		};
+		AA01FE00000000000000E004 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB773D208684E53219196A1E /* iSCSIFSExtension */;
+			targetProxy = AA01FE00000000000000E003 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
