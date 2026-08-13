@@ -92,7 +92,48 @@ int main(int argc, char ** argv)
     /* Any return is a pass: the point is liveness, not access. */
     printf("%-18s OPEN-RETURNED kr=0x%x  %.0f ms\n", cls, kr, t3 - t2);
 
-    if (kr == KERN_SUCCESS) IOServiceClose(conn);
+    /*
+     * The open succeeding during a wedge is what killed the "the dext is
+     * stuck" theory — so the hang in `iscsictl dext-stats` has to be at one of
+     * the LATER steps the Swift bridge performs. Time them separately here to
+     * find which one:
+     *
+     *   1. map the payload arena  (CopyClientMemoryForType -> CopyPayloadArena)
+     *   2. dispatch an ExternalMethod (the stats selector, which only reads
+     *      counters and touches no device)
+     *
+     * Whichever of these fails to return is the actual blocking point.
+     */
+    if (kr == KERN_SUCCESS) {
+        printf("%-18s mapping arena (memory type 2)...\n", cls);
+        mach_vm_address_t addr = 0;
+        mach_vm_size_t    size = 0;
+        double m0 = now_ms();
+        kern_return_t mr = IOConnectMapMemory64(conn, 2, mach_task_self(),
+                                                &addr, &size, kIOMapAnywhere);
+        double m1 = now_ms();
+        printf("%-18s MAP-RETURNED kr=0x%x size=%llu  %.0f ms\n",
+               cls, mr, (unsigned long long)size, m1 - m0);
+
+        /* Selector 6 == kISCSIUserClientGetStats: reads counters only. */
+        printf("%-18s calling ExternalMethod(6) [stats]...\n", cls);
+        uint64_t out[16] = {0};
+        uint32_t outCount = 16;
+        double c0 = now_ms();
+        kern_return_t cr = IOConnectCallScalarMethod(conn, 6, NULL, 0, out, &outCount);
+        double c1 = now_ms();
+        printf("%-18s CALL-RETURNED kr=0x%x n=%u  %.0f ms\n",
+               cls, cr, outCount, c1 - c0);
+        if (cr == KERN_SUCCESS && outCount >= 11) {
+            printf("%-18s   parked=%llu fetched=%llu completed=%llu inflight=%llu tick=%llu\n",
+                   cls,
+                   (unsigned long long)out[0], (unsigned long long)out[2],
+                   (unsigned long long)out[3], (unsigned long long)out[8],
+                   (unsigned long long)out[10]);
+        }
+        IOServiceClose(conn);
+    }
+
     IOObjectRelease(svc);
     return 0;
 }
