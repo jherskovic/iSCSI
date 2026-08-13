@@ -74,7 +74,11 @@ step 120 "mount APFS by name" diskutil mount iSCSITest
 
 MNT="/Volumes/iSCSITest"
 echo "=== mounted at $MNT"
-step 30 "listing" ls -la "$MNT"
+# Let the mount settle before touching it. Listing sub-second after `diskutil
+# mount` wedged the box twice; the same listing ~10s later returns instantly,
+# so something (Spotlight/fseventsd claiming the new volume?) is racing us.
+sleep 15
+step 120 "listing" ls -la "$MNT"
 
 step 300 "write 200 MiB" dd if=/dev/urandom of="$MNT/blob" bs=1m count=200
 step 120 "sha before" shasum -a 256 "$MNT/blob"

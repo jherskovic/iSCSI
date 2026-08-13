@@ -175,20 +175,35 @@ before the mount itself wedged the box.
 
 ### Still open #1: first access to the mounted volume hangs
 
-`ls -la /Volumes/iSCSITest` on the freshly mounted volume blocks and never
-returns; the box then slides into the familiar wedge (`ps`, `log show`, and
-anything touching the mount table hang; bare ssh still answers; only a
-power-cycle recovers). The decisive measurement: **during the hang the dext
-receives nothing but 3-second TEST UNIT READY polls — not one READ or WRITE**,
-and the daemon is still alive and connected (it logs no error, and its wrapper
-never records an exit). So whatever APFS is blocked on, it is not waiting on
-a command we failed to complete. Beware a red herring here: reads failing with
-sense `04/08/00` in the log are the *teardown* — the harness's trap kills the
-daemon, the arena goes away, and the dext fails everything after that.
+`ls -la /Volumes/iSCSITest` on the freshly mounted volume usually blocks and
+never returns; the box then slides into the familiar wedge (`ps`, `log show`,
+and anything touching the mount table hang; bare ssh still answers; only a
+power-cycle recovers).
 
-Next: a stackshot during the hang (`spindump`, started on a delay and written
-to the healthy boot volume, since the shell is unusable afterwards) to name
-the thread and the lock.
+What is known:
+- **It is not our I/O.** During the hang the dext receives nothing but 3-second
+  TEST UNIT READY polls — not one READ or WRITE — and the daemon is alive and
+  connected (no error logged, its exit-status wrapper never fires). APFS is not
+  waiting on a command we failed to complete.
+- **It is not deterministic.** One run listed the volume instantly and
+  correctly (`.Spotlight-V100`, `.fseventsd`, nothing else). Every run that
+  hung had touched the mount within a second or two of `diskutil mount`; the
+  one that worked had a couple of seconds of slack. A 15 s settle delay did
+  NOT make it reliable, so "it's just a race after mount" is a hypothesis, not
+  a conclusion.
+- **It is not Spotlight.** Reproduced with `mdutil -a -i off`.
+- **The wedge blocks process creation.** In the worst runs the harness's own
+  timeout never fires — the watchdog loop cannot `fork`/`exec` — which,
+  together with `ps` hanging, points at a global kernel lock (proc list / VFS)
+  held by whatever is blocked, not at a mere per-volume stall.
+- Red herring: reads failing with sense `04/08/00` in the log are the
+  *teardown* — the harness's trap kills the daemon, the arena goes away, and
+  the dext fails everything after that. They are not the cause.
+
+Next: a stackshot during the hang, to name the thread and the lock. Note that
+`spindump` is NOT usable here — it hangs even on a healthy VM with the LUN
+attached, and then wedges the box itself. Try the kernel stackshot facility
+directly, or dtrace (SIP is off in the test VM).
 
 ### Still open #2: the partition-map re-probe race
 

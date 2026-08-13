@@ -46,9 +46,11 @@ Still open, and why this is not a daily driver yet:
   currently papers over that with a diagnostic build flag
   (`ISCSI_DEXT_FIXED_DISK_PROBE`) that hardcodes geometry; the real fix is to
   gate controller matching on the daemon being attached.
-- First access to a freshly mounted APFS volume hangs — and during that hang
+- First access to a freshly mounted APFS volume usually hangs. During the hang
   the dext receives nothing but TEST UNIT READY polls, so APFS is blocked on
-  something other than our I/O. A stackshot is the next step.
+  something other than our I/O; it is not Spotlight, it is not fully
+  deterministic (one run listed the volume instantly), and in the worst cases
+  even `fork` stops working, which smells like a global kernel lock.
 - `diskutil`'s partition-map rewrite still races a media re-probe
   (`Couldn't read partition map` / `failed to write superblock`).
 - Wipe the scratch LUN (`iscsictl wipe …`) before attaching, or auto-mount
