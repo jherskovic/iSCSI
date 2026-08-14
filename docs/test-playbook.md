@@ -68,3 +68,35 @@ activate/teardown cycles).
 deterministic structure-aware mutation engine over the PDU decoder, login
 parser, and text codec. Any crash reproduces from `pdu-fuzz derive <seed>
 <iteration>`. Millions of inputs clean to date.
+
+## Fuzzing campaigns (2026-08-13)
+
+`scripts/fuzz-campaign.sh N seconds first-seed` runs N independent seeds under
+AddressSanitizer. Independent seeds rather than one long run so that any
+failure reproduces exactly via `pdu-fuzz derive <seed> <iteration>`.
+
+| campaign | seeds | coverage | result |
+|---|---|---|---|
+| 1 | 1–100, 20 s each | PDU deframing (digest on/off), `AnyPDU` decode→encode, `TextParameters` | **0 failures** in 2007 s |
+| 2 | 101–200, 20 s each | the above **plus** `ModeSense.writeCacheEnabled` and `SenseData` | **0 failures** in 2007 s |
+
+The second campaign exists because the first built its binary before the new
+target-facing parsers were added to the fuzz body — so campaign 1 never
+executed them. Worth remembering: `fuzz-campaign.sh` builds once at the start,
+so a fuzz target added mid-run is not covered by that run.
+
+**No bugs were found by fuzzing.** The bounds hardening in `ModeSense` came
+from reading the code, not from the fuzzer: a block-descriptor length past the
+end of the buffer, and a zero-length mode page that would never advance the
+cursor. Both are now rejected, and both are unit-tested.
+
+This matters when judging what the clean result is worth. The engine is a
+deterministic mutator with no coverage feedback, so a clean run means "no crash
+on these inputs", not "no reachable crash". The parsers that matter most are
+also covered by targeted unit tests over malformed input, which is the stronger
+guarantee of the two.
+
+Why parsing bugs here are crashes rather than wrong answers: `Data`'s accessors
+in `Support/Endian.swift` are slice-tolerant but **not** bounds-checked —
+`self[startIndex + offset]` traps. Any target-controlled parsing must prove its
+offsets in bounds before reading.
