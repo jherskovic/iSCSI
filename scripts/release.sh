@@ -244,7 +244,17 @@ fi
 say "building the DMG"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
-DMG="$BUILD/$APP_NAME-$VERSION.dmg"
+# An unnotarized build gets a different filename, so it can never overwrite a
+# real one. It did once: a --skip-notarize run at the same version replaced an
+# already-notarized DMG, and the only reason anyone noticed was `stapler staple`
+# later reporting "Record not found" — the file no longer hashed to anything
+# Apple had seen. Everything downstream had spent an hour treating it as
+# notarized, including an experiment whose entire point was that it was.
+if [ "$SKIP_NOTARIZE" -eq 1 ]; then
+    DMG="$BUILD/$APP_NAME-$VERSION-UNNOTARIZED.dmg"
+else
+    DMG="$BUILD/$APP_NAME-$VERSION.dmg"
+fi
 rm -f "$DMG"
 
 create-dmg \
@@ -275,6 +285,24 @@ if [ "$SKIP_NOTARIZE" -eq 0 ]; then
     xcrun stapler validate "$APP"     | sed 's/^/  /'
     spctl -a -vvv -t install "$DMG" 2>&1 | sed 's/^/  /'
     spctl -a -vvv -t exec    "$APP"  2>&1 | sed 's/^/  /'
+
+    # Validate the app *inside the image*, not just the one in export/. They are
+    # different files: the DMG's copy is made with `cp -R`, and the whole point
+    # of stapling the app separately is that it keeps working after a user drags
+    # it off the image and opens it offline. Checking export/ cannot see a copy
+    # step that lost the ticket.
+    MNT=$(mktemp -d)
+    hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MNT" >/dev/null
+    if xcrun stapler validate "$MNT/$APP_NAME.app" >/dev/null 2>&1; then
+        echo "  ok  the app inside the DMG is stapled too"
+        hdiutil detach "$MNT" >/dev/null
+    else
+        hdiutil detach "$MNT" >/dev/null
+        die "the app inside the DMG has no stapled ticket, even though the one in
+export/ does. A user who drags it off the image and opens it offline would be
+told it cannot be verified. Check how the DMG staging copy is made."
+    fi
+    rmdir "$MNT" 2>/dev/null || true
 else
     printf '\033[33m  skipped: an unnotarized DMG cannot pass spctl or stapler\033[0m\n'
 fi
