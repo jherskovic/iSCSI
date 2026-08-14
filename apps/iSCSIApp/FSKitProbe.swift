@@ -164,9 +164,16 @@ struct FSKitProbeView: View {
                 }
 
                 if let report = probe.writeReport {
+                    // fixedSize(vertical:) or the VStack compresses this to two
+                    // lines and truncates the rest — which is how the first run
+                    // of this probe reported a result nobody could read. A
+                    // measuring instrument that hides the measurement is worse
+                    // than no instrument, because it looks like it worked.
                     Text(report.transcript)
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(report.succeeded ? Color.green.opacity(0.12)

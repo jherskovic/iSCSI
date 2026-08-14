@@ -370,22 +370,56 @@ live-disabled baseline (plist restored, rebooted, mount confirmed failing):
 | write the entry, restart nothing | `Module … is disabled!` |
 | **`sudo killall fskitd`** | **`MOUNTED`** |
 
-So the whole 26.x enablement is: write the entry, kick `fskitd`, done — no
-reboot, no logout. Prefer `launchctl kickstart -k system/com.apple.fskitd` to
-`killall` in shipping code; it is the supported spelling and it waits for the
-relaunch. It needs root, which is free here because M2 installs a root daemon
-anyway.
+So the whole 26.x enablement is: write the entry, restart `fskitd`, done — no
+reboot, no logout.
+
+**The restart must be a signal, not `launchctl`.** An earlier draft recommended
+`launchctl kickstart -k` as "the supported spelling". It does not work here, for
+two separate reasons, both found the hard way:
+
+```
+$ sudo launchctl kickstart -k system/com.apple.fskitd
+Could not find service "com.apple.fskitd" in domain for system      # wrong label
+
+$ sudo launchctl kickstart -k system/com.apple.filesystems.fskitd
+Could not kickstart service "...": 150: Operation not permitted
+                                        while System Integrity Protection is engaged
+```
+
+The label is `com.apple.filesystems.fskitd` (from
+`/System/Library/LaunchDaemons/com.apple.filesystems.fskitd.plist`), and SIP
+forbids `launchctl` job control on Apple's daemons regardless. `sudo killall
+fskitd` **is** permitted under SIP — signalling a process is not job control —
+and launchd respawns it immediately. That is what shipping code has to do.
+
+It needs root, which is free here because M2 installs a root daemon anyway.
 
 The entry was not pruned, because it was written after the module's pluginkit
 registration (registration 20:35:06 UTC, write ~20:44). The ordering rule at the
 end of this document held exactly as recorded.
 
-Still unverified, and it is now the deciding unknown for 26.x: this write came
-from an **ssh shell**, which inherits broader TCC grants than a freshly installed
-app. `group.com.apple.fskit.settings` is a *foreign* group container, so the app
-may get a consent prompt or a silent `EPERM` where the shell sailed through. That
-is the remaining half of M0-b.2 and needs a probe build with a write button — not
-another shell test, which would only re-answer the question already answered.
+### M0-b.2: the app can do the write itself, silently
+
+The results above all came from an ssh shell, which inherits the terminal's TCC
+grants. `group.com.apple.fskit.settings` is a *foreign* group container, so the
+real question was whether a freshly installed app is allowed the same thing.
+
+Answered with a notarized 0.1.1 build carrying `FSKitEnablement.enableModule()`
+behind a button, drag-installed on the clean 26.6.1 VM:
+
+- **The write succeeds. No consent prompt, no `EPERM`.** The entry lands at index
+  0 with Apple's five preserved, and reads back correctly.
+- **`containerURL(forSecurityApplicationGroupIdentifier:)` returned a URL**, for a
+  group the app is not a member of and has no entitlement for. This was expected
+  to return nil and to need the constructed-path fallback. It did not. The
+  fallback stays in the code — this is undocumented behaviour that could change —
+  but the supported-looking route currently works.
+- Nothing became live until `fskitd` was signalled, exactly as designed.
+
+End-to-end on 26.6.1, with the user touching neither Terminal nor System
+Settings: drag-install → launch → button → root `killall fskitd` → `mount -F`
+succeeds and `lun0.img` is there. **The 26.x fallback is viable as a shipping
+path**, and needs no Full Disk Access step in the setup machine.
 
 ## Soak and crash consistency (2026-08-13)
 

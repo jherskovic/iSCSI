@@ -12,7 +12,7 @@ struct ISCSIInitiatorApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 560, minHeight: 420)
+                .frame(minWidth: 640, minHeight: 640)
         }
     }
 }
