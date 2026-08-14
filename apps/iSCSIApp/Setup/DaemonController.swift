@@ -138,8 +138,22 @@ final class DaemonController: ObservableObject {
             if error.code == kSMErrorAlreadyRegistered {
                 detail = "already registered"
             } else {
-                state = Self.mapRegisterError(error)
-                detail = Self.describe(error)
+                // A throw here does NOT mean nothing happened. Registering a
+                // LaunchDaemon that has not been approved yet fails with EPERM
+                // (SMAppServiceErrorDomain 1) *after* smd has already recorded
+                // the item in Background Task Management, at which point
+                // .status is requiresApproval and the user's next step is to go
+                // approve it. Reporting the throw as the final state told the
+                // user their install had failed when it was one switch away.
+                //
+                // So ask the system what actually happened, and fall back to
+                // interpreting the error only when nothing registered at all.
+                let thrown = Self.describe(error)
+                await refresh()
+                if case .notRegistered = state {
+                    state = Self.mapRegisterError(error)
+                }
+                detail = "register() threw \(thrown) — status afterwards: \(detail)"
                 return
             }
         }
