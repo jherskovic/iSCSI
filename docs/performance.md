@@ -161,3 +161,55 @@ the stack and already uses the hardware instruction (8.4 GB/s). Everything else
 that touches large buffers is a copy, where `memcpy` is already optimal, or a
 network round trip, where the CPU is idle — `iscsid` sits at ~14% of four cores
 under sustained load. There is no remaining loop where SIMD would pay.
+
+
+## Post-optimisation re-benchmark (2026-08-14)
+
+Same 137 GB run after the CRC32C, framer, and block-alignment work:
+
+| phase | before | after |
+|---|---|---|
+| write | 57.2 MB/s | 56.6 MB/s |
+| read | 90.0 MB/s | 90.6 MB/s |
+| combined | 69.9 MB/s | 69.6 MB/s |
+
+**No change, and that is the expected result.** This benchmark is 1 MiB
+aligned, so it has no read-modify-write to eliminate; digests are negotiated
+off, so CRC32C never runs; and the stack is latency-bound at ~14% CPU, so
+cheaper framing frees capacity that was not the constraint. The optimisations
+are real but invisible to this workload — which is the argument for keeping a
+small-write soak alongside a sequential benchmark.
+
+### Cost of FUA on small writes
+
+The soak (4 workers, unaligned partial overwrites, 3 GB memory pressure) shows
+the durability cost far more sharply than the sequential benchmark does:
+
+| configuration | soak write | soak read |
+|---|---|---|
+| `writeThrough=on` (FUA) | 12–14 MB/s | 25–28 MB/s |
+| `writeThrough=off` | ~31 MB/s | ~62 MB/s |
+
+Roughly **2.5x**, against ~1.5x for large sequential writes. That follows from
+the earlier finding that the cost scales with synced bytes rather than commands:
+small writes pay a full commit for very little data.
+
+This is the price of durability on a target with a volatile write cache, and it
+is why the shipping default stays `writeThrough=on`.
+
+### A false alarm worth recording
+
+One soak run reported 13,267 verification mismatches, which looked like data
+corruption. It was not: a previously backgrounded command had failed its mount
+step but still launched a second `soak.py` against the same directory, and both
+instances write the same fixed file names (`soak-0.bin` … `soak-3.bin`). Each
+was reading back the other's data.
+
+Confirmed by elimination: single-threaded clean (0/200), 4 threads clean
+(0/600), soak without memory pressure clean (26,231 verifies), and the identical
+failing configuration re-run with one instance clean (51,116 verifies). No
+double mount was involved — the logs show exactly one `mount-complete` for the
+volume.
+
+Lesson for the harness: `soak.py` should use per-process unique file names so a
+stray instance collides visibly rather than looking like corruption.
