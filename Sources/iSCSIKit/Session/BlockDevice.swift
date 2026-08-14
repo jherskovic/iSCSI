@@ -67,23 +67,8 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
             cdb: CDB.modeSense10(pageCode: 0x08),
             direction: .read(expectedLength: 192)
         ))
-        let data = result.data
-        guard result.isGood, data.count >= 8 else { return nil }
-
-        // MODE SENSE(10) header is 8 bytes; block descriptors may follow.
-        let blockDescLen = Int(data.beU16(6))
-        var i = 8 + blockDescLen
-        // Walk mode pages looking for 0x08; its byte 2 bit 2 is WCE.
-        while i + 2 < data.count {
-            let page = data.u8(i) & 0x3F
-            let pageLen = Int(data.u8(i + 1))
-            if page == 0x08 {
-                return (data.u8(i + 2) & 0x04) != 0
-            }
-            if pageLen == 0 { break }
-            i += 2 + pageLen
-        }
-        return nil
+        guard result.isGood else { return nil }
+        return ModeSense.writeCacheEnabled(inResponse: result.data)
     }
 
     private var lunAddress: UInt64 { lun << 48 }

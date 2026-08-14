@@ -28,6 +28,11 @@ func fuzzBody(_ data: Data) {
         }
     }
     _ = try? TextParameters.decode(data)
+    // Target-controlled SCSI payloads. Data's accessors trap on an
+    // out-of-range offset rather than returning nil, so any missed bounds
+    // check here is a crash, not a wrong answer.
+    _ = ModeSense.writeCacheEnabled(inResponse: data)
+    _ = SenseData(data)
 }
 
 #if !FUZZING
