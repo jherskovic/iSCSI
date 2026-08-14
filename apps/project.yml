@@ -40,7 +40,15 @@ targets:
     type: application
     platform: macOS
     sources:
-      - iSCSIApp
+      # initiator.icon is an Icon Composer bundle (macOS 26+). It must be a
+      # single file reference in the Resources phase, not walked as a directory
+      # of loose PNGs and JSON — actool consumes the bundle whole. Hence the
+      # exclude plus the explicit `type: file` entry.
+      - path: iSCSIApp
+        excludes:
+          - "initiator.icon/**"
+      - path: iSCSIApp/initiator.icon
+        type: file
     # The shipping app embeds the FSKit extension (Backend A) and nothing else.
     #
     # The dext is deliberately NOT a dependency: its DriverKit entitlements are
@@ -63,6 +71,9 @@ targets:
         CODE_SIGN_ENTITLEMENTS: iSCSIApp/iSCSIApp.entitlements
         ENABLE_HARDENED_RUNTIME: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        # Names the Icon Composer bundle above, without its extension. actool
+        # compiles it into Assets.car and stamps CFBundleIconName.
+        ASSETCATALOG_COMPILER_APPICON_NAME: initiator
 
   # ---- DriverKit extension (Backend B): virtual SCSI HBA ----
   # DriverKit isn't a first-class XcodeGen platform; express it as a macOS

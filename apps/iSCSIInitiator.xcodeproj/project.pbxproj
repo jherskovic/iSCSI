@@ -17,6 +17,7 @@
 		ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B994EEC4E49C9C783699E6 /* FSKitProbe.swift */; };
 		AF1FD391FC1153FBE7F490E4 /* iSCSIBootstrap.iig in Sources */ = {isa = PBXBuildFile; fileRef = EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */; };
 		B77CB9C6828A0BC03BDBDF53 /* FSKitEnablement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */; };
+		BF50F567786DC8AD3B01B8D8 /* initiator.icon in Resources */ = {isa = PBXBuildFile; fileRef = D3CE19CCF76F0D1615284CE8 /* initiator.icon */; };
 		D0275F7018B35D408AE1692A /* iSCSIBootstrap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */; };
 		E71D3B1A098B46CBAB3D75F8 /* iSCSIUserClient.iig in Sources */ = {isa = PBXBuildFile; fileRef = E2A9410B4B594B4270735046 /* iSCSIUserClient.iig */; };
 		F95104A4FB9A5F3F762E5992 /* iSCSIDext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E7A00F869F8056AEACDFFAA /* iSCSIDext.cpp */; };
@@ -63,6 +64,7 @@
 		90DA087A85B91E84CD0AB5D4 /* iSCSIApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iSCSIApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A69431A8E793158D26316EAD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		AB19582709CC88A804AB9C0C /* ExtensionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionController.swift; sourceTree = "<group>"; };
+		D3CE19CCF76F0D1615284CE8 /* initiator.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = initiator.icon; sourceTree = "<group>"; };
 		E2A9410B4B594B4270735046 /* iSCSIUserClient.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = iSCSIUserClient.iig; sourceTree = "<group>"; };
 		E5B994EEC4E49C9C783699E6 /* FSKitProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FSKitProbe.swift; sourceTree = "<group>"; };
 		E988EFDBF4855884F248B81E /* iSCSIUserClient.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = iSCSIUserClient.cpp; sourceTree = "<group>"; };
@@ -99,6 +101,7 @@
 				AB19582709CC88A804AB9C0C /* ExtensionController.swift */,
 				E5B994EEC4E49C9C783699E6 /* FSKitProbe.swift */,
 				35C8645A7CB24A5D14623009 /* Info.plist */,
+				D3CE19CCF76F0D1615284CE8 /* initiator.icon */,
 				5F8B8631D4F5E81291847966 /* iSCSIApp.entitlements */,
 				0FC18B26402E15EC48C74856 /* iSCSIApp.swift */,
 				43583C634F10BF5F2F2C2CD7 /* Setup */,
@@ -192,6 +195,7 @@
 			buildConfigurationList = 955C6A1C6B5CD9EEBA760D48 /* Build configuration list for PBXNativeTarget "iSCSIApp" */;
 			buildPhases = (
 				88BC9DAC7C07876216195078 /* Sources */,
+				850FAA65C189AFE85C13C1B3 /* Resources */,
 				A0DF6D550191F3515B39ED6B /* Embed ExtensionKit Extensions */,
 			);
 			buildRules = (
@@ -272,6 +276,17 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		850FAA65C189AFE85C13C1B3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BF50F567786DC8AD3B01B8D8 /* initiator.icon in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		215EE9D4D0D689C61A444261 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -340,7 +355,7 @@
 		5C117D7ED560E911A9A1CC11 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = initiator;
 				CODE_SIGN_ENTITLEMENTS = iSCSIApp/iSCSIApp.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -479,7 +494,7 @@
 		EC327740595A7A8EE9BF5778 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = initiator;
 				CODE_SIGN_ENTITLEMENTS = iSCSIApp/iSCSIApp.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
