@@ -328,15 +328,53 @@ appex, verified from the signature *on the VM*), and the
 `Extension is not entitled to run in the App Sandbox` line, which on this machine
 is emitted by `chronod` about somebody else's widget.
 
-**The confound, stated honestly.** The machine where the switch works differs from
-the machine where it refuses in *four* ways, not one: macOS 27.0 vs 26.6.1, a
-developer account signed in vs not, Xcode installed vs not, and real hardware vs a
-VM. The OS version is the leading hypothesis because it matches loaf#1 and because
-the 26.x fskitd is demonstrably taking a different branch — but it is not
-isolated. If the discriminator turned out to be the signed-in developer account,
-v1 would be dead for every end user, so this is worth one experiment rather than
-an assumption. The cheapest isolator: upgrade *this* VM to macOS 27 and retry —
-same guest, same absent developer account, same absent Xcode, one variable moved.
+**The confound, and how it was cleared.** The machine where the switch works
+differed from the machine where it refuses in *four* ways, not one: macOS 27.0 vs
+26.6.1, a developer account signed in vs not, Xcode installed vs not, and real
+hardware vs a VM. If the discriminator had been the signed-in developer account,
+v1 would have been dead for every end user, so it was tested rather than assumed:
+
+> A **fresh local user account** (`fskittest`, admin, no Apple ID, no developer
+> account) was created on the macOS 27 machine, and from that account the switch
+> toggled with no issue. Since `enabledModules.plist` is per-user, this isolates
+> the account on identical OS and hardware. **The developer account is not the
+> gate.**
+
+That leaves OS version as the discriminator, corroborated by loaf#1 and by the
+`fskitd` team-ID branch above. Hardware-vs-VM remains formally unisolated, but it
+no longer threatens the product: the failure is on the *older* OS, which is the
+opposite of what a VM-specific restriction would predict, and the fallback below
+works in the VM anyway.
+
+### The 26.x fallback works, but it costs a reboot
+
+With the switch refusing, the documented plist route was run end to end on
+26.6.1. It works:
+
+| step | result |
+|---|---|
+| `plutil -insert 0 -string me.herko.iSCSIInitiator.fsext enabledModules.plist` | written |
+| `killall fskit_agent`, then mount | entry survives, but **`Module … is disabled!`** |
+| reboot | entry **survives** — not pruned |
+| mount after reboot | **`MOUNTED`**, `lun0.img` visible, clean unmount |
+
+Two things to carry into the setup machine:
+
+1. **A reboot is required on 26.x.** Restarting `fskit_agent` is not enough; the
+   live enablement state is only re-read at boot. On macOS 27 the switch takes
+   effect immediately, so the two branches differ in user experience, not just in
+   mechanism — E-fallback has to be able to say "restart to finish" and then pick
+   up where it left off on the next launch.
+2. **The entry was not pruned**, because it was written after the module's
+   pluginkit registration (registration 20:35:06 UTC, write ~21:44). The ordering
+   rule at the end of this document held exactly as recorded.
+
+Still unverified, and it is now the deciding unknown for 26.x: this write came
+from an **ssh shell**, which inherits broader TCC grants than a freshly installed
+app. `group.com.apple.fskit.settings` is a *foreign* group container, so the app
+may get a consent prompt or a silent `EPERM` where the shell sailed through. That
+is the remaining half of M0-b.2 and needs a probe build with a write button — not
+another shell test, which would only re-answer the question already answered.
 
 ## Soak and crash consistency (2026-08-13)
 

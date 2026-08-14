@@ -184,3 +184,115 @@ gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
   2026-08-14 13:35:15.870 A  fskitd[168:1719] (CoreServicesInternal) CFURLResolveBookmarkData
 
 logged to build/m0b-herkos-Virtual-Machine-26.6.1.log
+
+===================================================================
+  after-plist-fallback-and-reboot
+  2026-08-14 13:57:11   macOS 26.6.1   herkos-Virtual-Machine
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;6a7f7a6f;Safari;5D0C0612-74BB-400F-94A2-BC468410DF48
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.msdos((null))	BFDB0A38-697B-52C2-B514-45607A89FDE3	2026-08-14 20:04:01 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	35C2E82F-B09A-5C0F-8961-136F5ED63F2B	2026-08-14 20:04:01 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	2C5D289E-C39C-444C-94D3-26D0D7C29F82	2026-08-14 20:35:06 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.ftp((null))	D9BF0168-11B0-5F32-ADCF-516F52106132	2026-08-14 20:03:58 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+   (4 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+  ]
+  => OURS IS PRESENT
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:57:01.116 Df fskitd[168:38a] [com.apple.xpc:connection] [0x102e20740] activating connection: mach=true listener=false peer=false name=com.apple.cfprefsd.daemon
+  2026-08-14 13:57:01.138 Df fskitd[168:38a] [com.apple.FSKit:default] New module list <private>
+  2026-08-14 13:57:01.138 Df fskitd[168:38a] [com.apple.FSKit:default] Old modules (null)
+  2026-08-14 13:57:01.138 Df fskitd[168:38a] [com.apple.FSKit:default] Added 3 identifiers: <private>
+  2026-08-14 13:57:01.138 Df fskitd[168:38a] [com.apple.xpc:connection] [0x8e2c98000] activating connection: mach=true listener=true peer=false name=com.apple.filesystems.fskitd.livefs
+  2026-08-14 13:57:01.142 Df fskitd[168:38a] [com.apple.xpc:connection] [0x8e2c98140] activating connection: mach=true listener=true peer=false name=com.apple.filesystems.fskitd
+  2026-08-14 13:57:01.153 Df fskitd[168:46c] [com.apple.FSKit:default] Incomming connection, entitled 1
+  2026-08-14 13:57:01.165 Df fskitd[168:46c] [com.apple.xpc:connection] [0x8e2c94180] activating connection: mach=false listener=false peer=true name=com.apple.filesystems.fskitd.peer[117].0x8e2c94180
+  2026-08-14 13:57:01.181 Df fskitd[168:46c] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:57:01.181 Df fskitd[168:46c] [com.apple.FSKit:default] Returning module array <private>
+  2026-08-14 13:57:01.291 Df fskitd[168:46c] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:57:01.291 Df fskitd[168:46c] [com.apple.FSKit:default] Returning module array <private>
+  2026-08-14 13:57:01.299 Df fskitd[168:46c] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:57:01.299 Df fskitd[168:46c] [com.apple.FSKit:default] Returning module array <private>
+  2026-08-14 13:57:01.319 Df fskitd[168:46c] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:57:01.319 Df fskitd[168:46c] [com.apple.FSKit:default] Returning module array <private>
+  2026-08-14 13:57:01.329 Df fskitd[168:46c] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:57:01.329 Df fskitd[168:46c] [com.apple.FSKit:default] Returning module array <private>
+  2026-08-14 13:57:01.330 Df fskitd[168:46c] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:57:01.330 Df fskitd[168:46c] [com.apple.FSKit:default] Returning module array <private>
+  2026-08-14 13:57:01.331 Df fskitd[168:46c] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:57:01.331 Df fskitd[168:46c] [com.apple.FSKit:default] Returning module array <private>
+  2026-08-14 13:57:03.927 Df fskitd[168:46c] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:57:03.927 Df fskitd[168:46c] [com.apple.FSKit:default] Returning module array <private>
+  2026-08-14 13:57:03.941 Df fskitd[168:46c] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:57:03.941 Df fskitd[168:46c] [com.apple.FSKit:default] Returning module array <private>
+  2026-08-14 13:57:12.414 Df fskitd[168:46c] [com.apple.FSKit:default] Incomming connection, entitled 1
+  2026-08-14 13:57:12.414 Df fskitd[168:46c] [com.apple.xpc:connection] [0x8e2c94300] activating connection: mach=false listener=false peer=true name=com.apple.filesystems.fskitd.peer[223].0x8e2c94300
+  2026-08-14 13:57:12.414 Df fskitd[168:46c] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:57:12.414 Df fskitd[168:46c] [com.apple.FSKit:default] Returning module array <private>
+
+[1m--- mount probe (needs sudo)[0m
+  sudo mount -F -t iSCSI iscsi://proto/lun0 /Users/herko/fsmnt
+  => MOUNTED
+    total 1048576
+    drwxr-xr-x   1 herko  staff          0 Aug 14 13:57 .
+    drwxr-x---+ 19 herko  staff        608 Aug 14 13:28 ..
+    -rw-r--r--   1 herko  staff  536870912 Aug 14 13:57 lun0.img
+  (unmounted)
+
+logged to build/m0b-herkos-Virtual-Machine-26.6.1.log
