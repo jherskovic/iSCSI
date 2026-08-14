@@ -95,6 +95,34 @@ stack (FSKit extension → DiskImages → APFS) against the simulator.
 | `pause` | Portal stops accepting past recovery exhaustion. Blocking during the outage is allowed; staying dead after it ends is not. |
 | `corrupt` | With `DIGEST=CRC32C`, payload bytes flipped on the wire must never reach the application. |
 
+### Results (2026-08-14, macOS 26.6.1)
+
+All six pass. What each actually showed:
+
+- **baseline** — 64 MiB written and verified. The target-side counters are the
+  interesting part: `fuaWrites=199 cachedWrites=0 dirtyBlocks=0`. Seen from the
+  target, the entire stack writes through. That is independent confirmation of
+  the `writeThrough` setting from the far side of the wire.
+- **drop** — 192 MiB written while connections were killed underneath it; every
+  file verified byte-exact.
+- **stall** — the write returned `OSError: [Errno 5] Input/output error`. That
+  is the whole point: a bounded error propagated all the way up through
+  DiskImages and APFS to the application, where before the deadline it would
+  have hung. Clearing the fault, the next write succeeded.
+- **crash** — power cut mid-write, `blocksLost=0`, `fsck_apfs -n` reported *"The
+  volume appears to be OK"*, and all pre-crash files verified. **APFS survives
+  target power loss because FUA covers every write** — the claim `writeThrough`
+  exists to make, finally demonstrated end to end rather than argued.
+- **pause** — the writer blocked for the full 60 s outage (allowed; open-iscsi
+  blocks for two minutes by default) and returned 3 s after the portal came
+  back, having written all 2.4 GiB successfully. A 60-second target outage is
+  survived transparently.
+- **corrupt** — with `HeaderDigest=true DataDigest=true` negotiated and every
+  Data-In payload corrupted, reads failed with EIO and **no corrupted byte
+  reached the application**. After clearing the fault, every file verified. The
+  NAS negotiates digests off, so this is the first time the CRC32C path has run
+  under load.
+
 ### Three scenarios that could not fail, and why that mattered
 
 Worth recording, because each would have produced a green run that meant

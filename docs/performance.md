@@ -127,6 +127,50 @@ Remaining initiator-side headroom is roughly 3.5% — the gap between 1 MiB and
 4 MiB chunks — and it is not reachable without raising the FSKit volume's
 reported `ioSize` and rebuilding the extension. Not worth it for 3.5%.
 
+## Loopback: what the stack costs with no network in the way (2026-08-14)
+
+Every number above was bounded by the LAN. `iscsi-target-sim` running beside the
+initiator removes that, so what remains is our own per-command cost — and the
+target's negotiation parameters are finally ours to change. RAM-backed LUN,
+4 KiB blocks, 1 MiB commands, 1 GiB per run, digests off.
+
+| FirstBurstLength | write | write + FUA | read |
+|---|---|---|---|
+| 64 KiB (what the NAS allows) | 869 MB/s | 959 MB/s | 2428 MB/s |
+| 256 KiB | 958 MB/s | 1054 MB/s | 2440 MB/s |
+| 1 MiB | 1055 MB/s | **1196 MB/s** | 2439 MB/s |
+
+**Reads cost us almost nothing.** 2.4 GB/s here against 94.5 MB/s over the LAN:
+the transport was ~96% of the read cost, which retires any suspicion that the
+read path needed work.
+
+**FirstBurstLength is worth 25% on writes** (959 → 1196 MB/s), and reads are
+flat because they never involve R2T. This was Strategy 5, previously untestable
+because it is the *target's* setting.
+
+### We were the binding constraint
+
+The first sweep negotiated 256 KiB even when the simulator offered a full
+megabyte. `FirstBurstLength` folds by `numericMin`, and our own
+`DesiredParameters.firstBurstLength` was 256 KiB — so raising the target's
+value past that did nothing. It now asks for `1 << 20`, matching
+`maxBurstLength`, which is what unlocks the 1054 → 1196 MB/s step.
+
+The fold makes this safe: a target that cannot buffer a megabyte per command
+answers with less and we honour it. **On the real NAS this changes nothing** —
+it caps FirstBurstLength at 64 KiB, so the extra R2T round trip per megabyte
+stays. The gain is available to targets that allow more.
+
+### One number here is a simulator artifact
+
+FUA measures *faster* than non-FUA (1196 vs 1055 MB/s), which is backwards. It
+is an artifact of the simulator's cache: a non-FUA write is stored as
+per-block dictionary entries (256 inserts per MiB) while a FUA write is a
+single copy straight to the backing store, so "caching" costs more than
+"committing". Nothing about FUA being cheap should be read from this table —
+the honest measurement of FUA's cost is the LAN one above (~1.5× on large
+sequential, ~2.5× on small writes), where a real target really does commit.
+
 ## Hot-loop audit (2026-08-14)
 
 Looked for byte-at-a-time work and avoidable copies on the data path.

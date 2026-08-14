@@ -187,7 +187,32 @@ deliberate policy choice rather than a tuning knob.
 
 ---
 
-## Strategy 5 — Raise `FirstBurstLength`
+## Strategy 5 — Raise `FirstBurstLength`: MEASURED, worth 25%
+
+**Result: 959 → 1196 MB/s on loopback writes. Half of it was ours to take.**
+
+The simulator made this testable, and the estimate below was too pessimistic —
+it is worth **25%**, not 5–8%, and it helps the FUA path too (the round trip
+saved is a round trip either way).
+
+| negotiated FirstBurstLength | write + FUA |
+|---|---|
+| 64 KiB (what the NAS allows) | 959 MB/s |
+| 256 KiB | 1054 MB/s |
+| 1 MiB | 1196 MB/s |
+
+It also turned out not to be purely target-side. `FirstBurstLength` folds by
+`numericMin`, and our own `DesiredParameters.firstBurstLength` was 256 KiB — so
+the first sweep negotiated 256 KiB even against a target offering a megabyte.
+**We were the binding constraint above 256 KiB.** It now asks for `1 << 20`,
+matching `maxBurstLength`.
+
+The fold keeps that safe: a target that cannot buffer a megabyte per command
+answers with less and we honour it. On the real NAS, which caps at 64 KiB, this
+changes nothing — that half of the strategy still needs the NAS owner. See
+`performance.md`.
+
+### Original estimate (kept for context)
 
 **Expected gain: small (~5–8%), and only on the non-FUA path. Risk: none.**
 

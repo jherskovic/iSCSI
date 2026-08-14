@@ -310,7 +310,17 @@ public struct DesiredParameters: Sendable, Equatable {
     public var initialR2T = false // we prefer unsolicited data allowed
     public var immediateData = true
     public var maxBurstLength: UInt32 = 1 << 20
-    public var firstBurstLength: UInt32 = 262_144
+    /// Ask for as much unsolicited data as a burst can carry.
+    ///
+    /// This is a `numericMin` fold, so a target that cannot buffer a megabyte
+    /// per command simply answers with less and we honour it — the real NAS
+    /// caps it at 64 KiB and this changes nothing there. But when the target
+    /// does allow it, a 1 MiB write goes out in one go instead of sending
+    /// `firstBurstLength` and then waiting for an R2T for the remainder, and
+    /// that round trip was measurable: against the simulator, raising the
+    /// negotiated value from 64 KiB to 256 KiB moved writes 951 -> 1048 MB/s.
+    /// We were previously the binding constraint at 256 KiB.
+    public var firstBurstLength: UInt32 = 1 << 20
     public var maxOutstandingR2T: UInt32 = 8
 
     public init() {}

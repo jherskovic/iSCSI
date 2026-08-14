@@ -91,14 +91,17 @@ Sources/
     Session/         ISCSIConnection + ISCSISession (recovery, keepalive)
     Transport/       ConnectionTransport, NetworkTransport (TCP), MemoryPipe
     SCSI/            SCSITask, CDB builders, sense parsing
-  MockTarget/        scriptable in-process target + TCP listener (test infra)
-  iscsictl/          control CLI (discover, verify)
+  MockTarget/        scriptable target: protocol engine, volatile write cache,
+                     TCP listener (drives both the tests and the simulator)
+  iscsi-target-sim/  standalone local target + loopback control socket
+  iscsictl/          control CLI (discover, verify, read-bench, write-bench)
   iscsid/            daemon: owns sessions, vends block I/O over XPC
   iSCSIFSExtension/  (apps/) FSKit module presenting the LUN as a file
   pdu-fuzz/          structure-aware fuzzer
 Tests/
   iSCSIKitTests/     96 unit tests
-  IntegrationTests/  55 tests: happy paths, hostile scripts, recovery, TCP loopback
+  IntegrationTests/  65 tests: happy paths, hostile scripts, recovery, TCP
+                     loopback, crash consistency, stalled-target resilience
 packaging/           LaunchDaemon plist for iscsid
 scripts/
   iscsi-attach.sh    attach a LUN end-to-end (FSKit mount hidden in Caches)
@@ -106,6 +109,8 @@ scripts/
   bench.py           large-sequential throughput benchmark
   soak.py            small-file / read-modify-write soak
   crash-consistency.py  power-cut durability check
+  vm-resilience.sh   fault matrix: drop / stall / crash / pause / corrupt
+  vm-sim-bench.sh    loopback throughput with no transport ceiling
   fuzz.sh            ASan fuzz driver
   fuzz-campaign.sh   N-seed fuzzing campaign
 docs/                architecture, entitlements, test playbook
@@ -123,5 +128,16 @@ swift run iscsictl verify 192.168.1.50 --target iqn.2000-01.com.example:disk0 \
     --lun 0 --write        # DESTRUCTIVE — scratch LUN only
 ```
 
+Or against the local simulator, which needs no NAS and can be broken on
+purpose (drop connections, corrupt payloads, stall commands, cut the target's
+power with a volatile write cache):
+
+```bash
+swift run iscsi-target-sim --port 3260 --capacity-mib 1024 &
+swift run iscsictl verify 127.0.0.1 --target iqn.2026-08.me.herko.sim:lun0 --write
+printf 'crash\n' | nc 127.0.0.1 3262     # target power loss, on demand
+```
+
 See `docs/architecture.md` for the two-backend design and the DriverKit
-throughput caveat, and `docs/test-playbook.md` for the full test strategy.
+throughput caveat, `docs/resilience.md` for the fault matrix and what it
+found, and `docs/test-playbook.md` for the full test strategy.
