@@ -43,6 +43,7 @@ FSMNT=/Users/herko/simfs
 APFSMNT=/Users/herko/simmnt
 CAPACITY_MIB=${CAPACITY_MIB:-4096}
 DEV=""
+VOL=""
 
 mkdir -p /Users/herko/logs "$FSMNT" "$APFSMNT"
 
@@ -72,7 +73,7 @@ teardown() {
   umount -f "$APFSMNT" 2>/dev/null
   [ -n "$DEV" ] && hdiutil detach "$DEV" -force >/dev/null 2>&1
   umount -f "$FSMNT" 2>/dev/null
-  DEV=""
+  DEV=""; VOL=""
 }
 
 cleanup() {
@@ -98,6 +99,37 @@ start_sim() {
   echo "SIM-NOT-READY"; sed 's/^/    /' "$SIMLOG"; return 1
 }
 
+# APFS on a raw disk synthesizes a *different* disk number for the volume
+# (disk10 -> disk11s1), so "${DEV}s1" does not exist. Ask diskutil which volume
+# sits on our physical store rather than guessing.
+apfs_volume_of() {
+  local store=${1#/dev/}
+  diskutil apfs list -plist 2>/dev/null | /usr/bin/python3 -c '
+import plistlib, sys
+want = sys.argv[1]
+try:
+    # loads(), not load(): a pipe is not seekable and plistlib.load seeks.
+    d = plistlib.loads(sys.stdin.buffer.read())
+except Exception:
+    sys.exit(0)
+for c in d.get("Containers", []):
+    stores = [s.get("DeviceIdentifier", "") for s in c.get("PhysicalStores", [])]
+    if any(s == want or s.startswith(want + "s") for s in stores):
+        for v in c.get("Volumes", []):
+            print(v["DeviceIdentifier"]); sys.exit(0)
+' "$store"
+}
+
+wait_for_volume() {
+  local i=0
+  while [ $i -lt 30 ]; do
+    VOL=$(apfs_volume_of "$DEV")
+    [ -n "$VOL" ] && return 0
+    sleep 1; i=$((i+1))
+  done
+  return 1
+}
+
 # Bring up FSKit -> DiskImages. `format` also lays down APFS.
 attach() {
   local want_format=${1:-no}
@@ -117,7 +149,9 @@ attach() {
     run 120 NEWFS newfs_apfs -v SimScratch "$DEV" || return 1
     sleep 2
   fi
-  run 60 MOUNT diskutil mount -mountPoint "$APFSMNT" "${DEV}s1" || return 1
+  wait_for_volume || { echo "  NO-APFS-VOLUME on $DEV"; return 1; }
+  echo "  apfs volume: $VOL"
+  run 60 MOUNT diskutil mount -mountPoint "$APFSMNT" "$VOL" || return 1
   return 0
 }
 
@@ -227,11 +261,11 @@ scenario_crash() {
   umount -f "$APFSMNT" 2>/dev/null
   [ -n "$DEV" ] && hdiutil detach "$DEV" -force >/dev/null 2>&1
   umount -f "$FSMNT" 2>/dev/null
-  DEV=""
+  DEV=""; VOL=""
   sleep 3
 
   attach || return 1
-  run 300 FSCK fsck_apfs -n "/dev/${DEV}s1" || echo "  (fsck reported problems — see above)"
+  run 300 FSCK fsck_apfs -n "/dev/$VOL" || echo "  (fsck reported problems — see above)"
   run 300 VERIFY verify_files "$APFSMNT/crashwork" || return 1
   echo "  after crash: $(ctl stats)"
   teardown
