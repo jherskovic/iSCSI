@@ -100,7 +100,14 @@ Tests/
   iSCSIKitTests/     96 unit tests
   IntegrationTests/  55 tests: happy paths, hostile scripts, recovery, TCP loopback
 packaging/           LaunchDaemon plist for iscsid
-scripts/fuzz.sh      ASan fuzz driver
+scripts/
+  iscsi-attach.sh    attach a LUN end-to-end (FSKit mount hidden in Caches)
+  iscsi-detach.sh    tear it down innermost-first
+  bench.py           large-sequential throughput benchmark
+  soak.py            small-file / read-modify-write soak
+  crash-consistency.py  power-cut durability check
+  fuzz.sh            ASan fuzz driver
+  fuzz-campaign.sh   N-seed fuzzing campaign
 docs/                architecture, entitlements, test playbook
 ```
 
