@@ -421,6 +421,59 @@ Settings: drag-install → launch → button → root `killall fskitd` → `moun
 succeeds and `lun0.img` is there. **The 26.x fallback is viable as a shipping
 path**, and needs no Full Disk Access step in the setup machine.
 
+### An unexplained state on the SIP-off dev VM — do not re-litigate
+
+On `herko@192.168.0.34` (the SIP-off DriverKit VM),
+`FSClient.shared.installedExtensions` returns only Apple's three ExtensionKit
+modules and omits ours, **while the module demonstrably works**:
+
+| probe | result |
+|---|---|
+| `pluginkit -m -v -p com.apple.fskit.fsmodule` | lists ours, correct version |
+| `codesign --verify --deep --strict` | valid, satisfies its DR |
+| appex entitlements from the signature | `fskit.fsmodule = true`, sandboxed |
+| `sudo mount -F -t iSCSI iscsi://proto/lun0` | **mounts** |
+| `FSClient.installedExtensions` | ours **absent** |
+
+Ruled out, each by direct test rather than reasoning:
+
+1. `pluginkit -a` registration — it produces a record with a `(null)` version
+   that FSKit ignores; `lsregister` fixes the version but not the symptom.
+2. A stale duplicate LaunchServices record from the pre-rename
+   `/Applications/iSCSIApp.app`; removed, no change.
+3. Code signature or entitlement damage from `rsync` deployment; verified intact.
+4. User-context vs root-context LaunchServices registration. This one produced a
+   real asymmetry — `fskit_agent` (user) logged `Added 4 identifiers` while
+   `fskitd` (root) logged `Added 3` — and `sudo lsregister` made fskitd log
+   `Added 1 identifiers`, so root registration genuinely was missing. It still
+   did not change what the app sees.
+5. Notarization. `.39` had only ever run notarized builds and `.34` only
+   unnotarized ones, which looked decisive; a properly notarized build deployed
+   the same way behaved identically.
+
+The remaining difference is the machine. That VM has accumulated every
+deployment this project has done — an old `iSCSIApp.app` bundle that still
+exists and contains the dext, hand-run `pluginkit -a` calls, both user and root
+LaunchServices registrations, and a legacy `/Library/LaunchDaemons` job. The
+clean SIP-on VM, drag-installed, has never shown any of it.
+
+**Verify FSKit behaviour on the SIP-on VM (`192.168.0.39`) only.** The SIP-off VM
+remains useful for the daemon, XPC and the setup machine's own logic — it proved
+SMAppService end to end — but its FSKit view cannot be trusted, and `spctl` there
+reports `override=security disabled`, so it cannot answer questions about
+notarization or consent either.
+
+Two things banked from the search, both of which change how the code should read
+these signals:
+
+- **`mount -F` succeeding is not evidence that `FSClient` will list the module.**
+  They resolve through different paths and were observed to disagree for hours.
+  Treat them as independent checks, never as one fact seen twice.
+- **The `Received error '(null)', errno 2, retrieving team ID` line is general
+  26.x behaviour**, not a signal about the enablement toggle. It fires constantly
+  on this machine, unprompted. The earlier note tying it to toggle attempts
+  overstated it; the real finding is only that macOS 27 never logs it at all.
+
 ### Decision: v1 keeps a 26.0 floor and branches at runtime
 
 | | macOS 27+ | macOS 26.x |

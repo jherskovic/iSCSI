@@ -2,10 +2,14 @@
 # Build a notarized, stapled DMG of iSCSI Initiator.
 #
 #   scripts/release.sh                 full pipeline (needs notary credentials)
-#   scripts/release.sh --skip-notarize signed DMG only — for iterating on the
-#                                      pipeline itself. The output is NOT valid
-#                                      for the M0-b enablement test, which is
-#                                      specifically about a notarized build.
+#   scripts/release.sh --skip-notarize signed DMG only — for iterating on THIS
+#                                      SCRIPT and nothing else.
+#
+# Never install --skip-notarize output on a test machine. macOS behaves
+# differently around notarization, so results from an unnotarized build do not
+# predict the shipping one, and a build that is not what you think it is costs
+# far more than the ten minutes the notary takes. Its output is named
+# ...-UNNOTARIZED.dmg so it cannot be mistaken for or overwrite a real release.
 #
 # Environment:
 #   NOTARY_PROFILE   notarytool keychain profile name (default: iSCSINotary)
