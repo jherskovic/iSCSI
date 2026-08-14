@@ -72,11 +72,19 @@ public actor DaemonCore {
         // Report the target's cache policy once per session: if WCE is set and
         // we are not writing through, durability depends on flushes we never
         // receive.
-        if let wce = try? await device.writeCacheEnabled() {
-            let line = "iscsid: \(targetIQN) lun \(lun): write cache "
-                + "\(wce ? "ENABLED" : "disabled"), writeThrough=\(writeThrough)\n"
-            FileHandle.standardError.write(Data(line.utf8))
+        // Built in pieces on purpose: the Swift type checker chokes on this as
+        // one interpolated expression.
+        let wce = try? await device.writeCacheEnabled()
+        let cacheLabel: String
+        switch wce {
+        case .some(true): cacheLabel = "ENABLED"
+        case .some(false): cacheLabel = "disabled"
+        case nil: cacheLabel = "unknown (target returned no caching page)"
         }
+        let wtLabel = writeThrough ? "on" : "off"
+        var line = "iscsid: " + targetIQN + " lun " + String(lun)
+        line += ": write cache " + cacheLabel + ", writeThrough=" + wtLabel + "\n"
+        FileHandle.standardError.write(Data(line.utf8))
 
         handleCounter += 1
         let handle = "s\(handleCounter)"

@@ -28,6 +28,15 @@
         <true/>
     </dict>
 
+    <!-- Set ISCSI_WRITE_THROUGH=0 to disable FUA. That roughly doubles write
+         throughput and gives up crash consistency; it exists for the
+         negative-control experiment, not for production use. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ISCSI_WRITE_THROUGH</key>
+        <string>1</string>
+    </dict>
+
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

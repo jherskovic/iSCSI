@@ -44,7 +44,7 @@ wanted_version() {
 }
 
 echo "== sync source"
-rsync -a --exclude .build --exclude .git --exclude apps/build --exclude .swiftpm ./ "$VM":iSCSI/
+rsync -a --delete --exclude .build --exclude .git --exclude apps/build --exclude .swiftpm ./ "$VM":iSCSI/
 
 echo "== build app (dext) + daemon on VM"
 ssh -o BatchMode=yes "$VM" "security unlock-keychain -p '$PASS' ~/Library/Keychains/login.keychain-db >/dev/null 2>&1;

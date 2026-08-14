@@ -15,7 +15,7 @@ PASS=${ISCSI_VM_PASS:-herko}
 LABEL=me.herko.iSCSIInitiator.daemon
 
 echo "== sync source"
-rsync -a --exclude .build --exclude .git --exclude apps/build --exclude .swiftpm ./ "$VM":iSCSI/
+rsync -a --delete --exclude .build --exclude .git --exclude apps/build --exclude .swiftpm ./ "$VM":iSCSI/
 
 echo "== build iscsid (release)"
 ssh -o BatchMode=yes "$VM" "cd ~/iSCSI && swift build -c release --product iscsid 2>&1 | tail -2"

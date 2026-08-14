@@ -261,17 +261,46 @@ APFS came back consistent despite never having a barrier honoured beneath it.
 roughly half the write throughput. That is the price of crash consistency here,
 and it is why `writeThrough` is a parameter rather than a hardcoded constant.
 
-**What this does not prove.** One trial is not a probability. Crash-consistency
-bugs are timing-dependent, and a single cut at one moment can easily miss a
-window. Two specific gaps remain:
+### Negative control: also passed — and that invalidates the experiment
 
-- The MODE SENSE query returned no caching page, so **the target's write-cache
-  policy is still unknown**. If this target has no volatile cache, FUA was free
-  insurance and the run would have passed without it — meaning the test did not
-  discriminate.
-- There is **no negative control**. Repeating the cut with `writeThrough=false`
-  and seeing corruption would show FUA is doing the work; without that, the pass
-  is consistent with FUA mattering and with it being irrelevant here.
+Repeating the identical cut with `ISCSI_WRITE_THROUGH=0` (no FUA at all):
+
+```
+** The volume ... appears to be OK.   ** The container ... appears to be OK.
+=== verified 64/64 intact, 0 missing, 0 corrupt
+CRASH-CONSISTENCY-PASSED
+```
+
+The control passed too, so **FUA is not what made the first run pass**, and the
+reason is a flaw in the test rather than a property of the system:
+
+> `utmctl stop --force` cuts power to the **initiator**. The target never lost
+> power. A target-side volatile write cache survives an initiator crash intact,
+> so this experiment cannot discriminate FUA no matter how many times it is run.
+
+FUA protects against *target* power loss. Testing that means cutting power to
+the NAS, which is not something to do casually to a machine holding real data.
+
+Two things were nonetheless settled:
+
+- The target **does** have a volatile write cache. With the MODE SENSE fix
+  actually deployed, the daemon reports `write cache ENABLED` at login. (The
+  earlier "unknown" reading came from a stale binary — a build failure had left
+  the previous daemon running, see below.)
+- The **initiator stack is crash-safe**: APFS, DiskImages, the FSKit extension
+  and the daemon together survive an abrupt initiator power loss with fsync'd
+  data intact and the filesystem consistent, with and without FUA.
+
+Because the target's cache is volatile and confirmed enabled, `writeThrough`
+stays on by default: it is the only thing standing between a target power
+failure and the loss of writes APFS believes are durable. The cost is real —
+**76.9 MB/s with FUA vs 117 MB/s without** on the same 128 MiB test.
+
+**Method note.** Two false negatives in this session came from the same mistake:
+running `strings` against binaries that do not contain plain symbol tables —
+shared-cache framework stubs, and kernel collections. Both times a control
+(the same probe against a known-present symbol) exposed it. Do not conclude
+"feature absent" from `strings` without that control.
 
 ## WORKING ON A REAL iSCSI LUN (2026-08-13, macOS 26.6.1)
 
