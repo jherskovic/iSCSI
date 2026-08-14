@@ -48,9 +48,6 @@ private let kImageName = "lun0.img"
 /// existing probes in scripts/vm-scratch-apfs.sh compare like with like.
 private let kDefaultImageBytes: UInt64 = 512 * 1024 * 1024
 
-/// Block size reported through statfs. 512 keeps parity with the scratch dext.
-private let kBlockSize = 512
-
 /// Fixed directory for prototype backing files. Nothing derived from a resource
 /// URL is ever allowed to change this.
 ///
@@ -63,6 +60,9 @@ private let kBlockSize = 512
 /// see it — the bytes are served *as* a file by this filesystem, so the backing
 /// store does not have to be visible to hdiutil or anyone else.
 private let kProtoBackingDir = NSHomeDirectory() + "/Documents"
+
+/// Block size for the local prototype store only; see `BackingStore.blockSize`.
+private let kProtoBlockSize: UInt64 = 4096
 
 /// Per-operation tracing, for correlating barriers with close calls.
 ///
@@ -140,9 +140,11 @@ protocol LUNStore: AnyObject {
 /// `proto`, which keeps a working configuration available for isolating FSKit
 /// problems from network ones.
 final class BackingStore: LUNStore {
-    /// The prototype file has no inherent block size; 4096 matches a 4Kn LUN
-    /// so the local path exercises the same alignment as the real one.
-    let blockSize: UInt64 = 4096
+    /// Prototype-only default. A plain file has no device block size to
+    /// measure, so one is chosen; 4096 makes the local path exercise the same
+    /// alignment as a 4Kn LUN. Nothing on the real path uses this — DaemonStore
+    /// measures the LUN's block size with READ CAPACITY at login.
+    let blockSize: UInt64 = kProtoBlockSize
     private let fd: Int32
     private let lock = NSLock()
     let byteCount: UInt64
