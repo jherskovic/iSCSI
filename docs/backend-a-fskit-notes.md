@@ -272,6 +272,72 @@ Apple's own FSKitSample refusing to enable) is consistent with this: it describe
 macOS 26.1/26.2. The enablement branch is therefore a **runtime decision keyed on
 OS version**, not a compile-time constant, until the 26.x leg is measured.
 
+### The 26.x leg: the same build still refuses (2026-08-14, macOS 26.6.1)
+
+Rig: `herko@192.168.0.39`, a UTM guest running 26.6.1 (25G76), SIP enabled, with
+**no Xcode, no Apple ID and no developer account** — the end-user acceptance
+machine. Same notarized DMG, downloaded-quarantine stamped, dragged to
+`/Applications` in Finder, launched through the Gatekeeper dialog. A COW clone of
+the pre-install state is at `~/UTM-backups/`, so this is re-runnable from zero.
+
+Everything up to the gate works, and works identically to macOS 27:
+
+| step | 26.6.1 |
+|---|---|
+| `spctl -a -t install` on the DMG | `accepted`, `source=Notarized Developer ID` |
+| quarantine after the drag+launch | `01c3;…;Safari;…`, byte-identical in shape to 27 |
+| bundle contents | same `CodeResources` (1716 B) and `embedded.provisionprofile` |
+| pluginkit registration | registered; `fskit_agent` logs `Added 1 identifiers`, no complaint |
+| `FSClient.shared.installedExtensions` | works; reports our module and per-module `isEnabled` |
+| **the System Settings switch** | **row present, switch off, will not move** |
+
+So `FSClient` is usable on 26.x — step E of the setup machine does not need a
+macOS 27 API to *observe* state. Only the enable action is blocked.
+
+Two findings from this leg, in order of usefulness:
+
+**1. The `x-apple.systempreferences:` deep link does not work on 26.6.1.** Risk R7,
+confirmed. `com.apple.LoginItems-Settings.extension` did not navigate anywhere;
+the pane had to be reached by hand. `FSClient.openFileSystemExtensionsSettings()`
+is macOS 27 only, so on 26.x there is currently **no reliable way to put the user
+in front of the switch** — which matters even if the switch is later fixed.
+
+**2. `fskitd` fails a team-ID lookup, and only on 26.x.** During the toggle
+attempts (13:42:01, 13:42:02, 13:43:31, 13:43:33) `fskitd` logged, every time:
+
+```
+Incomming connection, entitled 0
+About to get current agent for 501
+Received error '(null)', errno 2, retrieving team ID
+```
+
+That message does not appear anywhere in macOS 27's log for the whole day, on the
+FSKit subsystem, including the window in which the switch actually worked. It is
+not a logging difference: `strings /usr/libexec/fskitd` on **27** still contains
+both `Received error '%@', errno %d, retrieving team ID` and `%s did not find
+team ID`, so 27 runs the same code and succeeds where 26.6.1 fails. Note the
+error object is `(null)` while `errno` is 2, so `errno` is probably stale from an
+unrelated call and should not be read as a literal ENOENT — the reliable part of
+the signal is *"no team ID was found"*.
+
+Not chased further because it does not change what ships. Ruled out as causes
+along the way: the appex's own staple (absent on **both** machines — nested code
+is covered by the outer bundle's ticket, so this is normal), the entitlements
+(`com.apple.developer.fskit.fsmodule => true` plus `app-sandbox => true` on the
+appex, verified from the signature *on the VM*), and the
+`Extension is not entitled to run in the App Sandbox` line, which on this machine
+is emitted by `chronod` about somebody else's widget.
+
+**The confound, stated honestly.** The machine where the switch works differs from
+the machine where it refuses in *four* ways, not one: macOS 27.0 vs 26.6.1, a
+developer account signed in vs not, Xcode installed vs not, and real hardware vs a
+VM. The OS version is the leading hypothesis because it matches loaf#1 and because
+the 26.x fskitd is demonstrably taking a different branch — but it is not
+isolated. If the discriminator turned out to be the signed-in developer account,
+v1 would be dead for every end user, so this is worth one experiment rather than
+an assumption. The cheapest isolator: upgrade *this* VM to macOS 27 and retry —
+same guest, same absent developer account, same absent Xcode, one variable moved.
+
 ## Soak and crash consistency (2026-08-13)
 
 ### 20-minute soak — passed
