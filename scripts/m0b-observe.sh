@@ -72,8 +72,19 @@ else
         codesign -dv --verbose=4 "$b" 2>&1 \
             | grep -E "^(Identifier|Authority=Developer|TeamIdentifier|Timestamp|CodeDirectory)" \
             | sed 's/^/    /'
+        # stapler ships with the developer tools. On the clean acceptance VM they
+        # are absent, and calling xcrun there pops "install developer tools?" —
+        # which would ruin the one property that makes that machine worth having.
+        # Say "unknown" rather than "NO": an unstapled-looking result on a box
+        # with no stapler is a false negative, and a nested appex legitimately
+        # has no ticket of its own on any machine (it is covered by the outer
+        # bundle's), so "NO" reads as a defect where there is none.
         printf '    stapled ticket: '
-        xcrun stapler validate "$b" >/dev/null 2>&1 && echo yes || echo "NO"
+        if xcode-select -p >/dev/null 2>&1; then
+            xcrun stapler validate "$b" >/dev/null 2>&1 && echo yes || echo "NO"
+        else
+            echo "unknown (no developer tools here — do not install them)"
+        fi
     done
     echo
     printf 'gatekeeper:   '
