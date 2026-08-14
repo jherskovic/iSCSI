@@ -59,6 +59,9 @@ ctl() { printf '%s\n' "$*" | nc -w 5 127.0.0.1 "$CTLPORT" 2>/dev/null; }
 # result, so the distinction has to survive.
 run() {
   local secs=$1 label=$2; shift 2
+  # Truncate first: a killed step never gets sed'd, and its leftovers would
+  # otherwise be printed as if they belonged to the next step.
+  : >/tmp/rstep.out
   "$@" >/tmp/rstep.out 2>&1 &
   local pid=$! i=0
   while [ $i -lt "$secs" ]; do
@@ -364,13 +367,41 @@ scenario_corrupt() {
 }
 
 scenario_pause() {
-  echo "=== pause: portal stops accepting past recovery exhaustion"
+  echo "=== pause: portal stops accepting, then comes back"
+  # The first version of this held the portal down for the entire measurement
+  # window and then asserted that the write did not block — which is not a
+  # claim anyone should make. A network disk that is genuinely unreachable is
+  # *allowed* to block; open-iscsi blocks for two minutes by default. The
+  # claim worth testing is the one after it: once the portal is back, the
+  # stack has to make progress again rather than stay dead.
   attach || return 1
+  ( write_files "$APFSMNT/pausework" 4 16 >/tmp/pausewrite.out 2>&1
+    echo "rc=$?" >>/tmp/pausewrite.out ) &
+  local writer=$!
+  sleep 5
   echo "  $(ctl pause)"
   echo "  $(ctl drop)"
-  run 240 PAUSEDWRITE write_files "$APFSMNT/pausework" 1 8
+  # Hold it down well past recovery exhaustion (5 attempts over ~16s of
+  # backoff) so the session genuinely gives up rather than papering over it.
+  sleep 60
+  if kill -0 $writer 2>/dev/null; then
+    echo "  writer still blocked after 60s of downtime (allowed)"
+  else
+    echo "  writer already returned during the outage (also allowed)"
+  fi
   echo "  $(ctl resume)"
-  sleep 3
+
+  local waited=0
+  while kill -0 $writer 2>/dev/null && [ $waited -lt 180 ]; do sleep 3; waited=$((waited+3)); done
+  if kill -0 $writer 2>/dev/null; then
+    kill -9 $writer 2>/dev/null
+    echo "  WEDGED — still blocked ${waited}s after the portal came back"
+    return 1
+  fi
+  echo "  writer returned ${waited}s after resume"
+  sed 's/^/    /' /tmp/pausewrite.out
+
+  # However the interrupted write ended, a fresh one must work now.
   run 240 RECOVER write_files "$APFSMNT/pausework2" 1 8 || return 1
   run 240 VERIFY verify_files "$APFSMNT/pausework2" || return 1
   teardown
