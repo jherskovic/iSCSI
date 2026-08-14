@@ -33,10 +33,22 @@ public struct PDUSerializer: Sendable {
             out.append(CRC32C.wireDigest(out))
         }
         if !raw.data.isEmpty {
+            let padLen = padded4(raw.data.count) - raw.data.count
             out.append(raw.data)
-            out.append(Data(count: padded4(raw.data.count) - raw.data.count))
+            if padLen > 0 { out.append(Data(count: padLen)) }
             if digests.dataDigest {
-                out.append(CRC32C.wireDigest(raw.data + Data(count: padded4(raw.data.count) - raw.data.count)))
+                // Digest the segment and its padding as a chain rather than
+                // building `raw.data + padding` first: that concatenation
+                // allocated and copied the entire data segment — up to a
+                // megabyte per PDU — purely to compute four bytes.
+                var crc = CRC32C.initial
+                crc = raw.data.withUnsafeBytes { CRC32C.update(crc, $0) }
+                if padLen > 0 {
+                    // At most 3 bytes of zero padding.
+                    let pad = [UInt8](repeating: 0, count: padLen)
+                    crc = pad.withUnsafeBytes { CRC32C.update(crc, $0) }
+                }
+                out.append(CRC32C.wireBytes(CRC32C.finalize(crc)))
             }
         }
         return out
@@ -57,6 +69,17 @@ public struct PDUDeframer: Sendable {
     public var maxDataSegmentLength: Int
 
     private var buffer = Data()
+    /// Bytes at the front of `buffer` already handed out as PDUs.
+    ///
+    /// Consuming with `removeFirst` memmoves everything still buffered on every
+    /// single PDU, which is quadratic when one read delivers many PDUs — the
+    /// normal case for a fast link. Advancing an index instead makes consumption
+    /// O(1); the front is reclaimed in one memmove when it grows large enough to
+    /// be worth it.
+    private var consumed = 0
+
+    /// Compact once the dead prefix exceeds this, or half the buffer.
+    private static let compactThreshold = 64 * 1024
 
     public init(digests: DigestConfig = DigestConfig(), maxDataSegmentLength: Int = 1 << 24) {
         self.digests = digests
@@ -64,20 +87,30 @@ public struct PDUDeframer: Sendable {
     }
 
     public mutating func append(_ bytes: Data) {
+        compactIfNeeded()
         buffer.append(bytes)
     }
 
     /// Bytes buffered but not yet consumed as a complete PDU.
-    public var buffered: Int { buffer.count }
+    public var buffered: Int { buffer.count - consumed }
+
+    private mutating func compactIfNeeded() {
+        guard consumed > 0 else { return }
+        if consumed >= Self.compactThreshold || consumed * 2 >= buffer.count {
+            buffer.removeFirst(consumed)
+            consumed = 0
+        }
+    }
 
     /// Returns the next complete PDU, or nil if more bytes are needed.
     /// On a thrown error the deframer state is poisoned — at ERL0 any framing
     /// or digest error tears down the connection, so no resync is attempted.
     public mutating func next() throws -> RawPDU? {
-        guard buffer.count >= 48 else { return nil }
+        let avail = buffer.count - consumed
+        guard avail >= 48 else { return nil }
 
-        let ahsLen = Int(buffer.u8(4)) * 4
-        let dataLen = Int(buffer.beU24(5))
+        let ahsLen = Int(buffer.u8(consumed + 4)) * 4
+        let dataLen = Int(buffer.beU24(consumed + 5))
         guard dataLen <= maxDataSegmentLength else {
             throw PDUError.dataSegmentTooLarge(length: dataLen, limit: maxDataSegmentLength)
         }
@@ -87,14 +120,14 @@ public struct PDUDeframer: Sendable {
         let paddedData = padded4(dataLen)
         let dataDigestLen = (digests.dataDigest && dataLen > 0) ? 4 : 0
         let total = headerLen + headerDigestLen + paddedData + dataDigestLen
-        guard buffer.count >= total else { return nil }
+        guard avail >= total else { return nil }
 
         if digests.headerDigest {
-            let expected = CRC32C.checksum(buffer.sub(0, headerLen))
-            let onWire = wireDigestValue(at: headerLen)
+            let expected = CRC32C.checksum(buffer.sub(consumed, headerLen))
+            let onWire = wireDigestValue(at: consumed + headerLen)
             guard expected == onWire else { throw PDUError.headerDigestMismatch }
         }
-        let dataStart = headerLen + headerDigestLen
+        let dataStart = consumed + headerLen + headerDigestLen
         if dataDigestLen > 0 {
             let expected = CRC32C.checksum(buffer.sub(dataStart, paddedData))
             let onWire = wireDigestValue(at: dataStart + paddedData)
@@ -102,11 +135,11 @@ public struct PDUDeframer: Sendable {
         }
 
         let raw = RawPDU(
-            bhs: Data(buffer.sub(0, 48)),
-            ahs: Data(buffer.sub(48, ahsLen)),
+            bhs: Data(buffer.sub(consumed, 48)),
+            ahs: Data(buffer.sub(consumed + 48, ahsLen)),
             data: Data(buffer.sub(dataStart, dataLen))
         )
-        buffer.removeFirst(total)
+        consumed += total
         return raw
     }
 

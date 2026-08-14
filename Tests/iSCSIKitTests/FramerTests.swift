@@ -149,3 +149,100 @@ struct SerialTests {
         #expect(!Serial.inWindow(5, lo: 6, hi: 5))
     }
 }
+
+/// Covers the deframer's consumed-index bookkeeping, added to avoid the
+/// quadratic `removeFirst` per PDU. Off-by-one errors there would corrupt
+/// every PDU after the first, so the invariants are checked explicitly.
+@Suite("Deframer buffer management")
+struct DeframerBufferTests {
+    private func nop(_ tag: UInt32, dataSize: Int) -> NopOutPDU {
+        var pdu = NopOutPDU()
+        pdu.initiatorTaskTag = tag
+        pdu.dataSegment = Data((0 ..< dataSize).map { UInt8(truncatingIfNeeded: $0 &+ Int(tag)) })
+        return pdu
+    }
+
+    /// Many PDUs delivered in a single append must come back in order, intact.
+    @Test func manyPDUsInOneAppend() throws {
+        let ser = PDUSerializer()
+        var wire = Data()
+        let sizes = [0, 1, 3, 4, 100, 4096, 7]
+        for (i, size) in sizes.enumerated() {
+            wire.append(ser.serialize(nop(UInt32(i + 1), dataSize: size)))
+        }
+        var deframer = PDUDeframer()
+        deframer.append(wire)
+
+        for (i, size) in sizes.enumerated() {
+            let raw = try #require(try deframer.next())
+            let pdu = try #require(try AnyPDU.decode(raw))
+            #expect(raw.data.count == size, "pdu \(i)")
+            _ = pdu
+        }
+        #expect(try deframer.next() == nil)
+        #expect(deframer.buffered == 0)
+    }
+
+    /// Enough traffic to cross the compaction threshold several times; the
+    /// stream must stay correct across every compaction.
+    @Test func staysCorrectAcrossCompactions() throws {
+        let ser = PDUSerializer()
+        var deframer = PDUDeframer()
+        var expected = 0
+        var seen = 0
+        // ~8 MiB total, well past the 64 KiB compaction threshold.
+        for round in 0 ..< 64 {
+            var chunk = Data()
+            for i in 0 ..< 32 {
+                chunk.append(ser.serialize(nop(UInt32(i + 1), dataSize: 4096)))
+                expected += 1
+            }
+            deframer.append(chunk)
+            _ = round
+            while let raw = try deframer.next() {
+                #expect(raw.data.count == 4096)
+                seen += 1
+            }
+            #expect(deframer.buffered == 0)
+        }
+        #expect(seen == expected)
+    }
+
+    /// A PDU split across appends, with a partial tail left buffered, must
+    /// report the right `buffered` count and resume correctly.
+    @Test func partialTailIsReportedAndResumes() throws {
+        let ser = PDUSerializer()
+        let a = ser.serialize(nop(1, dataSize: 512))
+        let b = ser.serialize(nop(2, dataSize: 512))
+        var deframer = PDUDeframer()
+
+        // First PDU plus 10 bytes of the second.
+        deframer.append(a + b.prefix(10))
+        let first = try #require(try deframer.next())
+        #expect(first.data.count == 512)
+        #expect(try deframer.next() == nil)
+        #expect(deframer.buffered == 10)
+
+        deframer.append(b.dropFirst(10))
+        let second = try #require(try deframer.next())
+        #expect(second.data.count == 512)
+        #expect(deframer.buffered == 0)
+    }
+
+    /// Digest verification reads at an offset into the buffer, so it must also
+    /// respect the consumed index rather than assuming the PDU starts at 0.
+    @Test func digestsVerifyForLaterPDUs() throws {
+        let cfg = DigestConfig(headerDigest: true, dataDigest: true)
+        let ser = PDUSerializer(digests: cfg)
+        var wire = Data()
+        for i in 0 ..< 5 { wire.append(ser.serialize(nop(UInt32(i + 1), dataSize: 333))) }
+
+        var deframer = PDUDeframer(digests: cfg)
+        deframer.append(wire)
+        for _ in 0 ..< 5 {
+            let raw = try #require(try deframer.next())
+            #expect(raw.data.count == 333)
+        }
+        #expect(deframer.buffered == 0)
+    }
+}

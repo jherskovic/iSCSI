@@ -13,6 +13,9 @@ import Foundation
 /// has one; the previous byte-at-a-time table loop also ran through a generic
 /// `Sequence`, which prevented any contiguous fast path.
 public enum CRC32C {
+    /// Starting value for a chained digest; see `update` / `finalize`.
+    public static let initial: UInt32 = 0xFFFF_FFFF
+
     /// Fast path: contiguous bytes go straight to the accelerated routine.
     @inlinable
     public static func checksum(_ bytes: Data) -> UInt32 {
