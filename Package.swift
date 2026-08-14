@@ -9,6 +9,11 @@ let package = Package(
     // target it resolves to "Missing package product 'iSCSIKit'".
     products: [
         .library(name: "iSCSIKit", targets: ["iSCSIKit"]),
+        // Same reason, for the Xcode `iscsid` target: the daemon executable is
+        // built and signed by Xcode now, so that notarization covers it, and an
+        // Xcode target can only link a package *product*. Named ...Kit to keep
+        // it distinguishable from the `iscsid` executable that consumes it.
+        .library(name: "iSCSIDaemonKit", targets: ["iSCSIDaemon"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),

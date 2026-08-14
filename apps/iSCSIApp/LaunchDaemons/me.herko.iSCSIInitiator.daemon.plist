@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The LaunchDaemon for iscsid, registered by SMAppService.daemon(plistName:).
+
+  This replaces two files that had drifted apart — packaging/ and
+  apps/Resources/ each had one, disagreeing about Program vs ProgramArguments
+  and about log paths, and both hardcoding /usr/local/libexec/iscsid. There is
+  now exactly one, it lives in the bundle, and CI asserts that.
+
+  Three rules this file has to obey, each of which fails silently if broken:
+
+    * The filename must equal Label + ".plist". SMAppService looks the service
+      up by the plist's filename, and a mismatch registers a service that can
+      never be found again — including by unregister().
+    * It must be at Contents/Library/LaunchDaemons/, not Contents/Resources/.
+    * BundleProgram, never Program. BundleProgram is resolved relative to the
+      app bundle, so the daemon keeps working when the user moves the app.
+      An absolute Program would go stale the moment they did.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>me.herko.iSCSIInitiator.daemon</string>
+
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/iscsid</string>
+
+    <!-- The daemon vends its XPC service via NSXPCListener(machServiceName:),
+         which only works if launchd owns the name — running the binary from a
+         shell gets a listener with nothing attached to it. Declaring it here is
+         also what makes the daemon start on demand: the FSKit extension's first
+         connection launches it. -->
+    <key>MachServices</key>
+    <dict>
+        <key>me.herko.iSCSIInitiator.daemon</key>
+        <true/>
+    </dict>
+
+    <!-- Makes System Settings → Login Items show "iSCSI Initiator" instead of a
+         bare reverse-DNS label. The user is being asked to approve a background
+         item that runs as root; they should be able to tell what it belongs to. -->
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>me.herko.iSCSIInitiator</string>
+    </array>
+
+    <key>ProcessType</key>
+    <string>Adaptive</string>
+
+    <!-- Deliberately no RunAtLoad and no KeepAlive: the daemon is started on
+         demand by a MachServices lookup and stays up on its own while it holds
+         sessions. Booting it unconditionally would keep a root process running
+         for users who have not configured a target yet.
+
+         Deliberately no StandardOutPath/StandardErrorPath either. This file is
+         inside a signed bundle, so a log path here could not be changed without
+         invalidating the signature — and third-party software should not own a
+         path in /var/log. iscsid logs through os.Logger; see
+         Sources/iSCSIDaemon/DaemonLog.swift.
+
+             log show --predicate 'subsystem == "me.herko.iSCSIInitiator"' --last 1h
+
+         Deliberately no EnvironmentVariables. ISCSI_WRITE_THROUGH lived here,
+         which meant the one knob most likely to need changing on a live system
+         sat in a file that cannot be edited after signing. The daemon still
+         reads the variable, for the dev loop and for the crash-consistency
+         negative control; the shipping override belongs in a daemon-owned
+         config under /Library/Application Support. -->
+</dict>
+</plist>

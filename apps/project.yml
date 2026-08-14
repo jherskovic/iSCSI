@@ -47,8 +47,15 @@ targets:
       - path: iSCSIApp
         excludes:
           - "initiator.icon/**"
+          - "LaunchDaemons/**"
       - path: iSCSIApp/initiator.icon
         type: file
+      # SMAppService.daemon(plistName:) looks here, and nowhere else.
+      - path: iSCSIApp/LaunchDaemons/me.herko.iSCSIInitiator.daemon.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchDaemons
     # The shipping app embeds the FSKit extension (Backend A) and nothing else.
     #
     # The dext is deliberately NOT a dependency: its DriverKit entitlements are
@@ -63,6 +70,15 @@ targets:
     dependencies:
       - target: iSCSIFSExtension
         embed: true
+      # Contents/MacOS/iscsid. It used to be installed by hand to
+      # /usr/local/libexec, which put the one root-privileged binary in the
+      # product outside the signed bundle and outside notarization. Inside the
+      # bundle it is covered by both, and SMAppService's BundleProgram can
+      # address it relatively, so the app keeps working when it is moved.
+      - target: iscsid
+        embed: true
+        copy:
+          destination: executables
     settings:
       base:
         PRODUCT_NAME: "iSCSI Initiator"
@@ -74,6 +90,29 @@ targets:
         # Names the Icon Composer bundle above, without its extension. actool
         # compiles it into Assets.car and stamps CFBundleIconName.
         ASSETCATALOG_COMPILER_APPICON_NAME: initiator
+
+  # ---- The daemon ----
+  # Built by Xcode rather than by `swift build` so that one archive produces
+  # every binary the product ships, all signed with the same Developer ID and
+  # all covered by a single notarization submission. The SwiftPM executable
+  # target stays for `swift run iscsid` in the dev loop; this compiles the same
+  # sources against the same package products.
+  iscsid:
+    type: tool
+    platform: macOS
+    sources:
+      - ../Sources/iscsid
+    dependencies:
+      - package: iSCSI
+        product: iSCSIKit
+      - package: iSCSI
+        product: iSCSIDaemonKit
+    settings:
+      base:
+        PRODUCT_NAME: iscsid
+        # Required for notarization, and required of anything a hardened app
+        # launches. release.sh asserts it on every Mach-O in the bundle.
+        ENABLE_HARDENED_RUNTIME: YES
 
   # ---- DriverKit extension (Backend B): virtual SCSI HBA ----
   # DriverKit isn't a first-class XcodeGen platform; express it as a macOS

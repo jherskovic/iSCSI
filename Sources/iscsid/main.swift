@@ -49,10 +49,10 @@ listener.resume()
 let wtLabel = writeThrough ? "on" : "off"
 let toLabel = policy.taskTimeout.map { "\($0)" } ?? "none"
 var banner = "iscsid: listening on " + iscsiDaemonServiceName
-banner += " (writeThrough=" + wtLabel + ", taskTimeout=" + toLabel + ")\n"
-FileHandle.standardError.write(Data(banner.utf8))
+banner += " (writeThrough=" + wtLabel + ", taskTimeout=" + toLabel + ")"
+DaemonLog.lifecycle(banner)
 dispatchMain()
 #else
-FileHandle.standardError.write(Data("iscsid requires macOS\n".utf8))
+FileHandle.standardError.write(Data("iscsid requires macOS\n".utf8))  // DaemonLog is macOS-only
 exit(1)
 #endif

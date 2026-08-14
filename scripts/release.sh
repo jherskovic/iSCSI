@@ -124,6 +124,29 @@ say "verifying signatures"
 [ -d "$APP/Contents/Extensions/iSCSIFSExtension.appex" ] \
     || die "the FSKit extension is missing from $APP/Contents/Extensions/"
 
+[ -x "$APP/Contents/MacOS/iscsid" ] \
+    || die "the daemon is missing from $APP/Contents/MacOS/iscsid"
+
+# SMAppService resolves a daemon by the *filename* of its plist, so a Label that
+# disagrees with the filename registers a service that can never be looked up
+# again — including by unregister(), which leaves the user with a root daemon
+# they cannot remove. It is silent at build time and at register() time, and
+# only shows up as "approved but nothing happens". Assert it here.
+LD="$APP/Contents/Library/LaunchDaemons"
+[ -d "$LD" ] || die "no $LD in the bundle — SMAppService will find nothing"
+PLIST_COUNT=$(find "$LD" -name '*.plist' | wc -l | tr -d ' ')
+[ "$PLIST_COUNT" -eq 1 ] \
+    || die "expected exactly one LaunchDaemon plist, found $PLIST_COUNT in $LD"
+DAEMON_PLIST=$(find "$LD" -name '*.plist')
+DAEMON_LABEL=$(plutil -extract Label raw "$DAEMON_PLIST")
+[ "$DAEMON_LABEL.plist" = "$(basename "$DAEMON_PLIST")" ] \
+    || die "LaunchDaemon Label ($DAEMON_LABEL) does not match its filename
+($(basename "$DAEMON_PLIST")). SMAppService looks the service up by filename."
+grep -q "<key>BundleProgram</key>" "$DAEMON_PLIST" \
+    || die "$(basename "$DAEMON_PLIST") does not use BundleProgram. An absolute
+Program path goes stale the moment the user moves the app."
+echo "  ok  LaunchDaemon $DAEMON_LABEL (one plist, label matches filename)"
+
 check_binary() {
     local path="$1" label="$2" out
     [ -e "$path" ] || return 0

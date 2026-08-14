@@ -7,20 +7,25 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		005DB4F0958B24DB903379EA /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 472754F976FFDF196B86A23E /* iSCSIKit */; };
 		05C744922CDB7C96CBE2A9E5 /* iSCSIApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FC18B26402E15EC48C74856 /* iSCSIApp.swift */; };
 		1A42FB71385B64D8C7B498E1 /* iSCSIFSExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3079D57585D96DD2ADCA8879 /* iSCSIFSExtension.swift */; };
 		3982D9B9A332FCB9061C3BFA /* iSCSIDext.iig in Sources */ = {isa = PBXBuildFile; fileRef = 3DC08C498B489B3118E2CF64 /* iSCSIDext.iig */; };
+		418C66FD8AB5C17288BCD8E0 /* me.herko.iSCSIInitiator.daemon.plist in CopyFiles */ = {isa = PBXBuildFile; fileRef = 3D7813599A3D7B14A72BA71F /* me.herko.iSCSIInitiator.daemon.plist */; };
 		4E0D9AEC2C32868C1A6D1BB6 /* iSCSIUserClient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E988EFDBF4855884F248B81E /* iSCSIUserClient.cpp */; };
 		7DF0B704FFA3482AABAFE5F3 /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1930AC270A5C69BFDB1258AA /* iSCSIKit */; };
+		834DE1E9C3D343D8B7027A79 /* iSCSIDaemonKit in Frameworks */ = {isa = PBXBuildFile; productRef = 31DCE2C37A7F2B58783C7457 /* iSCSIDaemonKit */; };
 		83E3A3242A55B4C0F8AA573B /* ExtensionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB19582709CC88A804AB9C0C /* ExtensionController.swift */; };
 		8BA66503B292639C7301422A /* iSCSIFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B994EEC4E49C9C783699E6 /* FSKitProbe.swift */; };
 		AF1FD391FC1153FBE7F490E4 /* iSCSIBootstrap.iig in Sources */ = {isa = PBXBuildFile; fileRef = EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */; };
 		B77CB9C6828A0BC03BDBDF53 /* FSKitEnablement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */; };
+		BDCC0B27CD1E5C4DC0C16396 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DDEAF78D697AF7DFDE1F9A4 /* main.swift */; };
 		BF50F567786DC8AD3B01B8D8 /* initiator.icon in Resources */ = {isa = PBXBuildFile; fileRef = D3CE19CCF76F0D1615284CE8 /* initiator.icon */; };
 		D0275F7018B35D408AE1692A /* iSCSIBootstrap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */; };
 		E71D3B1A098B46CBAB3D75F8 /* iSCSIUserClient.iig in Sources */ = {isa = PBXBuildFile; fileRef = E2A9410B4B594B4270735046 /* iSCSIUserClient.iig */; };
 		F95104A4FB9A5F3F762E5992 /* iSCSIDext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E7A00F869F8056AEACDFFAA /* iSCSIDext.cpp */; };
+		FAC47E03255D0C4C5784255D /* iscsid in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 4C16A5233C6A1510F7298B94 /* iscsid */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -31,9 +36,37 @@
 			remoteGlobalIDString = BB773D208684E53219196A1E;
 			remoteInfo = iSCSIFSExtension;
 		};
+		F22C56B624CCE2FBCF9A7BFE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4FDC03CF97A85A16B4901D8D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 40341F59728743EEC8E716E0;
+			remoteInfo = iscsid;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		88431C9E9715B3A0F05651E8 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LaunchDaemons;
+			dstSubfolderSpec = 1;
+			files = (
+				418C66FD8AB5C17288BCD8E0 /* me.herko.iSCSIInitiator.daemon.plist in CopyFiles */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8D86EC2D3CC5E531688B6BCB /* Embed Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				FAC47E03255D0C4C5784255D /* iscsid in Embed Dependencies */,
+			);
+			name = "Embed Dependencies";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A0DF6D550191F3515B39ED6B /* Embed ExtensionKit Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -56,12 +89,15 @@
 		205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FSKitEnablement.swift; sourceTree = "<group>"; };
 		3079D57585D96DD2ADCA8879 /* iSCSIFSExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iSCSIFSExtension.swift; sourceTree = "<group>"; };
 		35C8645A7CB24A5D14623009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		3D7813599A3D7B14A72BA71F /* me.herko.iSCSIInitiator.daemon.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = me.herko.iSCSIInitiator.daemon.plist; sourceTree = "<group>"; };
 		3DC08C498B489B3118E2CF64 /* iSCSIDext.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = iSCSIDext.iig; sourceTree = "<group>"; };
+		4C16A5233C6A1510F7298B94 /* iscsid */ = {isa = PBXFileReference; includeInIndex = 0; path = iscsid; sourceTree = BUILT_PRODUCTS_DIR; };
 		5F8B8631D4F5E81291847966 /* iSCSIApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iSCSIApp.entitlements; sourceTree = "<group>"; };
 		6B913BC483648A1C6DE80191 /* iSCSIFSExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iSCSIFSExtension.entitlements; sourceTree = "<group>"; };
 		723340E094F2D9CBBD1B60F5 /* iSCSI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = iSCSI; path = ..; sourceTree = SOURCE_ROOT; };
 		74EBC031D395B5399FDC5506 /* iSCSIDext.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iSCSIDext.entitlements; sourceTree = "<group>"; };
 		90DA087A85B91E84CD0AB5D4 /* iSCSIApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iSCSIApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9DDEAF78D697AF7DFDE1F9A4 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		A69431A8E793158D26316EAD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		AB19582709CC88A804AB9C0C /* ExtensionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionController.swift; sourceTree = "<group>"; };
 		D3CE19CCF76F0D1615284CE8 /* initiator.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = initiator.icon; sourceTree = "<group>"; };
@@ -82,6 +118,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		6D75A926E70E350606FB10FE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				005DB4F0958B24DB903379EA /* iSCSIKit in Frameworks */,
+				834DE1E9C3D343D8B7027A79 /* iSCSIDaemonKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -89,6 +134,7 @@
 			isa = PBXGroup;
 			children = (
 				90DA087A85B91E84CD0AB5D4 /* iSCSIApp.app */,
+				4C16A5233C6A1510F7298B94 /* iscsid */,
 				F9E5E4079C9AAECB94704229 /* iSCSIDext.dext */,
 				0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */,
 			);
@@ -104,14 +150,24 @@
 				D3CE19CCF76F0D1615284CE8 /* initiator.icon */,
 				5F8B8631D4F5E81291847966 /* iSCSIApp.entitlements */,
 				0FC18B26402E15EC48C74856 /* iSCSIApp.swift */,
+				2DBB9BD9979EA5791B8473D2 /* LaunchDaemons */,
 				43583C634F10BF5F2F2C2CD7 /* Setup */,
 			);
 			path = iSCSIApp;
 			sourceTree = "<group>";
 		};
+		2DBB9BD9979EA5791B8473D2 /* LaunchDaemons */ = {
+			isa = PBXGroup;
+			children = (
+				3D7813599A3D7B14A72BA71F /* me.herko.iSCSIInitiator.daemon.plist */,
+			);
+			path = LaunchDaemons;
+			sourceTree = "<group>";
+		};
 		42F85755989DD49B28E3E3E8 = {
 			isa = PBXGroup;
 			children = (
+				7D5EE8DCF2317E5F31344E7F /* iSCSI */,
 				1CBA2062DEE18E43B82F443B /* iSCSIApp */,
 				82044F9EDFEF684FEA65361F /* iSCSIDext */,
 				BE88DEC69C0F7A53E3715375 /* iSCSIFSExtension */,
@@ -127,6 +183,15 @@
 				205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */,
 			);
 			path = Setup;
+			sourceTree = "<group>";
+		};
+		7D5EE8DCF2317E5F31344E7F /* iSCSI */ = {
+			isa = PBXGroup;
+			children = (
+				B8DC4B541A69224E65778173 /* Sources */,
+			);
+			name = iSCSI;
+			path = ..;
 			sourceTree = "<group>";
 		};
 		82044F9EDFEF684FEA65361F /* iSCSIDext */ = {
@@ -150,6 +215,22 @@
 				EB08832F94FB4DF341938A31 /* iSCSIUserClientShared.h */,
 			);
 			path = Shared;
+			sourceTree = "<group>";
+		};
+		AEF5ABC3AFC4BE409078B03A /* iscsid */ = {
+			isa = PBXGroup;
+			children = (
+				9DDEAF78D697AF7DFDE1F9A4 /* main.swift */,
+			);
+			path = iscsid;
+			sourceTree = "<group>";
+		};
+		B8DC4B541A69224E65778173 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				AEF5ABC3AFC4BE409078B03A /* iscsid */,
+			);
+			path = Sources;
 			sourceTree = "<group>";
 		};
 		BE88DEC69C0F7A53E3715375 /* iSCSIFSExtension */ = {
@@ -190,18 +271,41 @@
 			productReference = F9E5E4079C9AAECB94704229 /* iSCSIDext.dext */;
 			productType = "com.apple.product-type.driver-extension";
 		};
+		40341F59728743EEC8E716E0 /* iscsid */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7DA4BC249C777B219B797215 /* Build configuration list for PBXNativeTarget "iscsid" */;
+			buildPhases = (
+				6449D8A46D81B39646BE9284 /* Sources */,
+				6D75A926E70E350606FB10FE /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = iscsid;
+			packageProductDependencies = (
+				472754F976FFDF196B86A23E /* iSCSIKit */,
+				31DCE2C37A7F2B58783C7457 /* iSCSIDaemonKit */,
+			);
+			productName = iscsid;
+			productReference = 4C16A5233C6A1510F7298B94 /* iscsid */;
+			productType = "com.apple.product-type.tool";
+		};
 		7575591A2E9C965DCDD0C6A4 /* iSCSIApp */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 955C6A1C6B5CD9EEBA760D48 /* Build configuration list for PBXNativeTarget "iSCSIApp" */;
 			buildPhases = (
 				88BC9DAC7C07876216195078 /* Sources */,
 				850FAA65C189AFE85C13C1B3 /* Resources */,
+				88431C9E9715B3A0F05651E8 /* CopyFiles */,
 				A0DF6D550191F3515B39ED6B /* Embed ExtensionKit Extensions */,
+				8D86EC2D3CC5E531688B6BCB /* Embed Dependencies */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				8F4CDBCF3CEC0013BBBCF081 /* PBXTargetDependency */,
+				BCCC7CDAAC07564DF81BAAF2 /* PBXTargetDependency */,
 			);
 			name = iSCSIApp;
 			packageProductDependencies = (
@@ -242,6 +346,10 @@
 						DevelopmentTeam = 4A27X5PJP3;
 						ProvisioningStyle = Automatic;
 					};
+					40341F59728743EEC8E716E0 = {
+						DevelopmentTeam = 4A27X5PJP3;
+						ProvisioningStyle = Automatic;
+					};
 					7575591A2E9C965DCDD0C6A4 = {
 						DevelopmentTeam = 4A27X5PJP3;
 						ProvisioningStyle = Automatic;
@@ -270,6 +378,7 @@
 			projectRoot = "";
 			targets = (
 				7575591A2E9C965DCDD0C6A4 /* iSCSIApp */,
+				40341F59728743EEC8E716E0 /* iscsid */,
 				34B4B33589792E2B507EFB6B /* iSCSIDext */,
 				BB773D208684E53219196A1E /* iSCSIFSExtension */,
 			);
@@ -309,6 +418,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		6449D8A46D81B39646BE9284 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BDCC0B27CD1E5C4DC0C16396 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		88BC9DAC7C07876216195078 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -327,6 +444,11 @@
 			isa = PBXTargetDependency;
 			target = BB773D208684E53219196A1E /* iSCSIFSExtension */;
 			targetProxy = 3A35A1DC944D3F417C7EFF2E /* PBXContainerItemProxy */;
+		};
+		BCCC7CDAAC07564DF81BAAF2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 40341F59728743EEC8E716E0 /* iscsid */;
+			targetProxy = F22C56B624CCE2FBCF9A7BFE /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -367,6 +489,21 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator;
 				PRODUCT_NAME = "iSCSI Initiator";
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		5CEBFFDB72DA0C4E31D7EEEE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator.iscsid;
+				PRODUCT_NAME = iscsid;
 				SDKROOT = macosx;
 			};
 			name = Debug;
@@ -472,6 +609,21 @@
 				PRODUCT_NAME = me.herko.iSCSIInitiator.dext;
 				SDKROOT = driverkit;
 				SUPPORTED_PLATFORMS = driverkit;
+			};
+			name = Release;
+		};
+		B6A4822E346FB347C9FA1D35 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator.iscsid;
+				PRODUCT_NAME = iscsid;
+				SDKROOT = macosx;
 			};
 			name = Release;
 		};
@@ -582,6 +734,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		7DA4BC249C777B219B797215 /* Build configuration list for PBXNativeTarget "iscsid" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5CEBFFDB72DA0C4E31D7EEEE /* Debug */,
+				B6A4822E346FB347C9FA1D35 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		822AAF8431B327B65C7E83CC /* Build configuration list for PBXNativeTarget "iSCSIFSExtension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -620,6 +781,14 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		1930AC270A5C69BFDB1258AA /* iSCSIKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = iSCSIKit;
+		};
+		31DCE2C37A7F2B58783C7457 /* iSCSIDaemonKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = iSCSIDaemonKit;
+		};
+		472754F976FFDF196B86A23E /* iSCSIKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = iSCSIKit;
 		};

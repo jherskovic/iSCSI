@@ -87,8 +87,8 @@ public actor DaemonCore {
         }
         let wtLabel = writeThrough ? "on" : "off"
         var line = "iscsid: " + targetIQN + " lun " + String(lun)
-        line += ": write cache " + cacheLabel + ", writeThrough=" + wtLabel + "\n"
-        FileHandle.standardError.write(Data(line.utf8))
+        line += ": write cache " + cacheLabel + ", writeThrough=" + wtLabel
+        DaemonLog.session(line)
 
         handleCounter += 1
         let handle = "s\(handleCounter)"

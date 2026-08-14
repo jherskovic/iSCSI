@@ -157,7 +157,7 @@ public enum DextBridgeError: Error, Sendable, CustomStringConvertible {
 /// File-scope so the concurrent servicing path (which is deliberately outside
 /// the actor) can log without touching `DextBridge` at all.
 private func dextLog(_ message: String) {
-    FileHandle.standardError.write(Data("iscsid[dext]: \(message)\n".utf8))
+    DaemonLog.dextMessage(message)
 }
 
 /// Set ISCSI_TRACE_TASKS=1 to log every serviced READ/WRITE with its LBA —
