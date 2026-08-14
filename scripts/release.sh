@@ -106,6 +106,20 @@ xcodebuild -project apps/iSCSIInitiator.xcodeproj \
     -allowProvisioningUpdates archive >"$BUILD/archive.log" 2>&1 \
     || { tail -40 "$BUILD/archive.log"; die "archive failed (full log: $BUILD/archive.log)"; }
 
+# An archive containing more than one installed product gets no
+# ApplicationProperties, and -exportArchive then reports only
+#   exportOptionsPlist error for key "method" expected one {} but found developer-id
+# which says nothing about the actual cause. Diagnose it here instead. The usual
+# trigger is a helper target (a tool, a second app) missing SKIP_INSTALL=YES.
+if ! plutil -extract ApplicationProperties raw -expect dictionary \
+        "$ARCHIVE/Info.plist" >/dev/null 2>&1; then
+    echo "  archive products:" >&2
+    find "$ARCHIVE/Products" -maxdepth 3 -mindepth 1 | sed "s|$ARCHIVE/Products|    |" >&2
+    die "the archive has no ApplicationProperties, so -exportArchive cannot pick a
+distribution method. This usually means a helper target is being installed as a
+second top-level product; set SKIP_INSTALL: YES on it so it is only embedded."
+fi
+
 say "exporting Developer ID build"
 xcodebuild -exportArchive -archivePath "$ARCHIVE" \
     -exportOptionsPlist packaging/ExportOptions-DeveloperID.plist \

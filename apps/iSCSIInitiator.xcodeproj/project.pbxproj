@@ -505,6 +505,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator.iscsid;
 				PRODUCT_NAME = iscsid;
 				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
 			};
 			name = Debug;
 		};
@@ -624,6 +625,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator.iscsid;
 				PRODUCT_NAME = iscsid;
 				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
 			};
 			name = Release;
 		};

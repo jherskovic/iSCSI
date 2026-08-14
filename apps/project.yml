@@ -113,6 +113,18 @@ targets:
         # Required for notarization, and required of anything a hardened app
         # launches. release.sh asserts it on every Mach-O in the bundle.
         ENABLE_HARDENED_RUNTIME: YES
+        # Without this the archive gets TWO products — Applications/iSCSI
+        # Initiator.app and usr/local/bin/iscsid — and Xcode then writes no
+        # ApplicationProperties into the archive's Info.plist, because it cannot
+        # tell which product the archive is *of*. `-exportArchive` reads that key
+        # to pick a distribution method and fails with the wonderfully opaque
+        #
+        #   exportOptionsPlist error for key "method" expected one {} but found developer-id
+        #
+        # ("one {}" is an empty list of applicable methods). The daemon still
+        # reaches the bundle through the Embed phase on iSCSIApp; it just must
+        # not also be installed as a top-level product of the archive.
+        SKIP_INSTALL: YES
 
   # ---- DriverKit extension (Backend B): virtual SCSI HBA ----
   # DriverKit isn't a first-class XcodeGen platform; express it as a macOS
