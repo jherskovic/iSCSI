@@ -48,7 +48,10 @@ def content(seed: int, size: int) -> bytes:
 def worker(idx: int, root: str, seconds: float):
     deadline = time.time() + seconds
     rnd = random.Random(1000 + idx)
-    path = os.path.join(root, f"soak-{idx}.bin")
+    # Include the pid: two soak instances pointed at the same directory would
+    # otherwise share file names, overwrite each other, and report the result
+    # as data corruption. That happened once and cost real time to diagnose.
+    path = os.path.join(root, f"soak-{os.getpid()}-{idx}.bin")
 
     # Sizes deliberately straddle the 4096-byte LUN block size, including sizes
     # that are not multiples of it, to force read-modify-write.
