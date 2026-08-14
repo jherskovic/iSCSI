@@ -217,6 +217,62 @@ is registered but has **never been instantiated even once**.
    <private>" records and likely name the actual rejection reason. This was
    about to be tried when the VM froze.
 
+## Soak and crash consistency (2026-08-13)
+
+### 20-minute soak — passed
+
+`scripts/soak.py`, 4 workers plus 3 GB of memory pressure, against APFS on the
+real 40 GiB LUN:
+
+```
+written=38696 MB  read=77186 MB
+files=268655  rmwPatches=235278  verifies=503933  errors=0
+```
+
+Throughput stayed flat (27–35 MB/s write, 53–71 MB/s read) for the whole run.
+Two things this actually establishes:
+
+- The **read-modify-write path was exercised 235k times** with every file
+  verified by SHA-256 afterwards, so the alignment fix holds under sustained
+  unaligned, odd-sized I/O rather than just in the cases I thought to test.
+- No **loopback-writeback deadlock**. Dirty disk-image pages are written back
+  *through* a userspace filesystem, which is the classic NFS-loopback hazard;
+  under 3 GB of pressure with pageouts occurring, nothing stalled.
+
+### Crash consistency — passed
+
+Method: write 64 × 1 MiB files, `fsync` each, `fsync` the directory, `sync`.
+Save the manifest **to the host**, because verifying against a manifest stored
+on the volume under test would prove nothing. Start a write load so dirty state
+is in flight, then cut power with `utmctl stop --force` — a real power cut, not
+a shutdown. Reboot, remount, check.
+
+```
+** The volume /dev/rdisk9s1 ... appears to be OK.
+** The container /dev/disk8 appears to be OK.
+=== verified 64/64 intact, 0 missing, 0 corrupt
+CRASH-CONSISTENCY-PASSED
+```
+
+So with FUA write-through, data that `fsync` reported durable *was* durable, and
+APFS came back consistent despite never having a barrier honoured beneath it.
+
+**Cost:** 128 MiB writes ran at **76.9 MB/s with FUA vs 162 MB/s without** —
+roughly half the write throughput. That is the price of crash consistency here,
+and it is why `writeThrough` is a parameter rather than a hardcoded constant.
+
+**What this does not prove.** One trial is not a probability. Crash-consistency
+bugs are timing-dependent, and a single cut at one moment can easily miss a
+window. Two specific gaps remain:
+
+- The MODE SENSE query returned no caching page, so **the target's write-cache
+  policy is still unknown**. If this target has no volatile cache, FUA was free
+  insurance and the run would have passed without it — meaning the test did not
+  discriminate.
+- There is **no negative control**. Repeating the cut with `writeThrough=false`
+  and seeing corruption would show FUA is doing the work; without that, the pass
+  is consistent with FUA mattering and with it being irrelevant here.
+
 ## WORKING ON A REAL iSCSI LUN (2026-08-13, macOS 26.6.1)
 
 The complete Backend A chain, against the TrueNAS scratch target:

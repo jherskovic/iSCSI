@@ -18,7 +18,7 @@ the software-controller throughput limit (see `docs/architecture.md`).
 | 2 | Negotiation engine, login state machine, CHAP | ✅ done |
 | 3 | Session/connection engine, scriptable MockTarget, hostile-script suite | ✅ done |
 | 4 | `NetworkTransport` (TCP), `iscsictl`, iscsid daemon (BlockDevice + XPC) | ✅ **verified vs real TrueNAS**; daemon built + tested |
-| 5 | FSKit + `hdiutil` block-device backend | ✅ **works on a real 40 GiB iSCSI LUN**: APFS formats, mounts and reports 40 GiB; 128 MiB at 162 MB/s, byte-exact across detach/reattach; no wedge |
+| 5 | FSKit + `hdiutil` block-device backend | ✅ **works on a real 40 GiB iSCSI LUN**; 20-min soak clean (38.7 GB written, 503k verifies, 0 errors) and **survives a power cut** with FUA write-through |
 | 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **real disk; ExFAT works end-to-end, APFS now formats and mounts**; see the open issues below |
 | 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
 
