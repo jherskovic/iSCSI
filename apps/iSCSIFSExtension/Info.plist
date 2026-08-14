@@ -9,9 +9,9 @@
     <key>CFBundlePackageType</key>
     <string>XPC!</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
     <!-- Suspect #3 from docs/backend-a-fskit-notes.md:214 for why the System
          Settings switch refuses to enable this module: Apple's own modules set
          LSMinimumSystemVersion and ours did not. fskit_agent validates modules

@@ -174,6 +174,23 @@ It would accept a connection from any process on the machine. Archive Release."
 fi
 echo "  ok  iscsid has no DEBUG authorization bypass"
 
+# The DMG filename comes from project.yml; the bundle's version comes from its
+# Info.plist. Nothing tied them together, and for two releases they disagreed —
+# "iSCSI Initiator-0.1.2.dmg" contained an app reporting 0.1.0, because the
+# Info.plists hardcoded the version instead of substituting $(MARKETING_VERSION).
+# Silent, and poisonous later: Sparkle decides whether an update is needed by
+# comparing the appcast's version to the installed bundle's, so a bundle stuck at
+# 0.1.0 either updates forever or never.
+for pair in "$APP:app" \
+            "$APP/Contents/Extensions/iSCSIFSExtension.appex:FSKit extension"; do
+    bundle=${pair%:*}; label=${pair##*:}
+    got=$(plutil -extract CFBundleShortVersionString raw "$bundle/Contents/Info.plist")
+    [ "$got" = "$VERSION" ] \
+        || die "$label reports version $got but this release is $VERSION.
+Check that its Info.plist uses \$(MARKETING_VERSION) rather than a literal."
+done
+echo "  ok  every bundle reports version $VERSION"
+
 check_binary() {
     local path="$1" label="$2" out
     [ -e "$path" ] || return 0
