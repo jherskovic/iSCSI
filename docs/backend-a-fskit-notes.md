@@ -346,7 +346,7 @@ no longer threatens the product: the failure is on the *older* OS, which is the
 opposite of what a VM-specific restriction would predict, and the fallback below
 works in the VM anyway.
 
-### The 26.x fallback works, but it costs a reboot
+### The 26.x fallback works, and does not need a reboot
 
 With the switch refusing, the documented plist route was run end to end on
 26.6.1. It works:
@@ -358,16 +358,27 @@ With the switch refusing, the documented plist route was run end to end on
 | reboot | entry **survives** — not pruned |
 | mount after reboot | **`MOUNTED`**, `lun0.img` visible, clean unmount |
 
-Two things to carry into the setup machine:
+**`fskitd` is what holds the stale state, not `fskit_agent`.** An earlier draft of
+this section claimed the live state is only re-read at boot; that was wrong, and
+wrong in a way that would have put a needless "restart your Mac" step in the
+shipping setup flow. Only `fskit_agent` had been restarted — never `fskitd`, which
+is the root daemon `/sbin/mount` actually consults. Re-run from a clean
+live-disabled baseline (plist restored, rebooted, mount confirmed failing):
 
-1. **A reboot is required on 26.x.** Restarting `fskit_agent` is not enough; the
-   live enablement state is only re-read at boot. On macOS 27 the switch takes
-   effect immediately, so the two branches differ in user experience, not just in
-   mechanism — E-fallback has to be able to say "restart to finish" and then pick
-   up where it left off on the next launch.
-2. **The entry was not pruned**, because it was written after the module's
-   pluginkit registration (registration 20:35:06 UTC, write ~21:44). The ordering
-   rule at the end of this document held exactly as recorded.
+| step | result |
+|---|---|
+| write the entry, restart nothing | `Module … is disabled!` |
+| **`sudo killall fskitd`** | **`MOUNTED`** |
+
+So the whole 26.x enablement is: write the entry, kick `fskitd`, done — no
+reboot, no logout. Prefer `launchctl kickstart -k system/com.apple.fskitd` to
+`killall` in shipping code; it is the supported spelling and it waits for the
+relaunch. It needs root, which is free here because M2 installs a root daemon
+anyway.
+
+The entry was not pruned, because it was written after the module's pluginkit
+registration (registration 20:35:06 UTC, write ~20:44). The ordering rule at the
+end of this document held exactly as recorded.
 
 Still unverified, and it is now the deciding unknown for 26.x: this write came
 from an **ssh shell**, which inherits broader TCC grants than a freshly installed
