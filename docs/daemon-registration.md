@@ -109,3 +109,34 @@ A registration made from `build/export/` survives the next `release.sh`, which
 deletes that directory — leaving a registration pointing at nothing. Click
 **Unregister** when finished with a throwaway build, or remove it in System
 Settings → General → Login Items & Extensions.
+
+## M3 verified end to end (2026-08-14)
+
+Clean SIP-on VM (`192.168.0.39`, macOS 26.6.1, no Xcode, no Apple ID), notarized
+0.1.3, installed by dragging from the DMG over an existing 0.1.2. The user
+clicked only buttons inside our app; Terminal was never opened.
+
+```
+app                0.1.3
+daemon             state = running, pid 1286, Contents/MacOS/iscsid
+module registered  me.herko.iSCSIInitiator.fsext(0.1.3)
+enabledModules     ours present
+mount -F -t iSCSI  => MOUNTED, lun0.img present
+```
+
+**The extension steps were red on first launch, and that is the finding.**
+Dragging the new bundle over the old one dropped the extension's registration —
+the failure mode `backend-a-fskit-notes.md` documents for in-place bundle
+replacement — and the every-launch check caught it and repaired it with one
+button.
+
+That is the M7 post-update repair path, working before M7 exists. A Sparkle
+update replaces the bundle exactly the same way, so no update-specific code is
+needed: re-checking unconditionally on every launch turns "an update broke the
+registration" into an ordinary unsatisfied step. This is the payoff for the
+design decision in `SetupCoordinator`, and the reason not to narrow it later
+into a check that only runs on first run or only after a version change.
+
+It also settles the repair action's scope: `lsregister` run in the *user's*
+context is sufficient on a healthy machine, so the daemon does not need a
+privileged re-registration call.
