@@ -40,22 +40,59 @@ final class ModuleRegistration: SetupStep {
 
     var actionLabel: String? { state.isSatisfied ? nil : "Register" }
 
-    /// `pluginkit -a` on the embedded appex. LaunchServices normally does this
-    /// on its own when the bundle lands in /Applications, so this is a repair
-    /// for the case where it did not — most often after an in-place bundle
-    /// replacement, which drops the registration.
+    /// Re-register the *app* with LaunchServices, not the appex with pluginkit.
+    ///
+    /// FSKit enumerates modules through LaunchServices/ExtensionKit, not through
+    /// pluginkit's database, and the two can disagree. Measured: after a bundle
+    /// was placed by something other than Finder, `pluginkit -a` added a record
+    /// that `pluginkit -m -v` showed with a **(null)** version, and
+    /// `FSClient.installedExtensions` ignored it completely — while `mount -F`
+    /// worked fine, so nothing was actually broken except our ability to see it.
+    /// `lsregister -f -R -trusted` restored the version and the record.
+    ///
+    /// A normal install cannot reach this state: dragging from the DMG makes
+    /// Finder register the bundle properly. This is a repair for bundles placed
+    /// by scripts, installers, or a restore.
     func perform() async {
-        let appex = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Extensions/iSCSIFSExtension.appex")
-        let pluginkit = Process()
-        pluginkit.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
-        pluginkit.arguments = ["-a", appex.path]
-        try? pluginkit.run()
-        pluginkit.waitUntilExit()
-        // Registration is asynchronous on the LaunchServices side; a check
-        // fired immediately would report the old answer.
-        try? await Task.sleep(for: .seconds(1))
+        state = .checking
+        var attempted: [String] = []
+
+        let lsregister = "/System/Library/Frameworks/CoreServices.framework"
+            + "/Frameworks/LaunchServices.framework/Support/lsregister"
+        if FileManager.default.isExecutableFile(atPath: lsregister) {
+            attempted.append(run(lsregister, ["-f", "-R", "-trusted", Bundle.main.bundleURL.path]))
+        } else {
+            attempted.append("lsregister not present at the expected path")
+        }
+
+        // Registration propagates asynchronously; checking immediately reports
+        // the previous answer and makes the button look inert.
+        try? await Task.sleep(for: .seconds(2))
         await check()
+
+        // If it still is not registered, say what was tried. A button that
+        // changes nothing and explains nothing reads as broken — which is
+        // exactly how the pluginkit-only version of this looked.
+        if !state.isSatisfied {
+            state = .blocked(
+                "macOS still does not list the extension after re-registering. "
+                + "Quitting and reopening the app usually settles it; if not, "
+                + "drag the app out of Applications and back in. "
+                + "(tried: \(attempted.joined(separator: "; ")))")
+        }
+    }
+
+    private func run(_ path: String, _ arguments: [String]) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return "\((path as NSString).lastPathComponent) exited \(process.terminationStatus)"
+        } catch {
+            return "\((path as NSString).lastPathComponent) failed: \(error.localizedDescription)"
+        }
     }
 }
 
