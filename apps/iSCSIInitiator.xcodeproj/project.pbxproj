@@ -16,6 +16,7 @@
 		8BA66503B292639C7301422A /* iSCSIFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B994EEC4E49C9C783699E6 /* FSKitProbe.swift */; };
 		AF1FD391FC1153FBE7F490E4 /* iSCSIBootstrap.iig in Sources */ = {isa = PBXBuildFile; fileRef = EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */; };
+		B77CB9C6828A0BC03BDBDF53 /* FSKitEnablement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */; };
 		D0275F7018B35D408AE1692A /* iSCSIBootstrap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */; };
 		E71D3B1A098B46CBAB3D75F8 /* iSCSIUserClient.iig in Sources */ = {isa = PBXBuildFile; fileRef = E2A9410B4B594B4270735046 /* iSCSIUserClient.iig */; };
 		F95104A4FB9A5F3F762E5992 /* iSCSIDext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1E7A00F869F8056AEACDFFAA /* iSCSIDext.cpp */; };
@@ -51,6 +52,7 @@
 		0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = iSCSIFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		0FC18B26402E15EC48C74856 /* iSCSIApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iSCSIApp.swift; sourceTree = "<group>"; };
 		1E7A00F869F8056AEACDFFAA /* iSCSIDext.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = iSCSIDext.cpp; sourceTree = "<group>"; };
+		205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FSKitEnablement.swift; sourceTree = "<group>"; };
 		3079D57585D96DD2ADCA8879 /* iSCSIFSExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iSCSIFSExtension.swift; sourceTree = "<group>"; };
 		35C8645A7CB24A5D14623009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		3DC08C498B489B3118E2CF64 /* iSCSIDext.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = iSCSIDext.iig; sourceTree = "<group>"; };
@@ -99,6 +101,7 @@
 				35C8645A7CB24A5D14623009 /* Info.plist */,
 				5F8B8631D4F5E81291847966 /* iSCSIApp.entitlements */,
 				0FC18B26402E15EC48C74856 /* iSCSIApp.swift */,
+				43583C634F10BF5F2F2C2CD7 /* Setup */,
 			);
 			path = iSCSIApp;
 			sourceTree = "<group>";
@@ -113,6 +116,14 @@
 				8C6FB6AB391F5BAB22589C7E /* Shared */,
 				0643FA97BE3313A2903E9FDC /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		43583C634F10BF5F2F2C2CD7 /* Setup */ = {
+			isa = PBXGroup;
+			children = (
+				205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */,
+			);
+			path = Setup;
 			sourceTree = "<group>";
 		};
 		82044F9EDFEF684FEA65361F /* iSCSIDext */ = {
@@ -288,6 +299,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				83E3A3242A55B4C0F8AA573B /* ExtensionController.swift in Sources */,
+				B77CB9C6828A0BC03BDBDF53 /* FSKitEnablement.swift in Sources */,
 				ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */,
 				05C744922CDB7C96CBE2A9E5 /* iSCSIApp.swift in Sources */,
 			);
@@ -395,7 +407,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 4A27X5PJP3;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -415,7 +427,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -518,7 +530,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 4A27X5PJP3;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -532,7 +544,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

@@ -61,6 +61,8 @@ final class FSKitProbe: ObservableObject {
     @Published private(set) var state: ModuleState = .notRegistered
     @Published private(set) var allModules: [String] = []
     @Published private(set) var lastChecked: Date?
+    /// Result of the M0-b.2 write attempt, nil until the button is pressed.
+    @Published private(set) var writeReport: FSKitEnablement.Report?
 
     /// Ask FSKit directly rather than inferring from the settings plist.
     func refresh() async {
@@ -99,6 +101,21 @@ final class FSKitProbe: ObservableObject {
             if let url = URL(string: raw), NSWorkspace.shared.open(url) { return }
         }
     }
+
+    /// M0-b.2: perform the shipping 26.x write from the app's own TCC context.
+    ///
+    /// The write has only ever been proven from an ssh shell, which inherits the
+    /// terminal's grants; a freshly installed app is a different principal
+    /// against a foreign group container. Runs off the main actor because a TCC
+    /// denial can block on a consent prompt.
+    func attemptEnablementWrite() async {
+        let report = await Task.detached { FSKitEnablement.enableModule() }.value
+        writeReport = report
+        // The entry only becomes live once fskitd re-reads it, which needs root,
+        // so state will still read "disabled" here. Refresh anyway: if it does
+        // flip, that is worth knowing.
+        await refresh()
+    }
 }
 
 /// The M0-b observation panel: module state, every installed module for context,
@@ -131,6 +148,30 @@ struct FSKitProbeView: View {
                     Text(probe.allModules.joined(separator: "\n"))
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
+                }
+
+                Divider()
+
+                // M0-b.2. Separated from the state display above because it is
+                // the only control here that changes anything.
+                HStack(spacing: 8) {
+                    Text("macOS 26.x fallback")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Attempt enablement write") {
+                        Task { await probe.attemptEnablementWrite() }
+                    }
+                }
+
+                if let report = probe.writeReport {
+                    Text(report.transcript)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(report.succeeded ? Color.green.opacity(0.12)
+                                                     : Color.red.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
             .padding(6)
