@@ -78,29 +78,63 @@ It also removes a lot of code: no INQUIRY/READ CAPACITY/MODE SENSE/UNMAP
 emulation, no VPD pages, no sense data — the dext would translate
 `DoAsyncReadWrite` to `iscsid` block I/O almost directly.
 
-## What is not yet known
+## BLOCKER FOUND: the data buffer is unreachable from a virtual dext
 
-- **Whether it loads.** Both frameworks ship in the same DriverKit SDK with the
-  same targets and no visible availability gating, but that is not proof the
-  kernel side is present on macOS 26.6. `strings` on the kernel collections
-  proves nothing here: the same probe finds no
-  `IOUserSCSIParallelInterfaceController` either, and that one demonstrably
-  works. The only real test is building a dext against it and loading it.
-- **Which entitlement it needs.** Probably a `com.apple.developer.driverkit.*`
-  family entitlement, quite possibly one requiring Apple approval, as the
-  transport-family ones do.
-- **Whether the APFS wedge follows it.** `scripts/vm-scratch-apfs.sh` has a
-  ready-made discriminating probe: serve a RAM buffer from the dext and run the
-  positional two-access test. If it survives, Backend C is the answer for the
-  whole project.
+`DoAsyncReadWrite` hands the dext a bare address:
 
-## Recommendation
+```c
+ * @param       dmaAddr DMA address of the data buffer
+uint64_t dmaAddr,
+```
 
-Worth a spike, and cheap to falsify: a minimal `IOUserBlockStorageDevice` dext
-serving a RAM buffer, loaded on the SIP-off VM, with the existing positional
-probe run against it. That answers "does it load" and "does the wedge follow"
-in one experiment, before any iSCSI wiring.
+DriverKit provides **no way to turn a DMA address into memory a dext can read
+or write**. The whole of `IOMemoryDescriptor`'s creation surface is
+`CreateMapping`, `CreateWithMemoryDescriptors` and `GetAddressRange` — every one
+of which needs a descriptor you already hold. There is no
+"create-from-address" call.
 
-Backend A works today and is measured; this does not displace it. But if
-Backend C loads and does not wedge, it is a better destination than either
-current path — fewer layers, real barriers, and no disk image.
+The contrast inside this very class is the giveaway: `DoAsyncUnmap` receives an
+`IOMemoryDescriptor *buffer`, which a dext *can* map, while `DoAsyncReadWrite`
+receives only `dmaAddr`. That asymmetry is deliberate — this API is written for
+a dext driving **DMA-capable hardware**. The dext programs its controller with
+that address and the hardware moves the bytes; the dext never touches them.
+
+A virtual device backed by a network has no hardware to program, and so cannot
+service the transfer at all.
+
+**This is why `SCSIControllerDriverKit` is the family a software HBA has to
+use.** It explicitly hands the driver the payload — `UserGetDataBuffer` — which
+is precisely what makes our existing virtual HBA possible, and precisely what
+`IOUserBlockStorageDevice` withholds.
+
+Using the documented API as documented, there is no way for the dext to reach
+the payload. The only conceivable escape would be an undocumented mapping path,
+and **this project does not use undocumented features** — so the question is
+settled rather than merely open.
+
+## Verdict: not viable, and not worth building
+
+Backend C is **rejected for a network-backed device**. The reason is
+architectural rather than incidental: the API is shaped for hardware DMA, and
+the one thing a software device must have — access to the bytes — is exactly
+what it does not provide.
+
+Two supporting observations, neither of which is the deciding factor but both
+of which point the same way:
+
+- No shipping dext on macOS 26.6 uses `IOUserBlockStorageDevice`
+  (`/System/Library/DriverExtensions` has none), so there is no worked example.
+- There is no `com.apple.developer.driverkit.family.block-storage` entitlement
+  among the family entitlements Xcode knows about (audio, hid.device,
+  hid.eventservice, midi, networking, scsicontroller, serial).
+
+**What this settles positively:** the `.img` in Backend A is not an accident or
+a workaround that better API design would remove. On macOS, a userspace,
+network-backed block device has exactly two routes — a SCSI controller dext
+(`UserGetDataBuffer` gives it the payload) or DiskImages over a file. Backend A
+takes the second; Backend B takes the first and is blocked by the APFS wedge.
+There is no third door.
+
+So the `.img` stays, and it is worth remembering what it actually is: a live
+1:1 view of the LUN, not stored data. The cost is one indirection layer, not a
+copy.
