@@ -445,11 +445,36 @@ Two obligations that come with shipping the fallback:
 1. **File the Feedback** (`feedback-fskit-enablement-26x.md`). Shipping a
    workaround for an OS bug with no tracking number means never learning when it
    is fixed, and this one should be deleted the moment 26.x enables properly.
-2. **The post-update repair path is not optional on 26.x.** A Sparkle update
-   replaces the bundle, which re-registers the appex, which makes the existing
-   enablement entry predate the registration — and `fskit_agent` prunes exactly
-   those at the next boot. The every-launch state machine has to notice and
-   rewrite. On 27 the same event costs the user a second trip to the switch.
+2. **The post-update repair path is still needed, but the pruning rule now has a
+   counterexample.** See below.
+
+### The pruning rule did not reproduce on a notarized, SIP-on 26.6.1 (2026-08-14)
+
+The rule recorded at the end of this document — *the enabled entry must be
+written after the module's last pluginkit registration, or `fskit_agent` prunes
+it at the next boot* — was derived on the SIP-off VM using Debug,
+Apple-Development-signed builds. It does not reproduce here.
+
+Sequence, on the clean 26.6.1 machine:
+
+| when | what |
+|---|---|
+| ~20:44 UTC | 0.1.1's in-app write puts our id in `enabledModules.plist` |
+| 22:55:09 UTC | 0.1.2 drag-installed over it; appex re-registers with a **new** pluginkit UUID (`2C5D289E…` → `978D23CD…`) |
+| after a reboot | entry **still present**, and `mount -F` **still succeeds** |
+
+So the entry survived being made stale by a re-registration, across a boot. One
+observation, on one rig, and the two rigs differ in more than one way — so this
+does not overturn the original finding so much as bound it. Two candidate
+explanations, untested: the rule may depend on SIP being off, or on the
+signature grade, or the earlier pruning may have been triggered by something
+else in that session that was attributed to the ordering.
+
+**What this changes: nothing structural, and that is the point.** The plan has
+the setup machine re-checking `FSModuleIdentity.isEnabled` on *every* launch and
+repairing when it disagrees, rather than predicting when a repair is needed. That
+design is correct whichever way this rule falls, which is precisely why it was
+chosen. Do not "optimise" it into a check that fires only after a version change.
 
 ## Soak and crash consistency (2026-08-13)
 
