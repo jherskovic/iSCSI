@@ -139,3 +139,38 @@ command still carries FUA, so each is still durable when acknowledged.
 Care needed: concurrency must not reorder writes in a way that breaks the
 guarantees above, and must not weaken the read-modify-write serialization in
 `DaemonStore` that protects partial-block updates.
+
+## Hot-loop audit (2026-08-14)
+
+Looked for byte-at-a-time work and avoidable copies on the data path.
+
+**Already clean:** the PDU codec and framer operate on `Data` slices via the
+slice-tolerant helpers in `Support/Endian.swift`, not by iterating bytes; the
+receive loop feeds the deframer whole chunks from the transport;
+`ISCSIBlockDevice.read` preallocates its output. The only per-byte loops in the
+library are in IQN validation and trace formatting, neither of which is on the
+data path.
+
+**Two real costs found and removed, both per-PDU:**
+
+1. `PDUSerializer.serialize` built `raw.data + padding` solely to compute a
+   four-byte data digest — allocating and copying the whole data segment, up to
+   a megabyte per PDU. Now chains the digest over the segment and its padding
+   with `CRC32C.update`/`finalize`, with no copy.
+
+2. `PDUDeframer.next` consumed each PDU with `buffer.removeFirst(total)`, which
+   memmoves everything still buffered. That is quadratic when one read delivers
+   many PDUs — the normal case on a fast link. Now advances a `consumed` index
+   (O(1)) and reclaims the dead prefix in one memmove once it passes 64 KiB or
+   half the buffer.
+
+Both are correctness-neutral. The index change touches every offset in `next()`
+including the digest verification, where an off-by-one would corrupt every PDU
+after the first, so four tests cover multi-PDU appends, repeated compactions,
+split PDUs with partial tails, and digest checks on later PDUs.
+
+**Not worth vectorising.** CRC32C is the only genuine bulk-byte computation in
+the stack and already uses the hardware instruction (8.4 GB/s). Everything else
+that touches large buffers is a copy, where `memcpy` is already optimal, or a
+network round trip, where the CPU is idle — `iscsid` sits at ~14% of four cores
+under sustained load. There is no remaining loop where SIMD would pay.
