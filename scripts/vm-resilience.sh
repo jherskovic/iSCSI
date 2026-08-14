@@ -343,8 +343,22 @@ scenario_corrupt() {
     echo "  SKIPPED — rerun with DIGEST=CRC32C so digests are negotiated on"
     return 0
   fi
+  # Show that digests really did negotiate on. Without that line, a pass here
+  # is unreadable: "no corruption surfaced" means nothing if the digest that
+  # was supposed to catch it was never enabled.
+  .build/release/iscsictl verify 127.0.0.1 --target "$IQN" 2>&1 \
+    | grep -i digest | sed 's/^/  /'
+
   attach || return 1
   run 300 WRITE write_files "$APFSMNT/corruptwork" 2 16 || return 1
+
+  # Force the reads to come from the device. Everything just written is in the
+  # page cache, and a cached read never reaches the wire — so corruption
+  # injected on the wire would be invisible and the scenario would pass without
+  # testing anything. Unmount/remount drops the volume's cache.
+  umount -f "$APFSMNT" 2>/dev/null
+  sleep 2
+  mount_volume || return 1
 
   echo "  $(ctl fault corruptdatain on)"
   # The claim under test is *not* "reads fail". It is that corrupted bytes
@@ -358,7 +372,14 @@ scenario_corrupt() {
     echo "  CORRUPTION-REACHED-APPLICATION — the digest did not catch it"
     return 1
   fi
-  echo "  no corrupted bytes surfaced (read errored or the session dropped)"
+  if [ $rc -eq 0 ]; then
+    # Reads succeeded and returned correct bytes while every Data-In PDU was
+    # being corrupted. That cannot happen if the fault reached the wire, so
+    # something served the reads without touching it.
+    echo "  NO-FAULT-EFFECT — reads succeeded intact; they never reached the wire"
+    return 1
+  fi
+  echo "  reads failed (rc=$rc) with no corrupted bytes surfaced — the digest caught it"
 
   sleep 5
   run 300 REVERIFY verify_files "$APFSMNT/corruptwork" || return 1
@@ -375,10 +396,18 @@ scenario_pause() {
   # claim worth testing is the one after it: once the portal is back, the
   # stack has to make progress again rather than stay dead.
   attach || return 1
-  ( write_files "$APFSMNT/pausework" 4 16 >/tmp/pausewrite.out 2>&1
+  # Big enough that it is still running when the portal goes down. Loopback
+  # moves ~130 MB/s, so 64 MiB — and even 640 MiB — finished inside the 5s
+  # lead-in, leaving the scenario asserting nothing about an outage the writer
+  # never saw.
+  ( write_files "$APFSMNT/pausework" 150 16 >/tmp/pausewrite.out 2>&1
     echo "rc=$?" >>/tmp/pausewrite.out ) &
   local writer=$!
   sleep 5
+  if ! kill -0 $writer 2>/dev/null; then
+    echo "  WRITE-TOO-SHORT — it finished before the outage began"
+    return 1
+  fi
   echo "  $(ctl pause)"
   echo "  $(ctl drop)"
   # Hold it down well past recovery exhaustion (5 attempts over ~16s of

@@ -14,7 +14,7 @@ struct ISCSICtl: AsyncParsableCommand {
         commandName: "iscsictl",
         abstract: "Control the macOS iSCSI initiator.",
         version: "0.1.0",
-        subcommands: [Discover.self, Verify.self, ReadBench.self, Wipe.self, DextAttach.self,
+        subcommands: [Discover.self, Verify.self, ReadBench.self, WriteBench.self, Wipe.self, DextAttach.self,
                       DextStatsCommand.self]
     )
 }
@@ -201,6 +201,88 @@ struct Verify: AsyncParsableCommand {
 /// disappointing, is that our stack or the transport? Comparing this against
 /// the same read through a mounted volume separates the two, and prevents
 /// optimising layers that were never the cost.
+/// Writes are the direction that matters for tuning: reads were already at the
+/// transport ceiling, while writes are set by how the target commits them and
+/// by how much data can be sent unsolicited. Neither could be measured cleanly
+/// against the NAS — its ceiling hid our overhead, and its negotiation
+/// parameters were not ours to change. Against `iscsi-target-sim` on loopback
+/// both open up.
+struct WriteBench: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "write-bench",
+        abstract: "Sequential write throughput over raw iSCSI. DESTRUCTIVE — scratch LUNs only."
+    )
+
+    @OptionGroup var options: GlobalOptions
+
+    @Option(help: "Target IQN to log into.")
+    var target: String
+
+    @Option(help: "LUN number.")
+    var lun: UInt64 = 0
+
+    @Option(help: "Megabytes to write.")
+    var megabytes: Int = 512
+
+    @Option(help: "Bytes per SCSI command.")
+    var chunk: Int = 1 << 20
+
+    @Option(help: "Starting offset in megabytes.")
+    var offsetMB: Int = 0
+
+    @Flag(help: "Send every write with FUA (what the shipping daemon does).")
+    var fua = false
+
+    func run() async throws {
+        #if canImport(Network)
+        let transport = try await options.openTransport()
+        var config = LoginConfig(
+            initiatorName: options.initiator,
+            sessionType: .normal,
+            targetName: target,
+            chap: options.credentials()
+        )
+        config.desired.offerDigests = true
+        let session = ISCSISession(login: config) { try await transport }
+        let login = try await session.activate()
+        let device = ISCSIBlockDevice(
+            session: session, lun: lun, maxTransferBytes: chunk, writeThrough: fua
+        )
+        let (blockSize, blockCount) = try await device.readCapacity()
+        let capacity = UInt64(blockSize) * blockCount
+        let params = login.parameters
+        // The negotiated burst sizes decide how many round trips a write costs,
+        // so print them: comparing two runs without them is comparing nothing.
+        print("capacity \(capacity / 1_048_576) MiB, blockSize \(blockSize), chunk \(chunk), fua \(fua)")
+        print("negotiated: FirstBurst=\(params.firstBurstLength) MaxBurst=\(params.maxBurstLength) "
+            + "ImmediateData=\(params.immediateData) InitialR2T=\(params.initialR2T) "
+            + "HeaderDigest=\(params.headerDigest) DataDigest=\(params.dataDigest)")
+
+        let payload = Data((0 ..< chunk).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+        var offset = UInt64(offsetMB) * 1_048_576
+        offset -= offset % UInt64(blockSize)
+        var remaining = megabytes * 1_048_576
+        let start = Date()
+        var moved = 0
+        while remaining > 0, offset < capacity {
+            var n = min(chunk, remaining, Int(capacity - offset))
+            n -= n % blockSize
+            guard n > 0 else { break }
+            try await device.write(offset: offset, data: payload.prefix(n))
+            offset += UInt64(n)
+            remaining -= n
+            moved += n
+        }
+        let el = Date().timeIntervalSince(start)
+        let mbps = Double(moved) / el / 1_000_000
+        print(String(format: "wrote %.2f GB in %.2fs = %.1f MB/s", Double(moved) / 1e9, el, mbps))
+        try await session.logout()
+        #else
+        print("requires macOS")
+        #endif
+    }
+}
+
 struct ReadBench: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "read-bench",
