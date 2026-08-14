@@ -236,7 +236,7 @@ is inert metadata that matches Apple's own modules, so it stays; it is not worth
 a second build to isolate.
 
 Measured on Zoidberg-6, macOS 27.0, SIP enabled, via `scripts/m0b-observe.sh`
-(full transcript in `build/m0b-Zoidberg-6-27.0.log`). Read the evidence, not the
+(full transcript in `docs/m0b/m0b-Zoidberg-6-27.0.log`). Read the evidence, not the
 run labels — the observations were fired in back-to-back batches, so the labels
 do not mark what they say:
 

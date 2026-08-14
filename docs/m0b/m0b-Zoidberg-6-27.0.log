@@ -1,0 +1,1499 @@
+
+===================================================================
+  baseline-before-install
+  2026-08-14 11:24:06   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+NOT INSTALLED at /Applications/iSCSI Initiator.app
+(install by mounting the DMG and DRAGGING — cp -R does not reproduce
+ the quarantine state a real download produces)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (4 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext is NOT registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+  => ours is ABSENT — this absence is the whole gate
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?[0m
+  writable by this user (fallback path is possible)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 11:23:51.289 E  fskit_agent[53772:fc263] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14ba0>
+  2026-08-14 11:23:51.289 A  fskit_agent[53772:fc263] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:23:51.290 A  fskit_agent[53772:fc263] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:23:51.290 A  fskit_agent[53772:fc263] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:23:51.290 A  fskit_agent[53772:fc263] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:23:51.290 A  fskit_agent[53772:fc263] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:23:51.291 A  fskit_agent[53772:fc263] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:23:51.292 A  fskit_agent[53772:fc263] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:01.894 Df fskitd[737:fc0e8] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 11:24:02.026 Df fskit_agent[53772:fc356] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 11:24:02.162 A  fskitd[737:fc0e8] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.163 A  fskitd[737:fc0e8] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.163 A  fskitd[737:fc0e8] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.163 A  fskitd[737:fc0e8] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.164 A  fskitd[737:fc0e8] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.164 A  fskitd[737:fc0e8] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.164 A  fskitd[737:fc0e8] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.164 A  fskitd[737:fc0e8] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.380 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.380 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.383 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.384 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.384 E  fskit_agent[53772:fc356] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14db0>
+  2026-08-14 11:24:02.384 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.385 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.385 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.385 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.385 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.386 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.386 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+
+
+===================================================================
+  write-probe-recheck
+  2026-08-14 11:24:44   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+NOT INSTALLED at /Applications/iSCSI Initiator.app
+(install by mounting the DMG and DRAGGING — cp -R does not reproduce
+ the quarantine state a real download produces)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (4 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext is NOT registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+  => ours is ABSENT — this absence is the whole gate
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 11:24:02.385 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.385 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.386 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:02.386 A  fskit_agent[53772:fc356] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.405 Df fskit_agent[53772:fc4ff] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 11:24:10.756 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.758 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.758 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.759 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.761 E  fskit_agent[53772:fc4ff] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14b70>
+  2026-08-14 11:24:10.761 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.761 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.761 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.762 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.762 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.763 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:10.763 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.083 Df fskit_agent[53772:fc4ff] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 11:24:21.434 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.437 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.438 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.440 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.440 E  fskit_agent[53772:fc4ff] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14930>
+  2026-08-14 11:24:21.440 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.442 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.443 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.443 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.443 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.447 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 11:24:21.447 A  fskit_agent[53772:fc4ff] (CoreServicesInternal) CFURLResolveBookmarkData
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-install
+  2026-08-14 13:01:00   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+  => ours is ABSENT — this absence is the whole gate
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:00:31.396 A  fskit_agent[53772:10f03d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:31.396 A  fskit_agent[53772:10f03d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:31.398 Df fskit_agent[53772:10f03d] [com.apple.FSKit:default] New module list <private>
+  2026-08-14 13:00:31.398 Df fskit_agent[53772:10f03d] [com.apple.FSKit:default] Old modules <private>
+  2026-08-14 13:00:39.910 Df fskit_agent[53772:10f1db] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:00:40.259 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.260 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.260 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.261 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.262 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.262 E  fskit_agent[53772:10f1db] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14ba0>
+  2026-08-14 13:00:40.262 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.262 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:41.785 Df fskitd[737:10f044] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:44.530 Df fskitd[737:10f044] [com.apple.FSKit:default] About to get current agent for 501
+  2026-08-14 13:00:44.531 Df fskitd[737:10f044] [com.apple.FSKit:default] About to get current agent for 501
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-toggle
+  2026-08-14 13:01:01   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+  => ours is ABSENT — this absence is the whole gate
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:00:31.396 A  fskit_agent[53772:10f03d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:31.396 A  fskit_agent[53772:10f03d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:31.398 Df fskit_agent[53772:10f03d] [com.apple.FSKit:default] New module list <private>
+  2026-08-14 13:00:31.398 Df fskit_agent[53772:10f03d] [com.apple.FSKit:default] Old modules <private>
+  2026-08-14 13:00:39.910 Df fskit_agent[53772:10f1db] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:00:40.259 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.260 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.260 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.261 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.262 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.262 E  fskit_agent[53772:10f1db] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14ba0>
+  2026-08-14 13:00:40.262 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.262 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:41.785 Df fskitd[737:10f044] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:44.530 Df fskitd[737:10f044] [com.apple.FSKit:default] About to get current agent for 501
+  2026-08-14 13:00:44.531 Df fskitd[737:10f044] [com.apple.FSKit:default] About to get current agent for 501
+
+[1m--- mount probe (needs sudo)[0m
+  sudo mount -F -t iSCSI iscsi://proto/lun0 /Users/jherskovic/fsmnt
+    Module me.herko.iSCSIInitiator.fsext is disabled!
+    mount: Unable to invoke task
+  => mount failed (see message above)
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-reboot
+  2026-08-14 13:01:06   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+  => ours is ABSENT — this absence is the whole gate
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:00:39.910 Df fskit_agent[53772:10f1db] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:00:40.259 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.260 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.260 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.261 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.262 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.262 E  fskit_agent[53772:10f1db] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14ba0>
+  2026-08-14 13:00:40.262 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.262 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:40.263 A  fskit_agent[53772:10f1db] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:41.785 Df fskitd[737:10f044] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.051 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:42.052 A  fskitd[737:10f044] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:00:44.530 Df fskitd[737:10f044] [com.apple.FSKit:default] About to get current agent for 501
+  2026-08-14 13:00:44.531 Df fskitd[737:10f044] [com.apple.FSKit:default] About to get current agent for 501
+  2026-08-14 13:01:06.237 Df fskitd[737:10f430] [com.apple.FSKit:default] Incomming connection, entitled 1
+  2026-08-14 13:01:06.237 Df fskitd[737:10f430] [com.apple.xpc:connection] [0x765ace8500] activating connection: mach=false listener=false peer=true name=com.apple.filesystems.fskitd.peer[61179].0x765ace8500
+  2026-08-14 13:01:06.237 Df fskitd[737:10f430] [com.apple.FSKit:default] About to get current agent for 501
+  2026-08-14 13:01:06.239 Df fskitd[737:10f430] [com.apple.xpc:connection] [0x765ace8500] invalidated because the client process (pid 61179) either cancelled the connection or exited
+
+[1m--- mount probe (needs sudo)[0m
+  sudo mount -F -t iSCSI iscsi://proto/lun0 /Users/jherskovic/fsmnt
+    Module me.herko.iSCSIInitiator.fsext is disabled!
+    mount: Unable to invoke task
+  => mount failed (see message above)
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-install
+  2026-08-14 13:01:46   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+    6 => "me.herko.iSCSIInitiator.fsext"
+  ]
+  => OURS IS PRESENT
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:01:45.037 Df fskit_agent[53772:10fcd4] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:01:45.388 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.389 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.391 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.391 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 E  fskit_agent[53772:10fcd4] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14e10>
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.393 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.393 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.393 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.439 Df fskit_agent[53772:10fcd4] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:01:45.790 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.791 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.791 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.792 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.792 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.792 E  fskit_agent[53772:10fcd4] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14cf0>
+  2026-08-14 13:01:45.792 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-toggle
+  2026-08-14 13:01:47   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: yes
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+    6 => "me.herko.iSCSIInitiator.fsext"
+  ]
+  => OURS IS PRESENT
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:01:45.037 Df fskit_agent[53772:10fcd4] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:01:45.388 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.389 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.391 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.391 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 E  fskit_agent[53772:10fcd4] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14e10>
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.392 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.393 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.393 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.393 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.439 Df fskit_agent[53772:10fcd4] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:01:45.790 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.791 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.791 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.792 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.792 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.792 E  fskit_agent[53772:10fcd4] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7662c14cf0>
+  2026-08-14 13:01:45.792 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:01:45.793 A  fskit_agent[53772:10fcd4] (CoreServicesInternal) CFURLResolveBookmarkData
+
+[1m--- mount probe (needs sudo)[0m
+  sudo mount -F -t iSCSI iscsi://proto/lun0 /Users/jherskovic/fsmnt
+  => MOUNTED
+    total 1048576
+    drwxr-xr-x    1 jherskovic  staff          0 Aug 14 13:01 .
+    drwxr-x---+ 113 jherskovic  staff       3616 Aug 14 13:01 ..
+    -rw-r--r--    1 jherskovic  staff  536870912 Aug 14 13:01 lun0.img
+  (unmounted)
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-reboot
+  2026-08-14 13:01:48   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+    6 => "me.herko.iSCSIInitiator.fsext"
+  ]
+  => OURS IS PRESENT
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:01:48.417 Df iSCSIFSExtension[61392:1102bc] [com.apple.FSKit:default] -[FSModuleConnector getVolumeEndpoint:replyHandler:]:start:volID:<private>
+  2026-08-14 13:01:48.417 Df iSCSIFSExtension[61392:1102bc] [com.apple.FSKit:default] -[FSModuleConnector getVolumeEndpoint:replyHandler:]:end:found:volID:<private> listener <private> returning ep <private>
+  2026-08-14 13:01:48.417 Df fskitd[737:1102b0] [com.apple.FSKit:default] -[mountEntry getLiveFilesConnectionForPath:withCompletionHandler:]:510: FSVolumeConnector endpoint found
+  2026-08-14 13:01:48.417 Df fskitd[737:1102b0] [com.apple.LiveFS:default] Got connection
+  2026-08-14 13:01:48.417 Df fskitd[737:1102b0] [com.apple.xpc:connection] [0x765ace9180] activating connection: mach=false listener=false peer=false name=(anonymous)
+  2026-08-14 13:01:48.418 Df iSCSIFSExtension[61392:1102bc] [com.apple.FSKit:default] -[FSModuleVolume(Project) listener:shouldAcceptNewConnection:]:start
+  2026-08-14 13:01:48.418 Df iSCSIFSExtension[61392:1102bc] [com.apple.FSKit:default] -[FSModuleVolume(Project) listener:shouldAcceptNewConnection:]:accepted
+  2026-08-14 13:01:48.418 Df fskitd[737:1102b0] [com.apple.FSKit:default] creating mount task to <private> with type <private>
+  2026-08-14 13:01:48.418 Df fskitd[737:10f430] [com.apple.LiveFS:default] -[mountEntry mount:options:auditToken:]: will mount over LIFSv2
+  2026-08-14 13:01:48.420 Df fskitd[737:10f430] [com.apple.LiveFS:default] <private>: FMT CAPS: 0x00022341
+  2026-08-14 13:01:48.420 Df fskitd[737:10f430] [com.apple.LiveFS:default] <private>: INT CAPS: 0x00000b00
+  2026-08-14 13:01:48.421 Df fskitd[737:1102b1] [com.apple.xpc:connection] [0x765ace9040] invalidated because the client process (pid 61391) either cancelled the connection or exited
+  2026-08-14 13:01:48.421 Df fskitd[737:10f430] [com.apple.xpc:connection] [0x765ace8b40] invalidated because the client process (pid 61391) either cancelled the connection or exited
+  2026-08-14 13:01:48.480 Df fskitd[737:1102b1] [com.apple.LiveFS:default] Unmounting /Users/jherskovic/fsmnt how 02
+  2026-08-14 13:01:48.480 Df fskitd[737:1102b0] [com.apple.FSKit:default] -[mountEntry forgetModuleVolumeWithFlags:reply:]: Creating FSModuleXPC sync proxy
+  2026-08-14 13:01:48.480 Df iSCSIFSExtension[61392:1102bc] [com.apple.FSKit:default] -[FSModuleConnector deactivateVolume:numericOptions:replyHandler:]:start
+  2026-08-14 13:01:48.480 Df fskitd[737:1102b0] [com.apple.xpc:connection] [0x765ace9040] activating connection: mach=true listener=false peer=false name=com.apple.fskit.fskit_helper
+  2026-08-14 13:01:48.480 Df fskitd[737:1102b0] [com.apple.xpc:connection] [0x765ace9040] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:01:48.480 Df fskitd[737:1102b0] [com.apple.xpc:connection] [0x765ace8b40] activating connection: mach=true listener=false peer=false name=com.apple.fskit.fskit_helper
+  2026-08-14 13:01:48.480 Df fskitd[737:1102b0] [com.apple.xpc:connection] [0x765ace8b40] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:01:48.480 Df fskitd[737:1102b0] [com.apple.FSKit:default] About to get current agent for 501
+  2026-08-14 13:01:48.481 Df fskitd[737:1102b0] [com.apple.xpc:connection] [0x765ace8f00] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:01:48.481 Df fskitd[737:1102b1] [com.apple.xpc:connection] [0x765ace9180] Re-initialization successful; calling out to event handler with XPC_ERROR_CONNECTION_INTERRUPTED
+  2026-08-14 13:01:48.481 E  fskitd[737:10f430] [com.apple.LiveFS:default] -[mountEntry handleConnectionInterrupted]_block_invoke: interrupted
+  2026-08-14 13:01:48.481 Df fskitd[737:10f430] [com.apple.FSKit:default] xpc connection interrupted for auto eject me
+  2026-08-14 13:01:48.481 Df fskitd[737:10f430] [com.apple.xpc:connection] [0x765ace9180] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:01:48.481 E  fskitd[737:1102b1] [com.apple.LiveFS:default] -[mountEntry doConnect]_block_invoke: invalidation with strongSelf <private>
+  2026-08-14 13:01:48.489 A  fskit_agent[53772:10fcd4] (RunningBoardServices) processDidExit
+  2026-08-14 13:01:48.489 Df fskit_agent[53772:10fcd4] [com.apple.runningboard:process] Firing exit handlers for 61392 with context <RBSProcessExitContext| specific, status:<RBSProcessExitStatus| domain:runningboard(15) code:0>>
+  2026-08-14 13:01:48.489 Df fskit_agent[53772:10fcd4] [com.apple.runningboard:process] Calling process death completion block for handle <private>
+
+[1m--- mount probe (needs sudo)[0m
+  sudo mount -F -t iSCSI iscsi://proto/lun0 /Users/jherskovic/fsmnt
+  => MOUNTED
+    total 1048576
+    drwxr-xr-x    1 jherskovic  staff          0 Aug 14 13:01 .
+    drwxr-x---+ 113 jherskovic  staff       3616 Aug 14 13:01 ..
+    -rw-r--r--    1 jherskovic  staff  536870912 Aug 14 13:01 lun0.img
+  (unmounted)
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-install
+  2026-08-14 13:12:55   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: yes
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+    6 => "me.herko.iSCSIInitiator.fsext"
+  ]
+  => OURS IS PRESENT
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:12:11.060 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.062 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.063 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.063 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.063 Df fskitd[694:1adc] [com.apple.FSKit:default] Found Extensions <private>
+  2026-08-14 13:12:11.063 Df fskitd[694:1adc] [com.apple.extensionkit:discovery] <_EXDiscoveryController: 0x103724810> Adding observer for query '<_EXQuery: 0x7940c64240>'
+  2026-08-14 13:12:11.063 Df fskitd[694:1adc] [com.apple.extensionkit:discovery] New active query <_EXQuery: 0x7940c64240>'
+  2026-08-14 13:12:11.063 Df fskitd[694:1adc] [com.apple.extensionkit:discovery] <_EXDiscoveryController: 0x103724810> LS database observing started.
+  2026-08-14 13:12:11.064 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.064 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.064 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.064 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.064 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.065 Df fskitd[694:1b17] [com.apple.xpc:connection] [0x79410f0000] activating connection: mach=true listener=false peer=false name=com.apple.cfprefsd.daemon
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 Df fskitd[694:1b17] [com.apple.FSKit:default] New module list <private>
+  2026-08-14 13:12:11.069 Df fskitd[694:1b17] [com.apple.FSKit:default] Old modules (null)
+  2026-08-14 13:12:11.069 Df fskitd[694:1b17] [com.apple.FSKit:default] Added 4 identifiers: <private>
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 Df fskitd[694:1adc] [com.apple.xpc:connection] [0x79410f0140] activating connection: mach=true listener=true peer=false name=com.apple.filesystems.fskitd.livefs
+  2026-08-14 13:12:11.070 Df fskitd[694:1adc] [com.apple.xpc:connection] [0x79410f0280] activating connection: mach=true listener=true peer=false name=com.apple.filesystems.fskitd
+  2026-08-14 13:12:11.070 Df fskitd[694:1b17] [com.apple.FSKit:default] Incomming connection, entitled 1
+  2026-08-14 13:12:11.071 Df fskitd[694:1b17] [com.apple.xpc:connection] [0x79410f03c0] activating connection: mach=false listener=false peer=true name=com.apple.filesystems.fskitd.peer[542].0x79410f03c0
+  2026-08-14 13:12:11.072 Df fskitd[694:1b17] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:12:11.072 Df fskitd[694:1b17] [com.apple.FSKit:default] Returning module array <private>
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-toggle
+  2026-08-14 13:12:58   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: yes
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+    6 => "me.herko.iSCSIInitiator.fsext"
+  ]
+  => OURS IS PRESENT
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:12:11.060 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.062 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.063 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.063 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.063 Df fskitd[694:1adc] [com.apple.FSKit:default] Found Extensions <private>
+  2026-08-14 13:12:11.063 Df fskitd[694:1adc] [com.apple.extensionkit:discovery] <_EXDiscoveryController: 0x103724810> Adding observer for query '<_EXQuery: 0x7940c64240>'
+  2026-08-14 13:12:11.063 Df fskitd[694:1adc] [com.apple.extensionkit:discovery] New active query <_EXQuery: 0x7940c64240>'
+  2026-08-14 13:12:11.063 Df fskitd[694:1adc] [com.apple.extensionkit:discovery] <_EXDiscoveryController: 0x103724810> LS database observing started.
+  2026-08-14 13:12:11.064 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.064 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.064 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.064 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.064 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.065 Df fskitd[694:1b17] [com.apple.xpc:connection] [0x79410f0000] activating connection: mach=true listener=false peer=false name=com.apple.cfprefsd.daemon
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 Df fskitd[694:1b17] [com.apple.FSKit:default] New module list <private>
+  2026-08-14 13:12:11.069 Df fskitd[694:1b17] [com.apple.FSKit:default] Old modules (null)
+  2026-08-14 13:12:11.069 Df fskitd[694:1b17] [com.apple.FSKit:default] Added 4 identifiers: <private>
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 A  fskitd[694:1adc] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:12:11.069 Df fskitd[694:1adc] [com.apple.xpc:connection] [0x79410f0140] activating connection: mach=true listener=true peer=false name=com.apple.filesystems.fskitd.livefs
+  2026-08-14 13:12:11.070 Df fskitd[694:1adc] [com.apple.xpc:connection] [0x79410f0280] activating connection: mach=true listener=true peer=false name=com.apple.filesystems.fskitd
+  2026-08-14 13:12:11.070 Df fskitd[694:1b17] [com.apple.FSKit:default] Incomming connection, entitled 1
+  2026-08-14 13:12:11.071 Df fskitd[694:1b17] [com.apple.xpc:connection] [0x79410f03c0] activating connection: mach=false listener=false peer=true name=com.apple.filesystems.fskitd.peer[542].0x79410f03c0
+  2026-08-14 13:12:11.072 Df fskitd[694:1b17] [com.apple.FSKit:default] Getting own modules
+  2026-08-14 13:12:11.072 Df fskitd[694:1b17] [com.apple.FSKit:default] Returning module array <private>
+
+[1m--- mount probe (needs sudo)[0m
+  sudo mount -F -t iSCSI iscsi://proto/lun0 /Users/jherskovic/fsmnt
+  => MOUNTED
+    total 1048576
+    drwxr-xr-x    1 jherskovic  staff          0 Aug 14 13:13 .
+    drwxr-x---+ 113 jherskovic  staff       3616 Aug 14 13:02 ..
+    -rw-r--r--    1 jherskovic  staff  536870912 Aug 14 13:13 lun0.img
+  (unmounted)
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-reboot
+  2026-08-14 13:13:02   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: yes
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+    6 => "me.herko.iSCSIInitiator.fsext"
+  ]
+  => OURS IS PRESENT
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:13:02.309 Df fskitd[694:3672] [com.apple.FSKit:default] -[mountEntry getLiveFilesConnectionForPath:withCompletionHandler:]:510: FSVolumeConnector endpoint found
+  2026-08-14 13:13:02.309 Df fskitd[694:3672] [com.apple.LiveFS:default] Got connection
+  2026-08-14 13:13:02.310 Df fskitd[694:3672] [com.apple.xpc:connection] [0x79410f0b40] activating connection: mach=false listener=false peer=false name=(anonymous)
+  2026-08-14 13:13:02.310 Df iSCSIFSExtension[1321:369d] [com.apple.FSKit:default] -[FSModuleVolume(Project) listener:shouldAcceptNewConnection:]:start
+  2026-08-14 13:13:02.310 Df iSCSIFSExtension[1321:369d] [com.apple.FSKit:default] -[FSModuleVolume(Project) listener:shouldAcceptNewConnection:]:accepted
+  2026-08-14 13:13:02.311 Df fskitd[694:3672] [com.apple.FSKit:default] creating mount task to <private> with type <private>
+  2026-08-14 13:13:02.311 Df fskitd[694:3695] [com.apple.LiveFS:default] -[mountEntry mount:options:auditToken:]: will mount over LIFSv2
+  2026-08-14 13:13:02.317 Df fskitd[694:3695] [com.apple.LiveFS:default] <private>: FMT CAPS: 0x00022341
+  2026-08-14 13:13:02.317 Df fskitd[694:3695] [com.apple.LiveFS:default] <private>: INT CAPS: 0x00000b00
+  2026-08-14 13:13:02.317 Df fskitd[694:1b17] [com.apple.xpc:connection] [0x79410f0a00] invalidated because the client process (pid 1318) either cancelled the connection or exited
+  2026-08-14 13:13:02.317 Df fskitd[694:3672] [com.apple.xpc:connection] [0x79410f0500] invalidated because the client process (pid 1318) either cancelled the connection or exited
+  2026-08-14 13:13:02.387 Df fskitd[694:3695] [com.apple.LiveFS:default] Unmounting /Users/jherskovic/fsmnt how 02
+  2026-08-14 13:13:02.387 Df fskitd[694:3672] [com.apple.FSKit:default] -[mountEntry forgetModuleVolumeWithFlags:reply:]: Creating FSModuleXPC sync proxy
+  2026-08-14 13:13:02.388 Df iSCSIFSExtension[1321:369d] [com.apple.FSKit:default] -[FSModuleConnector deactivateVolume:numericOptions:replyHandler:]:start
+  2026-08-14 13:13:02.388 Df fskitd[694:3672] [com.apple.xpc:connection] [0x79410f0a00] activating connection: mach=true listener=false peer=false name=com.apple.fskit.fskit_helper
+  2026-08-14 13:13:02.388 Df fskitd[694:3672] [com.apple.xpc:connection] [0x79410f0a00] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:13:02.388 Df fskitd[694:3672] [com.apple.xpc:connection] [0x79410f0c80] activating connection: mach=true listener=false peer=false name=com.apple.fskit.fskit_helper
+  2026-08-14 13:13:02.388 Df fskitd[694:3672] [com.apple.xpc:connection] [0x79410f0c80] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:13:02.388 Df fskitd[694:3672] [com.apple.FSKit:default] About to get current agent for 501
+  2026-08-14 13:13:02.389 Df fskitd[694:3672] [com.apple.xpc:connection] [0x79410f08c0] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:13:02.389 Df fskitd[694:1b17] [com.apple.xpc:connection] [0x79410f0b40] Re-initialization successful; calling out to event handler with XPC_ERROR_CONNECTION_INTERRUPTED
+  2026-08-14 13:13:02.389 E  fskitd[694:1b17] [com.apple.LiveFS:default] -[mountEntry handleConnectionInterrupted]_block_invoke: interrupted
+  2026-08-14 13:13:02.389 Df fskitd[694:1b17] [com.apple.FSKit:default] xpc connection interrupted for auto eject me
+  2026-08-14 13:13:02.389 Df fskitd[694:1b17] [com.apple.xpc:connection] [0x79410f0b40] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:13:02.389 E  fskitd[694:1b17] [com.apple.LiveFS:default] -[mountEntry doConnect]_block_invoke: invalidation with strongSelf <private>
+  2026-08-14 13:13:02.391 A  fskitd[694:1b17] (RunningBoardServices) assertionsDidInvalidate
+  2026-08-14 13:13:02.392 A  fskit_agent[1319:367c] (RunningBoardServices) processDidExit
+  2026-08-14 13:13:02.392 Df fskit_agent[1319:367c] [com.apple.runningboard:process] Firing exit handlers for 1321 with context <RBSProcessExitContext| specific, status:<RBSProcessExitStatus| domain:runningboard(15) code:0>>
+  2026-08-14 13:13:02.392 Df fskit_agent[1319:367f] [com.apple.runningboard:process] Calling process death completion block for handle <private>
+  2026-08-14 13:13:03.220 Df fskit_agent[1319:367f] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(user.uid.501.com.apple.LaunchServices.database) fired for session key <private>
+
+[1m--- mount probe (needs sudo)[0m
+  sudo mount -F -t iSCSI iscsi://proto/lun0 /Users/jherskovic/fsmnt
+  => MOUNTED
+    total 1048576
+    drwxr-xr-x    1 jherskovic  staff          0 Aug 14 13:13 .
+    drwxr-x---+ 113 jherskovic  staff       3616 Aug 14 13:02 ..
+    -rw-r--r--    1 jherskovic  staff  536870912 Aug 14 13:13 lun0.img
+  (unmounted)
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-install
+  2026-08-14 13:18:40   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: yes
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+    6 => "me.herko.iSCSIInitiator.fsext"
+  ]
+  => OURS IS PRESENT
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:13:24.823 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.824 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.825 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.826 E  fskit_agent[1319:387b] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7c94c112f0>
+  2026-08-14 13:13:24.826 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.826 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.827 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.828 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.828 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.828 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.841 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.841 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.558 Df fskitd[694:4302] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:13:56.826 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.826 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.826 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.827 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.827 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.827 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.827 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.827 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.566 Df fskitd[694:36c0] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:14:07.836 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.837 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.837 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.837 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.838 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.838 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.838 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.838 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-toggle
+  2026-08-14 13:18:41   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: yes
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+    6 => "me.herko.iSCSIInitiator.fsext"
+  ]
+  => OURS IS PRESENT
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:13:24.823 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.824 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.825 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.826 E  fskit_agent[1319:387b] [com.apple.extensionkit:discovery] Extension is not entitled to run in the App Sandbox : <_EXExtensionIdentity: 0x7c94c112f0>
+  2026-08-14 13:13:24.826 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.826 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.827 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.828 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.828 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.828 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.841 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:24.841 A  fskit_agent[1319:387b] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.558 Df fskitd[694:4302] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:13:56.826 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.826 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.826 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.827 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.827 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.827 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.827 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:13:56.827 A  fskitd[694:36c0] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.566 Df fskitd[694:36c0] [com.apple.launchservices:db] NotifyToken::RegisterDispatch(com.apple.LaunchServices.database) fired for session key <private>
+  2026-08-14 13:14:07.836 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.837 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.837 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.837 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.838 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.838 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.838 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+  2026-08-14 13:14:07.838 A  fskitd[694:452d] (CoreServicesInternal) CFURLResolveBookmarkData
+
+[1m--- mount probe (needs sudo)[0m
+  sudo mount -F -t iSCSI iscsi://proto/lun0 /Users/jherskovic/fsmnt
+  => MOUNTED
+    total 1048576
+    drwxr-xr-x    1 jherskovic  staff          0 Aug 14 13:18 .
+    drwxr-x---+ 113 jherskovic  staff       3616 Aug 14 13:16 ..
+    -rw-r--r--    1 jherskovic  staff  536870912 Aug 14 13:18 lun0.img
+  (unmounted)
+
+logged to build/m0b-Zoidberg-6-27.0.log
+
+===================================================================
+  after-reboot
+  2026-08-14 13:18:46   macOS 27.0   Zoidberg-6
+===================================================================
+
+[1m--- host[0m
+System Integrity Protection status: enabled.
+developer mode: 
+
+[1m--- installed app[0m
+path:         /Applications/iSCSI Initiator.app
+translocated: no
+quarantine:   01c3;00000000;;07D09970-E8D5-4AA9-8260-7BDFDF6C12E6
+version:      0.1.0
+
+  iSCSI Initiator.app
+    Identifier=me.herko.iSCSIInitiator
+    CodeDirectory v=20500 size=611 flags=0x10000(runtime) hashes=8+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: yes
+
+  iSCSIFSExtension.appex
+    Identifier=me.herko.iSCSIInitiator.fsext
+    CodeDirectory v=20500 size=1417 flags=0x10000(runtime) hashes=33+7 location=embedded
+    Authority=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+    Authority=Developer ID Certification Authority
+    Timestamp=Aug 14, 2026 at 11:23:33 AM
+    TeamIdentifier=4A27X5PJP3
+    stapled ticket: NO
+
+gatekeeper:   origin=Developer ID Application: Jorge Herskovic (4A27X5PJP3)
+
+[1m--- pluginkit registration[0m
+       com.apple.fskit.ftp((null))	AE437805-B82C-51AA-AE14-4BC40249FE47	2026-08-10 21:50:57 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.ftp.appex
+       me.herko.iSCSIInitiator.fsext(0.1.0)	C4F3832B-0C82-4873-B484-FB5032804280	2026-08-14 20:00:30 +0000	/Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex
+       com.apple.fskit.msdos((null))	EAEACBEB-84BE-5DFC-8F4A-83DBA98D4AFD	2026-08-10 21:51:05 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.msdos.appex
+       com.apple.fskit.exfat((null))	72428A1F-E4AB-57F2-B07E-CF4BEE73B654	2026-08-10 21:51:07 +0000	/System/Library/ExtensionKit/Extensions/com.apple.fskit.exfat.appex
+       com.apple.dt.CoreDevice.Extensions.DeviceFS(1)	77816A5F-C7D8-4F4A-B7DB-75CD821E5E2E	2026-08-14 17:38:18 +0000	/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/PrivateApplications/CoreDeviceExtensions.app/Contents/Extensions/DeviceFS.appex
+   (5 plug-ins)
+
+  => me.herko.iSCSIInitiator.fsext IS registered
+
+[1m--- enabledModules.plist  (the gate)[0m
+  [
+    0 => "com.apple.fskit.apfs"
+    1 => "com.apple.fskit.exfat"
+    2 => "com.apple.fskit.msdos"
+    3 => "com.apple.filesystems.util.ntfs"
+    4 => "com.apple.fskit.ftp"
+    5 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+    6 => "me.herko.iSCSIInitiator.fsext"
+  ]
+  => OURS IS PRESENT
+
+[1m--- probeOrder.plist[0m
+  [
+    0 => "me.herko.iSCSIInitiator.fsext"
+    1 => "com.apple.fskit.apfs"
+    2 => "com.apple.fskit.exfat"
+    3 => "com.apple.fskit.msdos"
+    4 => "com.apple.filesystems.util.ntfs"
+    5 => "com.apple.fskit.ftp"
+    6 => "com.apple.dt.CoreDevice.Extensions.DeviceFS"
+  ]
+
+[1m--- can this user even write the settings container?  (M0-b.2)[0m
+  wrote and removed a probe file — the fallback path is possible
+  (from THIS shell's TCC context; verify again from the app)
+
+[1m--- recent fskit complaints[0m
+  2026-08-14 13:18:45.950 Df iSCSIFSExtension[2183:65db] [com.apple.FSKit:default] -[FSModuleConnector getVolumeEndpoint:replyHandler:]:end:found:volID:<private> listener <private> returning ep <private>
+  2026-08-14 13:18:45.950 Df fskitd[694:65cd] [com.apple.FSKit:default] -[mountEntry getLiveFilesConnectionForPath:withCompletionHandler:]:510: FSVolumeConnector endpoint found
+  2026-08-14 13:18:45.950 Df fskitd[694:65cd] [com.apple.LiveFS:default] Got connection
+  2026-08-14 13:18:45.950 Df fskitd[694:65cd] [com.apple.xpc:connection] [0x79410f0b40] activating connection: mach=false listener=false peer=false name=(anonymous)
+  2026-08-14 13:18:45.950 Df iSCSIFSExtension[2183:65db] [com.apple.FSKit:default] -[FSModuleVolume(Project) listener:shouldAcceptNewConnection:]:start
+  2026-08-14 13:18:45.950 Df iSCSIFSExtension[2183:65db] [com.apple.FSKit:default] -[FSModuleVolume(Project) listener:shouldAcceptNewConnection:]:accepted
+  2026-08-14 13:18:45.950 Df fskitd[694:65cd] [com.apple.FSKit:default] creating mount task to <private> with type <private>
+  2026-08-14 13:18:45.950 Df fskitd[694:452d] [com.apple.LiveFS:default] -[mountEntry mount:options:auditToken:]: will mount over LIFSv2
+  2026-08-14 13:18:45.954 Df fskitd[694:452d] [com.apple.LiveFS:default] <private>: FMT CAPS: 0x00022341
+  2026-08-14 13:18:45.954 Df fskitd[694:452d] [com.apple.LiveFS:default] <private>: INT CAPS: 0x00000b00
+  2026-08-14 13:18:45.955 Df fskitd[694:65ce] [com.apple.xpc:connection] [0x79410f0c80] invalidated because the client process (pid 2182) either cancelled the connection or exited
+  2026-08-14 13:18:45.955 Df fskitd[694:65cd] [com.apple.xpc:connection] [0x79410f0a00] invalidated because the client process (pid 2182) either cancelled the connection or exited
+  2026-08-14 13:18:45.998 Df fskitd[694:65cd] [com.apple.LiveFS:default] Unmounting /Users/jherskovic/fsmnt how 02
+  2026-08-14 13:18:45.999 Df fskitd[694:65cd] [com.apple.FSKit:default] -[mountEntry forgetModuleVolumeWithFlags:reply:]: Creating FSModuleXPC sync proxy
+  2026-08-14 13:18:45.999 Df iSCSIFSExtension[2183:65da] [com.apple.FSKit:default] -[FSModuleConnector deactivateVolume:numericOptions:replyHandler:]:start
+  2026-08-14 13:18:45.999 Df fskitd[694:65cd] [com.apple.xpc:connection] [0x79410f0c80] activating connection: mach=true listener=false peer=false name=com.apple.fskit.fskit_helper
+  2026-08-14 13:18:45.999 Df fskitd[694:65cd] [com.apple.xpc:connection] [0x79410f0c80] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:18:45.999 Df fskitd[694:65cd] [com.apple.xpc:connection] [0x79410f0a00] activating connection: mach=true listener=false peer=false name=com.apple.fskit.fskit_helper
+  2026-08-14 13:18:45.999 Df fskitd[694:65cd] [com.apple.xpc:connection] [0x79410f0a00] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:18:45.999 Df fskitd[694:65cd] [com.apple.FSKit:default] About to get current agent for 501
+  2026-08-14 13:18:46.000 Df fskitd[694:65cd] [com.apple.xpc:connection] [0x79410f08c0] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:18:46.000 Df fskitd[694:452d] [com.apple.xpc:connection] [0x79410f0b40] Re-initialization successful; calling out to event handler with XPC_ERROR_CONNECTION_INTERRUPTED
+  2026-08-14 13:18:46.000 E  fskitd[694:65ce] [com.apple.LiveFS:default] -[mountEntry handleConnectionInterrupted]_block_invoke: interrupted
+  2026-08-14 13:18:46.000 Df fskitd[694:65ce] [com.apple.FSKit:default] xpc connection interrupted for auto eject me
+  2026-08-14 13:18:46.000 Df fskitd[694:65ce] [com.apple.xpc:connection] [0x79410f0b40] invalidated because the current process cancelled the connection by calling xpc_connection_cancel()
+  2026-08-14 13:18:46.000 E  fskitd[694:65ce] [com.apple.LiveFS:default] -[mountEntry doConnect]_block_invoke: invalidation with strongSelf <private>
+  2026-08-14 13:18:46.002 A  fskitd[694:65ce] (RunningBoardServices) assertionsDidInvalidate
+  2026-08-14 13:18:46.003 A  fskit_agent[1319:65d5] (RunningBoardServices) processDidExit
+  2026-08-14 13:18:46.003 Df fskit_agent[1319:65d5] [com.apple.runningboard:process] Firing exit handlers for 2183 with context <RBSProcessExitContext| specific, status:<RBSProcessExitStatus| domain:runningboard(15) code:0>>
+  2026-08-14 13:18:46.003 Df fskit_agent[1319:65d5] [com.apple.runningboard:process] Calling process death completion block for handle <private>
+
+[1m--- mount probe (needs sudo)[0m
+  sudo mount -F -t iSCSI iscsi://proto/lun0 /Users/jherskovic/fsmnt
+  => MOUNTED
+    total 1048576
+    drwxr-xr-x    1 jherskovic  staff          0 Aug 14 13:18 .
+    drwxr-x---+ 113 jherskovic  staff       3616 Aug 14 13:16 ..
+    -rw-r--r--    1 jherskovic  staff  536870912 Aug 14 13:18 lun0.img
+  (unmounted)
+
+logged to build/m0b-Zoidberg-6-27.0.log
