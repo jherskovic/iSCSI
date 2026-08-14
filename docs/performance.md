@@ -127,19 +127,6 @@ Remaining initiator-side headroom is roughly 3.5% — the gap between 1 MiB and
 4 MiB chunks — and it is not reachable without raising the FSKit volume's
 reported `ioSize` and rebuilding the extension. Not worth it for 3.5%.
 
-`ISCSIBlockDevice` is a Swift `actor`, so every read and write for a session is
-serialized. Combined with a ~15 ms FUA commit, that puts a hard ceiling on
-writes regardless of link speed: one command at a time, each waiting for a full
-commit.
-
-iSCSI allows many outstanding commands (the CmdSN window). Pipelining them
-should raise write throughput substantially without touching durability — each
-command still carries FUA, so each is still durable when acknowledged.
-
-Care needed: concurrency must not reorder writes in a way that breaks the
-guarantees above, and must not weaken the read-modify-write serialization in
-`DaemonStore` that protects partial-block updates.
-
 ## Hot-loop audit (2026-08-14)
 
 Looked for byte-at-a-time work and avoidable copies on the data path.
