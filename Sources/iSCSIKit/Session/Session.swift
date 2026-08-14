@@ -1,10 +1,11 @@
 import Foundation
 
-public enum SessionError: Error, Sendable {
+public enum SessionError: Error, Equatable, Sendable {
     case notActive
     case loggedOut
     case recoveryExhausted(lastError: String)
     case taskFailed(SCSITaskResult)
+    case taskTimedOut
 }
 
 /// Session-level policy knobs; test suites shrink the timings.
@@ -21,6 +22,17 @@ public struct SessionPolicy: Sendable {
     /// Automatic transparent retries of a task interrupted by a connection
     /// drop. Block-layer reads/writes are idempotent, so retry is safe.
     public var taskRetries = 2
+    /// A task unanswered for this long is abandoned: aborted at the target,
+    /// then retried on a fresh session (bounded by `taskRetries`). nil waits
+    /// forever.
+    ///
+    /// The keepalive does not cover this. A target that accepts commands and
+    /// never answers them typically still answers NOPs, so the connection
+    /// looks healthy while every I/O hangs — and under Backend A that hang
+    /// propagates up through DiskImages into APFS, where it becomes a wedged
+    /// volume rather than an error. 30s matches the conventional SCSI command
+    /// timeout.
+    public var taskTimeout: Duration? = .seconds(30)
 
     public init() {}
 }
@@ -86,7 +98,9 @@ public actor ISCSISession {
         while true {
             let connection = try await ensureActive()
             do {
-                return try await connection.execute(task)
+                return try await withDeadline(policy.taskTimeout) {
+                    try await connection.execute(task)
+                }
             } catch let error as ConnectionError {
                 try Task.checkCancellation()
                 guard !loggedOut, attempt < policy.taskRetries else { throw error }
@@ -94,6 +108,22 @@ public actor ISCSISession {
                 // The connection died (or the target killed it). Recover and
                 // resubmit — safe for block I/O, which is idempotent.
                 try await recover(after: error)
+            } catch is DeadlineError {
+                try Task.checkCancellation()
+                // The deadline cancelled the task, which aborted it at the
+                // target. Resubmitting on the same connection would just wait
+                // out another timeout: a target that swallows commands is not
+                // persuaded by a second one. Re-login instead — and if that
+                // does not help either, drop the connection so the *next*
+                // caller starts fresh rather than queueing behind the wedge,
+                // and surface the failure so the layers above see an error
+                // instead of hanging forever.
+                guard !loggedOut, attempt < policy.taskRetries else {
+                    await dropConnection()
+                    throw SessionError.taskTimedOut
+                }
+                attempt += 1
+                try await recover(after: nil)
             }
         }
     }
@@ -111,7 +141,15 @@ public actor ISCSISession {
         referencedTaskTag: UInt32 = 0xFFFF_FFFF
     ) async throws -> TMFResponsePDU.Response {
         let connection = try await ensureActive()
-        return try await connection.taskManagement(function, lun: lun, referencedTaskTag: referencedTaskTag)
+        do {
+            return try await withDeadline(policy.taskTimeout) {
+                try await connection.taskManagement(
+                    function, lun: lun, referencedTaskTag: referencedTaskTag
+                )
+            }
+        } catch is DeadlineError {
+            throw SessionError.taskTimedOut
+        }
     }
 
     public func ping() async throws {
@@ -146,6 +184,18 @@ public actor ISCSISession {
             // Follow one level of redirect immediately.
             throw ConnectionError.redirected(address: address, permanent: false)
         }
+    }
+
+    /// Tear the connection down without re-logging in. The next call to
+    /// `ensureActive` builds a fresh session, so a wedge is not inherited by
+    /// whoever comes next.
+    private func dropConnection() async {
+        guard let old = connection else { return }
+        connection = nil
+        loginResult = nil
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
+        await old.close()
     }
 
     /// ERL0 session recovery: tear down, back off, re-login. Coalesces

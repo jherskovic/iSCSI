@@ -40,6 +40,9 @@ public struct MockTargetFaults: Sendable {
     /// Ignore initiator NOP-Out pings (dead-peer simulation while the TCP
     /// connection stays up).
     public var swallowNops = false
+    /// Ignore task management requests. A target this sick is the reason an
+    /// abort cannot be a precondition for giving up on a task.
+    public var swallowTMF = false
     /// Freeze MaxCmdSN at login value (command window never reopens).
     public var freezeWindow = false
     /// Split text responses into C-bit continuations of this size.
@@ -847,6 +850,7 @@ public actor MockTarget {
     }
 
     private func handleTMF(_ tmf: TMFRequestPDU) async throws {
+        if faults.swallowTMF { return }
         // Aborts clear stalled/pending writes for that task.
         if tmf.function == .abortTask {
             writes.removeValue(forKey: tmf.referencedTaskTag)

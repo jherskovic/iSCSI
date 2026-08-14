@@ -20,14 +20,18 @@ public actor DaemonCore {
     private let transportFactory: @Sendable (String, UInt16) async throws -> any ConnectionTransport
     /// Whether writes carry FUA. See the note at the call site in `login`.
     private let writeThrough: Bool
+    /// Keepalive cadence, recovery backoff, and the per-task deadline.
+    private let policy: SessionPolicy
 
     public init(
         initiatorName: String,
         writeThrough: Bool = true,
+        policy: SessionPolicy = SessionPolicy(),
         transportFactory: @escaping @Sendable (String, UInt16) async throws -> any ConnectionTransport
     ) {
         self.initiatorName = initiatorName
         self.writeThrough = writeThrough
+        self.policy = policy
         self.transportFactory = transportFactory
     }
 
@@ -55,7 +59,7 @@ public actor DaemonCore {
         )
         config.desired.offerDigests = true
         let factory = transportFactory
-        let session = ISCSISession(login: config) {
+        let session = ISCSISession(login: config, policy: policy) {
             try await factory(host, port)
         }
         try await session.activate()

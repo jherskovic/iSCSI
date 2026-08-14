@@ -21,7 +21,21 @@ let initiatorName = IQN.defaultInitiatorName(
 //   ISCSI_WRITE_THROUGH=0  -> disable
 let writeThrough = (ProcessInfo.processInfo.environment["ISCSI_WRITE_THROUGH"] ?? "1") != "0"
 
-let core = DaemonCore(initiatorName: initiatorName, writeThrough: writeThrough) { host, port in
+// A task unanswered for this long is aborted and retried on a fresh session
+// rather than waited on forever. Without it, a target that accepts commands
+// and never answers them wedges APFS instead of failing an I/O — and the NOP
+// keepalive does not notice, because such a target still answers pings.
+//   ISCSI_TASK_TIMEOUT_SEC=0  -> wait forever (the old behaviour)
+var policy = SessionPolicy()
+if let raw = ProcessInfo.processInfo.environment["ISCSI_TASK_TIMEOUT_SEC"], let seconds = Int(raw) {
+    policy.taskTimeout = seconds > 0 ? .seconds(seconds) : nil
+}
+
+let core = DaemonCore(
+    initiatorName: initiatorName,
+    writeThrough: writeThrough,
+    policy: policy
+) { host, port in
     try await NetworkTransport.connect(host: host, port: port)
 }
 
@@ -33,7 +47,9 @@ listener.resume()
 // Built in pieces: the Swift type checker fails on this as a single
 // interpolated expression (it reports "failed to produce diagnostic").
 let wtLabel = writeThrough ? "on" : "off"
-let banner = "iscsid: listening on " + iscsiDaemonServiceName + " (writeThrough=" + wtLabel + ")\n"
+let toLabel = policy.taskTimeout.map { "\($0)" } ?? "none"
+var banner = "iscsid: listening on " + iscsiDaemonServiceName
+banner += " (writeThrough=" + wtLabel + ", taskTimeout=" + toLabel + ")\n"
 FileHandle.standardError.write(Data(banner.utf8))
 dispatchMain()
 #else

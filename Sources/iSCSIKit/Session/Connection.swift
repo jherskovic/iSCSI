@@ -641,10 +641,24 @@ public actor ISCSIConnection {
     }
 
     private func abortOnCancel(itt: UInt32) async {
-        guard state == .fullFeature, let pending = pendingTasks[itt] else { return }
-        _ = try? await taskManagement(.abortTask, lun: pending.task.lun, referencedTaskTag: itt)
-        if let removed = pendingTasks.removeValue(forKey: itt) {
-            removed.completion.complete(.failure(CancellationError()))
+        guard state == .fullFeature, let pending = pendingTasks.removeValue(forKey: itt) else { return }
+        // Unblock the caller *first*. Waiting for the ABORT TASK response
+        // before resolving the cancelled task turns a bounded cancellation
+        // into an unbounded hang: a target sick enough to ignore commands can
+        // just as easily ignore task management, and then nothing ever
+        // completes the continuation. The abort is a courtesy to the target,
+        // not a precondition for giving up on the task.
+        pending.completion.complete(.failure(CancellationError()))
+        let lun = pending.task.lun
+        Task { await self.sendBestEffortAbort(itt: itt, lun: lun) }
+    }
+
+    /// Tell the target to drop a task we have stopped waiting for. Bounded,
+    /// because this runs detached and a stuck TMF would leak the task forever.
+    private func sendBestEffortAbort(itt: UInt32, lun: UInt64) async {
+        _ = try? await withDeadline(.seconds(5)) { [weak self] in
+            guard let self else { return }
+            _ = try? await self.taskManagement(.abortTask, lun: lun, referencedTaskTag: itt)
         }
     }
 
