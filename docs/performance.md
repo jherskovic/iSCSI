@@ -65,7 +65,67 @@ predicted. It removes a ceiling rather than raising the floor: at 487 MB/s the
 digest would have become the limit as soon as concurrency raised the transfer
 rate.
 
-## Next lever: concurrency
+## Where the ceiling is
+
+`iscsictl read-bench` reads straight over iSCSI — no FSKit extension, no
+DiskImages, no filesystem — which separates our stack from the transport.
+Uncached regions, sequential:
+
+| chunk | raw iSCSI read |
+|---|---|
+| 256 KiB | 85.3 MB/s |
+| 1 MiB (what the stack uses) | 94.5 MB/s |
+| 4 MiB | 97.8 MB/s |
+| 8 MiB | 98.1 MB/s |
+
+The transport plateaus at **~98 MB/s**. End-to-end reads through FSKit,
+DiskImages and APFS measure **90.0 MB/s**, so:
+
+- our layers cost about **4.5%** (94.5 → 90.0 at the same 1 MiB chunk),
+- and the stack runs at **~92% of the achievable maximum**.
+
+Read cost by layer, same 512 MiB region:
+
+| path | throughput |
+|---|---|
+| FSKit + daemon (`lun0.img` directly) | 102 MB/s |
+| + DiskImages (`/dev/rdisk`) | 97 MB/s |
+| + APFS (mounted volume) | 90 MB/s |
+
+(These vary a few percent run to run because the target's ARC caches recently
+written blocks — compare only measurements taken against cold regions.)
+
+## Concurrency: measured, and it does not help
+
+Tested directly rather than assumed, because `ISCSIBlockDevice` is an actor and
+serialization looked like an obvious culprit:
+
+| workload | 1 stream | 4 concurrent streams |
+|---|---|---|
+| write, 2048 MiB total | 49 MB/s | 51 MB/s |
+| raw read, 1024 MiB total | 146 MB/s | 113 MB/s |
+
+Writes are flat and reads get **23% worse** — parallel streams break the
+sequential access pattern the target reads ahead on. Request size makes no
+difference either: writes measured 76–78 MB/s at every block size from 64 KiB
+to 16 MiB.
+
+**Conclusion: the actor serialization is not the bottleneck, and pipelining
+commands would buy nothing.** Rejected on evidence rather than implemented on
+intuition — it would have added real risk (reordering, weakened RMW
+serialization) for no measurable gain.
+
+## What is actually limiting each direction
+
+- **Reads** are transport-bound at ~98 MB/s.
+- **Writes** are target-bound. FUA makes each write a synchronous commit, and
+  the target confirms a volatile write cache; on ZFS that is a ZIL commit per
+  command, which is why writes neither scale with concurrency nor improve with
+  larger requests. The fix is target-side (an SLOG device), not initiator-side.
+
+Remaining initiator-side headroom is roughly 3.5% — the gap between 1 MiB and
+4 MiB chunks — and it is not reachable without raising the FSKit volume's
+reported `ioSize` and rebuilding the extension. Not worth it for 3.5%.
 
 `ISCSIBlockDevice` is a Swift `actor`, so every read and write for a session is
 serialized. Combined with a ~15 ms FUA commit, that puts a hard ceiling on

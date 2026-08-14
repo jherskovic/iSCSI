@@ -14,7 +14,7 @@ struct ISCSICtl: AsyncParsableCommand {
         commandName: "iscsictl",
         abstract: "Control the macOS iSCSI initiator.",
         version: "0.1.0",
-        subcommands: [Discover.self, Verify.self, Wipe.self, DextAttach.self,
+        subcommands: [Discover.self, Verify.self, ReadBench.self, Wipe.self, DextAttach.self,
                       DextStatsCommand.self]
     )
 }
@@ -193,6 +193,76 @@ struct Verify: AsyncParsableCommand {
 }
 
 // MARK: wipe
+
+/// Raw sequential read straight over iSCSI, with no FSKit extension, no
+/// DiskImages and no filesystem in the path.
+///
+/// Exists to answer one question honestly: when the end-to-end number is
+/// disappointing, is that our stack or the transport? Comparing this against
+/// the same read through a mounted volume separates the two, and prevents
+/// optimising layers that were never the cost.
+struct ReadBench: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "read-bench",
+        abstract: "Sequential read throughput over raw iSCSI (no filesystem, no disk image)."
+    )
+
+    @OptionGroup var options: GlobalOptions
+
+    @Option(help: "Target IQN to log into.")
+    var target: String
+
+    @Option(help: "LUN number.")
+    var lun: UInt64 = 0
+
+    @Option(help: "Megabytes to read.")
+    var megabytes: Int = 512
+
+    @Option(help: "Bytes per SCSI command.")
+    var chunk: Int = 1 << 20
+
+    @Option(help: "Starting offset in megabytes (skip cached regions).")
+    var offsetMB: Int = 0
+
+    func run() async throws {
+        #if canImport(Network)
+        let transport = try await options.openTransport()
+        var config = LoginConfig(
+            initiatorName: options.initiator,
+            sessionType: .normal,
+            targetName: target,
+            chap: options.credentials()
+        )
+        config.desired.offerDigests = true
+        let session = ISCSISession(login: config) { try await transport }
+        try await session.activate()
+        let device = ISCSIBlockDevice(session: session, lun: lun, maxTransferBytes: chunk)
+        let (blockSize, blockCount) = try await device.readCapacity()
+        let capacity = UInt64(blockSize) * blockCount
+        print("capacity \(capacity / 1_048_576) MiB, blockSize \(blockSize), chunk \(chunk)")
+
+        var offset = UInt64(offsetMB) * 1_048_576
+        // Align to a block boundary; the device rejects unaligned requests.
+        offset -= offset % UInt64(blockSize)
+        var remaining = megabytes * 1_048_576
+        let start = Date()
+        var moved = 0
+        while remaining > 0, offset < capacity {
+            let n = min(chunk, remaining, Int(capacity - offset))
+            _ = try await device.read(offset: offset, length: n - (n % blockSize))
+            offset += UInt64(n)
+            remaining -= n
+            moved += n
+        }
+        let el = Date().timeIntervalSince(start)
+        let mbps = Double(moved) / el / 1_000_000
+        print(String(format: "read %.2f GB in %.2fs = %.1f MB/s", Double(moved) / 1e9, el, mbps))
+        try await session.logout()
+        #else
+        print("requires macOS")
+        #endif
+    }
+}
 
 struct Wipe: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
