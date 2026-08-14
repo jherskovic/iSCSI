@@ -184,6 +184,11 @@ on 2026-08-13). So the blocker is currently unresolved.
 Note this is a real product consideration, not just a test-rig annoyance: any
 user of this project will have to get past the same gate after installing.
 
+> **RESOLVED on macOS 27.0 — 2026-08-14.** The switch works. It was suspect #2
+> below: the build, not the plist. See "Resolution" at the end of this section.
+> Everything between here and there is the record of how it was diagnosed, kept
+> because the ordered-suspects list is what produced the answer.
+
 ### Evidence gathered so far on the dead toggle
 
 All of these were checked and are **healthy**, so none of them is the cause:
@@ -216,6 +221,56 @@ is registered but has **never been instantiated even once**.
    viable since SIP is off) would unmask `fskit_agent`'s "New module list
    <private>" records and likely name the actual rejection reason. This was
    about to be tried when the VM froze.
+
+### Resolution: it was the build (2026-08-14, macOS 27.0)
+
+Suspect #2 was right. A **notarized Developer ID Release build, installed by
+dragging from a mounted DMG to `/Applications`, enables from the System Settings
+switch on the first try** — with SIP on, on real hardware. Nothing else changed:
+no `EXExtensionPrincipalClass` (suspect #1 was never needed), no private
+entitlement, no plist editing, no `pluginkit -e use`.
+
+`LSMinimumSystemVersion` (suspect #3) was added in the same build, so strictly
+it is confounded with the signing change and cannot be individually cleared. It
+is inert metadata that matches Apple's own modules, so it stays; it is not worth
+a second build to isolate.
+
+Measured on Zoidberg-6, macOS 27.0, SIP enabled, via `scripts/m0b-observe.sh`
+(full transcript in `build/m0b-Zoidberg-6-27.0.log`). Read the evidence, not the
+run labels — the observations were fired in back-to-back batches, so the labels
+do not mark what they say:
+
+| time | `enabledModules.plist` | `mount -F -t iSCSI` | fskitd pid |
+|---|---|---|---|
+| 13:01:00–:06 | ours ABSENT | `Module … is disabled!` | 737 |
+| 13:01:46–:48 | **ours PRESENT** | **mounted** | 737 |
+| 13:12:55–13:13:02 | ours PRESENT | mounted | 694 |
+| 13:18:40–:46 | ours PRESENT | mounted | 694 |
+
+Three things that matter for the product, in descending order:
+
+1. **The switch takes effect immediately.** fskitd stayed pid 737 across the
+   ABSENT→PRESENT transition and the first successful mount, so no reboot and no
+   daemon restart was involved. Setup can flip from "action needed" to "ready"
+   while the user watches.
+2. **The entry survives a reboot.** pid 737→694 (and `fskit_agent` 53772→1319,
+   with fskitd logging `Old modules (null)`) is one clean boot; ours is still in
+   `enabledModules.plist` afterwards and still mounts. The entry postdates the
+   module's 13:00:30 pluginkit registration, so the pruning rule described at the
+   end of this document is *satisfied*, not merely untested.
+3. **`Extension is not entitled to run in the App Sandbox` is noise.**
+   `fskit_agent` logs it before and after enablement — including at 13:13:24,
+   while our module was enabled and mounting. It names an opaque
+   `_EXExtensionIdentity`, not necessarily ours. Do not chase it on macOS 27.
+
+Consequence for the shipping app: **branch E-toggle**. Deep-link to the pane and
+observe `FSModuleIdentity.isEnabled`. No `enabledModules.plist` writing ships on
+macOS 27, which also means no Full Disk Access prompt in the setup flow.
+
+The related external report ([andrewgazelka/loaf#1](https://github.com/andrewgazelka/loaf/issues/1),
+Apple's own FSKitSample refusing to enable) is consistent with this: it describes
+macOS 26.1/26.2. The enablement branch is therefore a **runtime decision keyed on
+OS version**, not a compile-time constant, until the 26.x leg is measured.
 
 ## Soak and crash consistency (2026-08-13)
 
