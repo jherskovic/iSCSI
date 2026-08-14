@@ -39,3 +39,53 @@ struct CRC32CTests {
         #expect(CRC32C.checksum([]) == 0)
     }
 }
+
+// MARK: - Accelerated implementation
+
+@Suite("CRC32C acceleration")
+struct CRC32CAccelTests {
+    /// The streaming API must agree with the one-shot for every split point,
+    /// including splits that land mid-8-byte-word — the hardware path consumes
+    /// 8 bytes at a time and handles the tail separately, which is exactly
+    /// where a chained digest goes wrong.
+    @Test func chunkedMatchesOneShot() {
+        let data = Data((0 ..< 1000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+        let expected = CRC32C.checksum(data)
+        for split in [0, 1, 7, 8, 9, 15, 16, 63, 64, 65, 511, 999, 1000] {
+            var crc: UInt32 = 0xFFFF_FFFF
+            crc = data.prefix(split).withUnsafeBytes { CRC32C.update(crc, $0) }
+            crc = data.dropFirst(split).withUnsafeBytes { CRC32C.update(crc, $0) }
+            #expect(CRC32C.finalize(crc) == expected, "split at \(split)")
+        }
+    }
+
+    /// Data, [UInt8] and the generic Sequence overload must not diverge; the
+    /// fast paths are separate code.
+    @Test func overloadsAgree() {
+        let bytes = (0 ..< 257).map { UInt8($0 & 0xFF) }
+        let viaArray = CRC32C.checksum(bytes)
+        let viaData = CRC32C.checksum(Data(bytes))
+        let viaSequence = CRC32C.checksum(AnySequence(bytes))
+        #expect(viaArray == viaData)
+        #expect(viaArray == viaSequence)
+    }
+
+    /// Lengths around the 8-byte block boundary, where the tail loop runs.
+    @Test func allTailLengthsAreCorrect() {
+        // Reference: the original byte-at-a-time definition.
+        func reference(_ b: [UInt8]) -> UInt32 {
+            var crc: UInt32 = 0xFFFF_FFFF
+            for byte in b {
+                crc ^= UInt32(byte)
+                for _ in 0 ..< 8 {
+                    crc = (crc & 1) != 0 ? (crc >> 1) ^ 0x82F6_3B78 : crc >> 1
+                }
+            }
+            return crc ^ 0xFFFF_FFFF
+        }
+        for len in 0 ... 40 {
+            let b = (0 ..< len).map { UInt8(truncatingIfNeeded: $0 &* 17 &+ 3) }
+            #expect(CRC32C.checksum(b) == reference(b), "length \(len)")
+        }
+    }
+}

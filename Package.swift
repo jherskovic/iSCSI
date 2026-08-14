@@ -14,10 +14,15 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
     ],
     targets: [
+        // CRC32C via the hardware instruction (arm64 / SSE4.2), with a
+        // slice-by-8 fallback. C because Swift exposes no way to emit the
+        // CRC32C instruction, and the digest covers every byte on the wire.
+        .target(name: "CCRC32C"),
         // Pure protocol logic: PDU codec, negotiation, auth, digests, session engine.
         // No sockets, no side effects — everything here is unit-testable and fuzzable.
         .target(
             name: "iSCSIKit",
+            dependencies: ["CCRC32C"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // Scriptable iSCSI target used by integration tests (and runnable standalone).
