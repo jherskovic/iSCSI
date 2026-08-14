@@ -117,6 +117,11 @@ public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unch
     }
 
     public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
+        // Before resume(), and before anything is exported. Once the connection
+        // is resumed the peer can start calling, so a check made afterwards is
+        // a race it can win.
+        guard ClientAuthorization.authorize(connection) else { return false }
+
         let iface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
         connection.exportedInterface = iface
         connection.exportedObject = ISCSIXPCService(core: core)
