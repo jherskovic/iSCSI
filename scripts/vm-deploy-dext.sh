@@ -1,9 +1,24 @@
 #!/bin/bash
-# vm-deploy.sh — build, install, and activate the current dext + daemon on the
-# SIP-off test VM, handling the reboot dance a virtual (always-matched) dext
+# vm-deploy-dext.sh — build, install, and activate the current dext + daemon on
+# the SIP-off test VM, handling the reboot dance a virtual (always-matched) dext
 # needs to swap versions. Run from the repo root on the host.
 #
-#   scripts/vm-deploy.sh [vm-host]
+#   scripts/vm-deploy-dext.sh [vm-host]
+#
+# PARKED: Backend B is out of scope for the shipping v1 (FSKit only), so the
+# app no longer embeds the dext — and a dext can only be activated by a host app
+# that embeds it. To use this script, re-add the dependency in apps/project.yml:
+#
+#     targets:
+#       iSCSIApp:
+#         dependencies:
+#           - target: iSCSIDext        # <- add these two lines back
+#             embed: true
+#
+# ...then `cd apps && xcodegen generate`. Do NOT commit that with a release:
+# the DriverKit entitlements are approval-gated, so their presence makes every
+# Developer ID export fail at profile resolution. The guard below refuses to run
+# rather than deploy an app with no dext inside it.
 #
 # Requires: ssh key auth to the VM; the VM password in $ISCSI_VM_PASS (for
 # sudo reboot + keychain unlock); UTM hosting the VM if you want auto-recovery.
@@ -43,23 +58,44 @@ wanted_version() {
   plutil -extract CFBundleVersion raw apps/iSCSIDext/Info.plist
 }
 
+if ! grep -q 'target: iSCSIDext' apps/project.yml; then
+  cat >&2 <<'EOF'
+REFUSING TO DEPLOY: apps/project.yml does not embed the dext in iSCSIApp, so the
+app that would be installed contains no driver extension and activation would
+silently do nothing.
+
+Re-add it under targets.iSCSIApp.dependencies:
+
+    - target: iSCSIDext
+      embed: true
+
+then `cd apps && xcodegen generate` and re-run. See this file's header for why
+it must not be committed alongside a release build.
+EOF
+  exit 1
+fi
+
 echo "== sync source"
 rsync -a --delete --exclude .build --exclude .git --exclude apps/build --exclude .swiftpm ./ "$VM":iSCSI/
 
 echo "== build app (dext) + daemon on VM"
+# rsync, not rm -rf + cp: replacing the bundle wholesale drops the pluginkit
+# registration of the embedded FSKit extension, and the enablement entry is then
+# pruned at the next boot. See docs/backend-a-fskit-notes.md:552-569.
 ssh -o BatchMode=yes "$VM" "security unlock-keychain -p '$PASS' ~/Library/Keychains/login.keychain-db >/dev/null 2>&1;
-  cd ~/iSCSI/apps && xcodebuild -project iSCSIInitiator.xcodeproj -scheme iSCSIApp -configuration Debug build 2>&1 | grep -E 'BUILD (SUCCEEDED|FAILED)' &&
+  cd ~/iSCSI/apps && xcodebuild -project iSCSIInitiator.xcodeproj -scheme 'iSCSI Initiator' -configuration Debug build 2>&1 | grep -E 'BUILD (SUCCEEDED|FAILED)' &&
   cd ~/iSCSI && swift build -c release 2>&1 | tail -1 &&
-  rm -rf /Applications/iSCSIApp.app && cp -R $DD/iSCSIApp.app /Applications/"
+  mkdir -p '/Applications/iSCSI Initiator.app' &&
+  rsync -a --delete $DD/'iSCSI Initiator.app'/ '/Applications/iSCSI Initiator.app'/"
 
 WANT=$(wanted_version)
 echo "== activate v$WANT + reboot"
-ssh -o BatchMode=yes "$VM" "open /Applications/iSCSIApp.app; sleep 10; echo '$PASS' | sudo -S reboot" 2>/dev/null || true
+ssh -o BatchMode=yes "$VM" "open '/Applications/iSCSI Initiator.app'; sleep 10; echo '$PASS' | sudo -S reboot" 2>/dev/null || true
 sleep 20; wait_for_vm
 
 if [[ "$(active_version)" != *"/$WANT" ]]; then
   echo "== activation landed late; relaunch + reboot again"
-  ssh -o BatchMode=yes "$VM" "open /Applications/iSCSIApp.app; sleep 12; echo '$PASS' | sudo -S reboot" 2>/dev/null || true
+  ssh -o BatchMode=yes "$VM" "open '/Applications/iSCSI Initiator.app'; sleep 12; echo '$PASS' | sudo -S reboot" 2>/dev/null || true
   sleep 20; wait_for_vm
 fi
 

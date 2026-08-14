@@ -18,56 +18,27 @@ struct ISCSIInitiatorApp: App {
 }
 
 struct ContentView: View {
-    @StateObject private var controller = ExtensionController()
-    @State private var portal = "192.168.0.101"
-    @State private var target = "iqn.me.herko.planet-express:iscsi-driver-testing"
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("iSCSI Initiator")
                 .font(.largeTitle).bold()
 
-            GroupBox("Driver Extension (Backend B)") {
-                HStack {
-                    Circle()
-                        .fill(controller.dextActivated ? .green : .secondary)
-                        .frame(width: 10, height: 10)
-                    Text(controller.dextStatus)
-                    Spacer()
-                    Button(controller.dextActivated ? "Deactivate" : "Activate") {
-                        controller.toggleDext()
-                    }
-                }
-                .padding(6)
-            }
-            // Dev convenience: request activation as soon as the app launches,
-            // so a plain Cmd-R installs the freshly built dext. Without this it
-            // is far too easy to rebuild, reboot, and unknowingly keep running
-            // the PREVIOUS dext because nobody pressed Activate. (Remember to
-            // bump CFBundleVersion too — sysextd skips same-version installs.)
-            .task { controller.activate() }
-
-            GroupBox("Target") {
-                Grid(alignment: .leading) {
-                    GridRow {
-                        Text("Portal")
-                        TextField("host", text: $portal)
-                    }
-                    GridRow {
-                        Text("IQN")
-                        TextField("iqn…", text: $target)
-                    }
-                }
-                .padding(6)
-            }
-
-            Text(controller.log)
-                .font(.system(.footnote, design: .monospaced))
+            Text("Milestone 0-b probe build — measures whether a notarized "
+                 + "Developer ID build can be enabled in System Settings.")
+                .font(.callout)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+            FSKitProbeView()
 
             Spacer()
         }
         .padding(24)
     }
 }
+
+// The dext panel and its `.task { controller.activate() }` auto-fire lived here.
+// Both are gone for v1: the app no longer embeds the dext (see the comment in
+// apps/project.yml), so an activation request could only ever fail — and firing
+// a doomed OSSystemExtensionRequest inside the build under test would add noise
+// to exactly the logs M0-b needs to read. ExtensionController.swift is kept
+// intact for when Backend B comes back.

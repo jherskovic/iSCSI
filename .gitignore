@@ -8,3 +8,7 @@ Fuzz/corpus-findings/
 apps/build/
 apps/*.xcodeproj/project.xcworkspace/
 apps/*.xcodeproj/xcuserdata/
+*.p8
+build/
+*.dmg
+*.xcarchive

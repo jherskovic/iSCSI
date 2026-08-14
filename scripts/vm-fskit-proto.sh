@@ -61,7 +61,7 @@ rm -f /Users/Shared/iscsi-proto-*.img
 
 echo "=== module registered?"
 pluginkit -m -v -p com.apple.fskit.fsmodule 2>/dev/null | grep -i iscsi | sed 's/^/    /' \
-  || echo "    NOT-REGISTERED (install /Applications/iSCSIApp.app)"
+  || echo "    NOT-REGISTERED (install '/Applications/iSCSI Initiator.app')"
 
 echo "=== mount the FSKit volume"
 if ! run 60 MOUNT mount -F -t iSCSI "$URL" "$FSMNT"; then

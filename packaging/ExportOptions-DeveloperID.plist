@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Export options for the notarized Developer ID build.
+
+  signingStyle=automatic lets Xcode mint and refresh the Developer ID profiles for
+  both bundle ids (the app and the FSKit extension), which is why release.sh passes
+  -allowProvisioningUpdates. If Apple ever stops minting one of them automatically,
+  switch to manual and add a provisioningProfiles dict mapping each bundle id to a
+  profile name — everything else here stays the same.
+-->
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>developer-id</string>
+
+    <key>teamID</key>
+    <string>4A27X5PJP3</string>
+
+    <key>signingStyle</key>
+    <string>automatic</string>
+
+    <key>signingCertificate</key>
+    <string>Developer ID Application</string>
+
+    <!-- We notarize explicitly in release.sh so the script can staple, verify and
+         fail loudly. Letting Xcode do it here hides the submission log. -->
+    <key>destination</key>
+    <string>export</string>
+</dict>
+</plist>

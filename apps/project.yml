@@ -21,6 +21,14 @@ settings:
   base:
     # Fill in your Apple Developer team, or set it in Xcode's Signing pane.
     DEVELOPMENT_TEAM: "4A27X5PJP3"
+    # Automatic signing is enough for the Developer ID release, verified: with
+    # -allowProvisioningUpdates, Xcode registers both App IDs, enables the FSKit
+    # Module capability and mints "Mac Team Direct Provisioning Profile" for the
+    # app and the appex, and `-exportArchive method: developer-id` produces
+    # Developer ID Application signatures with hardened runtime, a secure
+    # timestamp and an embedded .provisionprofile carrying
+    # com.apple.developer.fskit.fsmodule. No manual profile management, and no
+    # entitlement request to Apple — see docs/entitlements.md.
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "0.1.0"
@@ -33,18 +41,28 @@ targets:
     platform: macOS
     sources:
       - iSCSIApp
-    # The app only activates the dext (SystemExtensions.framework) and talks
-    # to the daemon over XPC — it does not link iSCSIKit. The FSKit extension
-    # (Backend A) is built separately.
+    # The shipping app embeds the FSKit extension (Backend A) and nothing else.
+    #
+    # The dext is deliberately NOT a dependency: its DriverKit entitlements are
+    # approval-gated by Apple, so including it makes every Developer ID export
+    # fail at profile resolution. It stays buildable via the iSCSIDext-dev
+    # scheme below. See docs/entitlements.md.
+    #
+    # This embed used to be hand-patched directly into the .pbxproj (commit
+    # cdab9da) while project.yml still said "built separately" — which meant a
+    # plain `xcodegen generate` silently produced an app with no filesystem
+    # module and no build error. Declare it here so regeneration is safe.
     dependencies:
-      - target: iSCSIDext
+      - target: iSCSIFSExtension
         embed: true
     settings:
       base:
+        PRODUCT_NAME: "iSCSI Initiator"
         PRODUCT_BUNDLE_IDENTIFIER: me.herko.iSCSIInitiator
         INFOPLIST_FILE: iSCSIApp/Info.plist
         CODE_SIGN_ENTITLEMENTS: iSCSIApp/iSCSIApp.entitlements
         ENABLE_HARDENED_RUNTIME: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
 
   # ---- DriverKit extension (Backend B): virtual SCSI HBA ----
   # DriverKit isn't a first-class XcodeGen platform; express it as a macOS
@@ -77,8 +95,13 @@ targets:
         OTHER_LDFLAGS: "-framework DriverKit -framework SCSIControllerDriverKit"
 
   # ---- FSKit extension (Backend A): iSCSI-backed block-device file ----
+  # extensionkit-extension, not app-extension: FSKit modules are ExtensionKit
+  # extensions (EXAppExtensionAttributes / EXExtensionPointIdentifier in
+  # iSCSIFSExtension/Info.plist), and they must land in Contents/Extensions/,
+  # which is what the "Embed ExtensionKit Extensions" phase does. Declaring it
+  # as app-extension puts it in Contents/PlugIns/ where fskit never finds it.
   iSCSIFSExtension:
-    type: app-extension
+    type: extensionkit-extension
     platform: macOS
     sources:
       - iSCSIFSExtension
@@ -91,3 +114,37 @@ targets:
         INFOPLIST_FILE: iSCSIFSExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: iSCSIFSExtension/iSCSIFSExtension.entitlements
         ENABLE_HARDENED_RUNTIME: YES
+
+# Two schemes, because the two backends have incompatible signing needs.
+#
+# "iSCSI Initiator" is what ships and what scripts/release.sh archives: app +
+# embedded FSKit extension, both signable with a plain Developer ID profile.
+#
+# "iSCSIDext-dev" builds the DriverKit extension on its own for the SIP-off VM.
+# It can never be part of a Developer ID export until Apple grants the DriverKit
+# family entitlements, so keeping it in its own scheme is what stops an
+# accidental `xcodebuild -scheme iSCSIApp` from dragging it into a release.
+schemes:
+  iSCSI Initiator:
+    build:
+      targets:
+        iSCSIApp: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
+  iSCSIDext-dev:
+    build:
+      targets:
+        iSCSIDext: all
+    run:
+      config: Debug
+    archive:
+      config: Debug

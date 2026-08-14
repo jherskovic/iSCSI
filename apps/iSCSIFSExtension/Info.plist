@@ -12,6 +12,18 @@
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <!-- Suspect #3 from docs/backend-a-fskit-notes.md:214 for why the System
+         Settings switch refuses to enable this module: Apple's own modules set
+         LSMinimumSystemVersion and ours did not. fskit_agent validates modules
+         at startup and silently prunes the ones it rejects, so an eligibility
+         judgement is exactly the shape of failure observed. Inert metadata, so
+         setting it costs nothing even if it turns out not to be the cause.
+         (Suspect #1, EXExtensionPrincipalClass, is deliberately NOT set: a
+         Swift @main extension supplies its entry point via ExtensionFoundation,
+         and a wrong class string breaks instantiation outright. That one is the
+         next lever to pull only if a notarized Release build still refuses.) -->
+    <key>LSMinimumSystemVersion</key>
+    <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <!-- Every FS* key must live INSIDE EXAppExtensionAttributes. At the top
          level they are silently ignored. Shape copied from Apple's shipping
          URL-resource module, /System/Library/ExtensionKit/Extensions/

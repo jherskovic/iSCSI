@@ -76,8 +76,26 @@ xcodegen generate          # produces iSCSIInitiator.xcodeproj
 open iSCSIInitiator.xcodeproj
 # Set your signing Team in project.yml or the Signing pane, then build.
 ```
-The DriverKit dext requires a SIP-off test VM to load — see `docs/vm-setup.md`
-and `docs/entitlements.md`.
+
+Two schemes: **iSCSI Initiator** is what ships (the app plus the embedded FSKit
+extension), and **iSCSIDext-dev** builds the DriverKit extension on its own. The
+dext is deliberately not part of the shipping app — its entitlements are
+approval-gated by Apple, and it requires a SIP-off test VM to load. See
+`docs/vm-setup.md` and `docs/entitlements.md`.
+
+## Releasing
+
+```sh
+scripts/release.sh                  # notarized, stapled DMG
+scripts/release.sh --skip-notarize  # signed DMG only, for testing the pipeline
+```
+
+Archives, exports a Developer ID build, asserts that every nested Mach-O carries
+hardened runtime and a secure timestamp, notarizes and staples the app *and* the
+DMG, then verifies with `spctl` and `stapler validate`. The FSKit entitlement
+needs no request to Apple; Xcode mints the profiles automatically. One-time
+setup is a notarytool credential profile — the script tells you the exact
+command if it is missing.
 
 ## Layout
 
