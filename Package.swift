@@ -53,6 +53,18 @@ let package = Package(
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // Local iSCSI target: loopback benchmarking without the transport
+        // ceiling, plus faults (drop / corrupt / stall / target power loss)
+        // that a real NAS cannot be asked to perform on demand.
+        .executableTarget(
+            name: "iscsi-target-sim",
+            dependencies: [
+                "iSCSIKit",
+                "MockTarget",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         // Fuzz harness: built normally it's a regression-replay tool;
         // scripts/fuzz.sh rebuilds it with -sanitize=fuzzer,address.
         .executableTarget(

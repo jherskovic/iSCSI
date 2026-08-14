@@ -3,37 +3,63 @@ import Foundation
 import Network
 import iSCSIKit
 
-/// A loopback TCP listener that serves one `MockTarget` per accepted
-/// connection. Lets tests drive the real `NetworkTransport` end-to-end over
-/// an actual socket instead of the in-memory pipe.
+/// A TCP listener that serves one `MockTarget` per accepted connection.
+///
+/// Two jobs. In tests it binds an ephemeral port so the initiator drives a real
+/// `NetworkTransport` over an actual socket instead of the in-memory pipe. In
+/// the standalone simulator it binds a fixed port and stays up for hours, which
+/// is why it tracks live connections: `drop` has to be able to reach out and
+/// kill them.
 public actor MockTargetServer {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "mocktarget.listener")
     private let makeConfig: @Sendable () -> MockTargetConfig
     private let disk: RAMDisk
+    private let faultBox: FaultBox
     public private(set) var port: UInt16 = 0
-    private var serveTasks: [Task<Void, Never>] = []
+
+    private struct LiveConnection {
+        let connection: NWConnection
+        let task: Task<Void, Never>
+    }
+
+    private var live: [UInt64: LiveConnection] = [:]
+    private var nextID: UInt64 = 0
+    /// While paused, accepted connections are reset immediately. That is a
+    /// portal that answers and then hangs up, not a black hole — enough to
+    /// exercise re-login backoff and recovery exhaustion, but it does not
+    /// simulate a dropped route (that needs pf).
+    private var paused = false
+
+    public private(set) var acceptedCount = 0
+    public private(set) var refusedWhilePaused = 0
 
     public init(
+        port: UInt16 = 0,
         disk: RAMDisk = RAMDisk(),
+        faultBox: FaultBox = FaultBox(),
         config: @escaping @Sendable () -> MockTargetConfig = { MockTargetConfig() }
     ) throws {
         self.disk = disk
+        self.faultBox = faultBox
         self.makeConfig = config
-        self.listener = try NWListener(using: .tcp)
+        if port == 0 {
+            self.listener = try NWListener(using: .tcp)
+        } else {
+            guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
+                throw NWError.posix(.EINVAL)
+            }
+            self.listener = try NWListener(using: .tcp, on: endpointPort)
+        }
     }
 
     /// Start listening; returns the bound port.
     public func start() async throws -> UInt16 {
         let listener = self.listener
-        let disk = self.disk
-        let makeConfig = self.makeConfig
         listener.newConnectionHandler = { [weak self] connection in
-            let transport = NWConnectionTransport(connection: connection, queue: self?.queueForConnection ?? DispatchQueue(label: "conn"))
-            let target = MockTarget(config: makeConfig(), disk: disk, transport: transport)
-            Task { await self?.track(Task { await target.run() }) }
+            Task { await self?.accept(connection) }
         }
-        return try await withCheckedThrowingContinuation { continuation in
+        let bound: UInt16 = try await withCheckedThrowingContinuation { continuation in
             let resumed = LockedBool()
             listener.stateUpdateHandler = { state in
                 switch state {
@@ -49,20 +75,67 @@ public actor MockTargetServer {
             }
             listener.start(queue: queue)
         }
+        port = bound
+        return bound
     }
 
-    private nonisolated var queueForConnection: DispatchQueue {
-        DispatchQueue(label: "mocktarget.conn")
+    private func accept(_ connection: NWConnection) {
+        if paused {
+            refusedWhilePaused += 1
+            connection.cancel()
+            return
+        }
+        acceptedCount += 1
+        let id = nextID
+        nextID &+= 1
+        let transport = NWConnectionTransport(
+            connection: connection,
+            queue: DispatchQueue(label: "mocktarget.conn.\(id)")
+        )
+        let target = MockTarget(
+            config: makeConfig(),
+            disk: disk,
+            faultBox: faultBox,
+            transport: transport
+        )
+        let task = Task { [weak self] in
+            await target.run()
+            await self?.retire(id)
+        }
+        live[id] = LiveConnection(connection: connection, task: task)
     }
 
-    private func track(_ task: Task<Void, Never>) {
-        serveTasks.append(task)
+    private func retire(_ id: UInt64) {
+        live.removeValue(forKey: id)
     }
+
+    /// Hard-drop every live connection. The initiator sees the transport die
+    /// mid-command, which is the ERL0 recovery trigger.
+    @discardableResult
+    public func dropAll() -> Int {
+        let count = live.count
+        for entry in live.values {
+            entry.connection.cancel()
+            entry.task.cancel()
+        }
+        live.removeAll()
+        return count
+    }
+
+    public func pauseAccepting() {
+        paused = true
+    }
+
+    public func resumeAccepting() {
+        paused = false
+    }
+
+    public var isPaused: Bool { paused }
+    public var liveConnections: Int { live.count }
 
     public func stop() {
         listener.cancel()
-        for task in serveTasks { task.cancel() }
-        serveTasks = []
+        dropAll()
     }
 }
 

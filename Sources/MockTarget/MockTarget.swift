@@ -1,39 +1,6 @@
 import Foundation
 import iSCSIKit
 
-/// RAM-backed LUN shared across simulated target "reboots".
-public actor RAMDisk {
-    public let blockSize: Int
-    public let capacityBlocks: UInt64
-    private var storage: Data
-    /// SYNCHRONIZE CACHE counter — lets tests assert flush semantics.
-    public private(set) var flushCount = 0
-
-    public init(blockSize: Int = 512, capacityBlocks: UInt64 = 8192) {
-        self.blockSize = blockSize
-        self.capacityBlocks = capacityBlocks
-        self.storage = Data(count: blockSize * Int(capacityBlocks))
-    }
-
-    public func read(lba: UInt64, blocks: UInt32) -> Data? {
-        let start = Int(lba) * blockSize
-        let end = start + Int(blocks) * blockSize
-        guard lba + UInt64(blocks) <= capacityBlocks else { return nil }
-        return storage.sub(start, end - start)
-    }
-
-    public func write(lba: UInt64, data: Data) -> Bool {
-        guard data.count % blockSize == 0,
-              lba + UInt64(data.count / blockSize) <= capacityBlocks else { return false }
-        storage.setSub(data, Int(lba) * blockSize)
-        return true
-    }
-
-    public func recordFlush() {
-        flushCount += 1
-    }
-}
-
 /// Scripted misbehavior. Every fault is off by default; tests switch on the
 /// hostility they want to probe.
 public struct MockTargetFaults: Sendable {
@@ -138,6 +105,9 @@ public actor MockTarget {
         var received: Int
         var awaitingUnsolicited: Bool
         var currentTTT: UInt32?
+        /// FUA from the command's CDB: decides whether the data is committed
+        /// or merely cached when the write completes.
+        var fua: Bool
     }
 
     private var writes: [UInt32: WriteState] = [:]
@@ -147,13 +117,21 @@ public actor MockTarget {
     /// Commands swallowed by stallCommands (for TMF assertions).
     public private(set) var stalledITTs: [UInt32] = []
 
+    /// Live fault script. Tests that set faults once at init get a private box
+    /// holding `config.faults`; the simulator passes a shared one so faults can
+    /// be flipped mid-run.
+    private let faultBox: FaultBox
+    private var faults: MockTargetFaults { faultBox.value }
+
     public init(
         config: MockTargetConfig = MockTargetConfig(),
         disk: RAMDisk? = nil,
+        faultBox: FaultBox? = nil,
         transport: any ConnectionTransport
     ) {
         self.config = config
         self.disk = disk ?? RAMDisk()
+        self.faultBox = faultBox ?? FaultBox(config.faults)
         self.transport = transport
     }
 
@@ -162,7 +140,7 @@ public actor MockTarget {
         do {
             try await loginPhase()
             guard loggedIn else { return }
-            if config.faults.nopPingOnConnect {
+            if faults.nopPingOnConnect {
                 try await sendTargetPing()
             }
             try await fullFeaturePhase()
@@ -190,14 +168,14 @@ public actor MockTarget {
     }
 
     private func send(_ pdu: some ProtocolDataUnit) async throws {
-        if let delay = config.faults.responseDelay {
+        if let delay = faults.responseDelay {
             try await Task.sleep(for: delay)
         }
         var bytes = serializer.serialize(pdu)
-        if config.faults.corruptHeaderDigestOnce && negotiated.headerDigest && loggedIn {
+        if faults.corruptHeaderDigestOnce && negotiated.headerDigest && loggedIn {
             bytes.setU8(bytes.u8(20) ^ 0xFF, 20) // corrupt ITT after digest computed
         }
-        if config.faults.corruptDataInPayload && loggedIn && pdu is DataInPDU {
+        if faults.corruptDataInPayload && loggedIn && pdu is DataInPDU {
             // Flip a payload byte *after* serialization so any negotiated
             // digest no longer matches — simulating on-the-wire corruption.
             let dataOffset = 48 + (negotiated.headerDigest ? 4 : 0)
@@ -207,14 +185,14 @@ public actor MockTarget {
         }
         try await transport.send(bytes)
         sentPDUs += 1
-        if let limit = config.faults.dropAfterSentPDUs, loggedIn, sentPDUs >= limit {
+        if let limit = faults.dropAfterSentPDUs, loggedIn, sentPDUs >= limit {
             await transport.close()
             throw TransportError.closed
         }
     }
 
     private func takeStatSN() -> UInt32 {
-        if config.faults.duplicateStatSN && loggedIn {
+        if faults.duplicateStatSN && loggedIn {
             return statSN &- 1
         }
         defer { statSN &+= 1 }
@@ -222,7 +200,7 @@ public actor MockTarget {
     }
 
     private func window() -> (expCmdSN: UInt32, maxCmdSN: UInt32) {
-        if config.faults.freezeWindow {
+        if faults.freezeWindow {
             return (expCmdSN, expCmdSN &- 1) // permanently closed window
         }
         return (expCmdSN, expCmdSN &+ config.commandWindow &- 1)
@@ -252,14 +230,14 @@ public actor MockTarget {
             expCmdSN = request.cmdSN
             let text = try TextParameters.decode(request.dataSegment)
 
-            if let status = config.faults.rejectLoginStatus {
+            if let status = faults.rejectLoginStatus {
                 try await sendLoginResponse(
                     to: request, text: TextParameters(),
                     transit: false, statusClass: status.class, statusDetail: status.detail
                 )
                 throw TransportError.closed
             }
-            if let address = config.faults.redirectTo {
+            if let address = faults.redirectTo {
                 var reply = TextParameters()
                 reply.append("TargetAddress", address)
                 try await sendLoginResponse(
@@ -481,7 +459,7 @@ public actor MockTarget {
     private func finishLogin() {
         loggedIn = true
         sentPDUs = 0 // drop-after-N faults count full-feature-phase PDUs only
-        statSN &+= config.faults.statSNJump
+        statSN &+= faults.statSNJump
         let digests = DigestConfig(
             headerDigest: negotiated.headerDigest,
             dataDigest: negotiated.dataDigest
@@ -533,15 +511,15 @@ public actor MockTarget {
     }
 
     private func handleCommand(_ command: SCSICommandPDU) async throws {
-        if config.faults.stallCommands {
+        if faults.stallCommands {
             stalledITTs.append(command.initiatorTaskTag)
             return
         }
-        if config.faults.rejectAllCommands {
+        if faults.rejectAllCommands {
             try await sendReject(.commandNotSupported, offending: command.encode())
             return
         }
-        if config.faults.checkConditionAll {
+        if faults.checkConditionAll {
             try await sendCheckCondition(itt: command.initiatorTaskTag, key: 0x05, asc: 0x20, ascq: 0x00)
             return
         }
@@ -582,7 +560,7 @@ public actor MockTarget {
                 try await sendCheckCondition(itt: command.initiatorTaskTag, key: 0x05, asc: 0x21, ascq: 0x00)
                 return
             }
-            if config.faults.unsolicitedR2T {
+            if faults.unsolicitedR2T {
                 var r2t = R2TPDU()
                 r2t.lun = command.lun
                 r2t.initiatorTaskTag = command.initiatorTaskTag
@@ -606,7 +584,8 @@ public actor MockTarget {
                 buffer: Data(count: total),
                 received: 0,
                 awaitingUnsolicited: false,
-                currentTTT: nil
+                currentTTT: nil,
+                fua: fuaBit(command.cdb)
             )
             if !command.dataSegment.isEmpty {
                 state.buffer.setSub(command.dataSegment, 0)
@@ -618,11 +597,62 @@ public actor MockTarget {
                 try await progressWrite(itt: command.initiatorTaskTag)
             }
         case 0x35, 0x91: // SYNCHRONIZE CACHE (10) / (16)
-            await disk.recordFlush()
+            await disk.flush()
             try await sendGoodResponse(itt: command.initiatorTaskTag)
+        case 0x5A: // MODE SENSE (10)
+            try await sendReadResult(for: command, data: modeSense10(command.cdb))
+        case 0x1A: // MODE SENSE (6)
+            try await sendReadResult(for: command, data: modeSense6(command.cdb))
         default:
             try await sendCheckCondition(itt: command.initiatorTaskTag, key: 0x05, asc: 0x20, ascq: 0x00)
         }
+    }
+
+    /// Caching mode page (0x08). WCE=1 is the truth of this model: writes are
+    /// acknowledged from a volatile cache unless they carry FUA. The daemon
+    /// reads this at login to decide whether its durability assumptions hold,
+    /// so answering it is not optional decoration.
+    private func cachingPage() -> Data {
+        var page = Data(count: 20)
+        page.setU8(0x08, 0) // page code
+        page.setU8(18, 1) // page length (rest of the page)
+        page.setU8(0x04, 2) // WCE = 1
+        return page
+    }
+
+    /// MODE SENSE(10): 8-byte header, no block descriptors, one page.
+    private func modeSense10(_ cdb: Data) -> Data {
+        let page = requestedPages(cdb)
+        var data = Data(count: 8)
+        data.setBE16(UInt16(6 + page.count), 0) // mode data length, excluding itself
+        data.setBE16(0, 6) // block descriptor length
+        data.append(page)
+        return data
+    }
+
+    /// MODE SENSE(6): same content behind a 4-byte header. Our daemon uses the
+    /// 10-byte form, but plenty of initiators still send this one.
+    private func modeSense6(_ cdb: Data) -> Data {
+        let page = requestedPages(cdb)
+        var data = Data(count: 4)
+        data.setU8(UInt8(truncatingIfNeeded: 3 + page.count), 0)
+        data.setU8(0, 3) // block descriptor length
+        data.append(page)
+        return data
+    }
+
+    /// Page code lives in the low 6 bits of CDB byte 2; 0x3F means "all pages",
+    /// which for this target is the same single page.
+    private func requestedPages(_ cdb: Data) -> Data {
+        let code = cdb.count >= 3 ? cdb.u8(2) & 0x3F : 0x3F
+        return (code == 0x08 || code == 0x3F) ? cachingPage() : Data()
+    }
+
+    /// Force Unit Access: CDB byte 1 bit 3, same position in READ/WRITE(10)
+    /// and (16). Without reading this the target cannot model a write cache,
+    /// and a crash test cannot tell a durable write from a cached one.
+    private func fuaBit(_ cdb: Data) -> Bool {
+        cdb.count >= 2 && (cdb.u8(1) & 0x08) != 0
     }
 
     private func parseReadWrite(_ cdb: Data) -> (UInt64, UInt32) {
@@ -636,7 +666,7 @@ public actor MockTarget {
     private func progressWrite(itt: UInt32) async throws {
         guard var state = writes[itt] else { return }
         if state.received < state.total {
-            if config.faults.stallAfterR2T && state.currentTTT != nil {
+            if faults.stallAfterR2T && state.currentTTT != nil {
                 return // solicited once, now stall forever
             }
             let remaining = state.total - state.received
@@ -657,13 +687,13 @@ public actor MockTarget {
             r2t.bufferOffset = UInt32(state.received)
             r2t.desiredDataTransferLength = UInt32(desired)
             try await send(r2t)
-            if config.faults.stallAfterR2T {
+            if faults.stallAfterR2T {
                 writes[itt] = state
             }
             return
         }
         writes.removeValue(forKey: itt)
-        let ok = await disk.write(lba: state.lba, data: state.buffer)
+        let ok = await disk.write(lba: state.lba, data: state.buffer, fua: state.fua)
         if ok {
             try await sendGoodResponse(itt: itt)
         } else {
@@ -676,7 +706,7 @@ public actor MockTarget {
             try await sendReject(.invalidPDUField, offending: dataOut.encode())
             return
         }
-        if config.faults.stallAfterR2T && state.currentTTT != nil {
+        if faults.stallAfterR2T && state.currentTTT != nil {
             return // swallow the data
         }
         let offset = Int(dataOut.bufferOffset)
@@ -701,7 +731,7 @@ public actor MockTarget {
         let expected = Int(command.expectedDataTransferLength)
         let payload = data.prefix(expected)
         let underflow = payload.count < expected
-        let chunkLimit = config.faults.oversizeDataIn
+        let chunkLimit = faults.oversizeDataIn
             ? payload.count
             : max(1, Int(initiatorMRDSL))
         var offset = 0
@@ -730,7 +760,7 @@ public actor MockTarget {
             }
             try await send(pdu)
             sent += 1
-            if let dropAt = config.faults.dropDuringDataInAt, sent >= dropAt {
+            if let dropAt = faults.dropDuringDataInAt, sent >= dropAt {
                 await transport.close()
                 throw TransportError.closed
             }
@@ -786,7 +816,7 @@ public actor MockTarget {
     }
 
     private func handleNopOut(_ nop: NopOutPDU) async throws {
-        if config.faults.swallowNops { return }
+        if faults.swallowNops { return }
         if nop.initiatorTaskTag != 0xFFFF_FFFF {
             // Initiator ping → echo.
             var reply = NopInPDU()
@@ -848,7 +878,7 @@ public actor MockTarget {
             }
         }
         let encoded = reply.encode()
-        if let splitAt = config.faults.splitTextResponsesAt, encoded.count > splitAt {
+        if let splitAt = faults.splitTextResponsesAt, encoded.count > splitAt {
             // C-bit continuation: first chunk now; remainder after the empty
             // follow-up text request.
             var first = TextResponsePDU()
