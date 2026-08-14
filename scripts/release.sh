@@ -147,6 +147,19 @@ grep -q "<key>BundleProgram</key>" "$DAEMON_PLIST" \
 Program path goes stale the moment the user moves the app."
 echo "  ok  LaunchDaemon $DAEMON_LABEL (one plist, label matches filename)"
 
+# ClientAuthorization skips the XPC code-signing check under #if DEBUG. That is
+# safe only for as long as Release does not define DEBUG — true today, and
+# silently untrue the day someone edits SWIFT_ACTIVE_COMPILATION_CONDITIONS or
+# archives with the wrong configuration. The warning text is a string literal on
+# the bypass path, so its presence in the binary is a compile-time fact rather
+# than an inference. A root daemon that accepts every connection must never be
+# something we can ship by accident.
+if strings -a "$APP/Contents/MacOS/iscsid" | grep -q "Never ship this binary"; then
+    die "iscsid was built with the DEBUG XPC-authorization bypass compiled in.
+It would accept a connection from any process on the machine. Archive Release."
+fi
+echo "  ok  iscsid has no DEBUG authorization bypass"
+
 check_binary() {
     local path="$1" label="$2" out
     [ -e "$path" ] || return 0

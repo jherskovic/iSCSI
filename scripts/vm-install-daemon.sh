@@ -17,8 +17,15 @@ LABEL=me.herko.iSCSIInitiator.daemon
 echo "== sync source"
 rsync -a --delete --exclude .build --exclude .git --exclude apps/build --exclude .swiftpm ./ "$VM":iSCSI/
 
-echo "== build iscsid (release)"
-ssh -o BatchMode=yes "$VM" "cd ~/iSCSI && swift build -c release --product iscsid 2>&1 | tail -2"
+echo "== build iscsid (debug)"
+# Debug on purpose, not laziness. ClientAuthorization applies a Developer ID
+# code-signing requirement to every XPC connection, and the clients on this VM
+# are exactly what that rejects: an Apple-Development-signed appex and an ad-hoc
+# iscsictl. A release daemon here would refuse every connection and look like a
+# broken XPC service. The DEBUG bypass exists for this script; keep using it.
+# If perf work ever needs a release daemon on the VM, that is the day the
+# clients there get Developer ID signatures too.
+ssh -o BatchMode=yes "$VM" "cd ~/iSCSI && swift build -c debug --product iscsid 2>&1 | tail -2"
 
 echo "== install binary + plist"
 # The shipping plist (apps/iSCSIApp/LaunchDaemons/) uses BundleProgram, which is
@@ -29,7 +36,7 @@ echo "== install binary + plist"
 # visible in six lines instead of buried in a parallel file.
 ssh -o BatchMode=yes "$VM" "echo '$PASS' | sudo -S sh -c '
   mkdir -p /usr/local/libexec
-  install -m 755 ~/iSCSI/.build/release/iscsid /usr/local/libexec/iscsid
+  install -m 755 ~/iSCSI/.build/debug/iscsid /usr/local/libexec/iscsid
   cat > /Library/LaunchDaemons/$LABEL.plist <<PLIST
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
