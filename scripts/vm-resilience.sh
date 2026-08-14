@@ -52,6 +52,11 @@ ctl() { printf '%s\n' "$*" | nc -w 5 127.0.0.1 "$CTLPORT" 2>/dev/null; }
 # Bounded step runner: macOS has no timeout(1), and a hang must not take the
 # whole run with it. rc is captured explicitly — piping to tail would report
 # tail's status and turn a failure into a pass.
+#
+# Returns 124 (timeout(1)'s convention) when it had to kill the step, so a
+# caller can tell "wedged" from "failed cleanly". For most steps both are bad
+# and `|| return 1` is enough; for the stall scenario the difference *is* the
+# result, so the distinction has to survive.
 run() {
   local secs=$1 label=$2; shift 2
   "$@" >/tmp/rstep.out 2>&1 &
@@ -61,7 +66,7 @@ run() {
     sleep 1; i=$((i+1))
   done
   if kill -0 $pid 2>/dev/null; then
-    kill -9 $pid 2>/dev/null; echo "  ${label}-BLOCKED (>${secs}s)"; return 1
+    kill -9 $pid 2>/dev/null; echo "  ${label}-BLOCKED (>${secs}s)"; return 124
   fi
   wait $pid; local rc=$?
   sed 's/^/    /' /tmp/rstep.out
@@ -89,8 +94,13 @@ start_sim() {
   # Fresh backing file per run, so a scenario cannot pass on the previous
   # run's data.
   rm -f "$LUNIMG"
+  # DIGEST=CRC32C turns on header/data digests. The real NAS negotiates them
+  # off, so this is the only place the CRC32C path runs under load — and the
+  # only place payload corruption can be tested for detection rather than
+  # silently absorbed.
   "$SIM" --port "$PORT" --control-port "$CTLPORT" --block-size 4096 \
          --capacity-mib "$CAPACITY_MIB" --backing-file "$LUNIMG" \
+         --digest "${DIGEST:-None}" \
          >"$SIMLOG" 2>&1 &
   for _ in $(seq 1 20); do
     [ "$(ctl ping)" = "ok" ] && return 0
@@ -130,9 +140,16 @@ wait_for_volume() {
   return 1
 }
 
-# Bring up FSKit -> DiskImages. `format` also lays down APFS.
+mount_volume() {
+  run 60 MOUNT diskutil mount -mountPoint "$APFSMNT" "$VOL"
+}
+
+# Bring up FSKit -> DiskImages. `format` lays down APFS; `nomount` stops before
+# mounting, which is what fsck needs — fsck_apfs refuses a mounted volume, and
+# a refusal looks exactly like a pass if its exit status is swallowed.
 attach() {
   local want_format=${1:-no}
+  local want_mount=${2:-mount}
   if ! /sbin/mount | grep -qF " $FSMNT "; then
     run 60 FSMOUNT mount -F -t iSCSI "iscsi://127.0.0.1/$IQN/0" "$FSMNT" || return 1
   fi
@@ -151,7 +168,8 @@ attach() {
   fi
   wait_for_volume || { echo "  NO-APFS-VOLUME on $DEV"; return 1; }
   echo "  apfs volume: $VOL"
-  run 60 MOUNT diskutil mount -mountPoint "$APFSMNT" "$VOL" || return 1
+  [ "$want_mount" = nomount ] && return 0
+  mount_volume || return 1
   return 0
 }
 
@@ -217,12 +235,24 @@ scenario_baseline() {
 scenario_drop() {
   echo "=== drop: connections die mid-write, recovery must resubmit"
   attach || return 1
-  ( write_files "$APFSMNT/dropwork" 6 16 >/tmp/dropwrite.out 2>&1; echo "rc=$?" >>/tmp/dropwrite.out ) &
-  local writer=$!
+  ( write_files "$APFSMNT/dropwork" 12 16 >/tmp/dropwrite.out 2>&1; echo "rc=$?" >>/tmp/dropwrite.out ) &
+  local writer=$! killed=0
   for i in 1 2 3 4; do
     sleep 6
-    echo "  drop $i: $(ctl drop)"
+    local reply
+    reply=$(ctl drop)
+    echo "  drop $i: $reply"
+    # Sum what was actually killed. Loopback is fast enough that a short write
+    # can finish before the first drop lands, and "dropped=0" four times over
+    # is a scenario that tested nothing.
+    killed=$((killed + $(echo "$reply" | sed -n 's/.*dropped=\([0-9]*\).*/\1/p')))
   done
+  if [ "$killed" -eq 0 ]; then
+    echo "  NO-CONNECTIONS-DROPPED — the write finished before any drop landed"
+    kill -9 $writer 2>/dev/null
+    return 1
+  fi
+  echo "  connections killed: $killed"
   local waited=0
   while kill -0 $writer 2>/dev/null && [ $waited -lt 300 ]; do sleep 2; waited=$((waited+2)); done
   if kill -0 $writer 2>/dev/null; then kill -9 $writer; echo "  WRITER-BLOCKED"; return 1; fi
@@ -240,10 +270,21 @@ scenario_stall() {
   # The task deadline is 30s and the daemon retries on a fresh session, so a
   # bounded failure can legitimately take a couple of minutes. What must not
   # happen is no return at all.
-  if run 240 STALLWRITE write_files "$APFSMNT/stallwork" 1 8; then
-    echo "  NOTE: write succeeded despite the stall fault (check it was applied)"
-  fi
+  run 240 STALLWRITE write_files "$APFSMNT/stallwork" 1 8
+  local rc=$?
   echo "  $(ctl fault stallcommands off)"
+  if [ $rc -eq 124 ]; then
+    # This is the bug the scenario exists to catch: the I/O never came back,
+    # which upstream means a wedged APFS volume rather than a failed write.
+    echo "  WEDGED — the write never returned"
+    return 1
+  fi
+  if [ $rc -eq 0 ]; then
+    # A pass here would be an accident: the fault never reached the data path.
+    echo "  NO-FAULT-EFFECT — the write succeeded, so nothing was stalled"
+    return 1
+  fi
+  echo "  write failed cleanly (rc=$rc) — a bounded error, which is the point"
   run 180 RECOVER write_files "$APFSMNT/stallwork2" 1 8 || return 1
   run 180 VERIFY verify_files "$APFSMNT/stallwork2" || return 1
   teardown
@@ -254,8 +295,25 @@ scenario_crash() {
   echo "=== crash: target power loss with a volatile cache; FUA must have saved us"
   attach || return 1
   run 300 WRITE write_files "$APFSMNT/crashwork" 4 16 || return 1
+
+  # Crash *during* a write, not at rest. At rest the filesystem is quiescent
+  # and consistency is nearly free; mid-write is where a lost cache would
+  # actually tear metadata.
+  ( write_files "$APFSMNT/crashtail" 8 16 >/tmp/crashtail.out 2>&1 ) &
+  local writer=$!
+  sleep 8
   echo "  before crash: $(ctl stats)"
-  echo "  $(ctl crash)"
+  local reply
+  reply=$(ctl crash)
+  echo "  $reply"
+  # blocksLost=0 is the assertion, not an anticlimax: with FUA on every write
+  # there was nothing in the volatile cache for the power cut to take.
+  case "$reply" in
+    *blocksLost=0*) echo "  nothing was in the volatile cache — FUA covered every write" ;;
+    *) echo "  CACHED-DATA-LOST — some writes were acknowledged without reaching stable media"; ;;
+  esac
+  kill -9 $writer 2>/dev/null; wait $writer 2>/dev/null
+
   # The stack is now talking to a target that lost its cache and its
   # connections. Tear down without trying to be graceful — that is the point.
   umount -f "$APFSMNT" 2>/dev/null
@@ -264,12 +322,45 @@ scenario_crash() {
   DEV=""; VOL=""
   sleep 3
 
-  attach || return 1
-  run 300 FSCK fsck_apfs -n "/dev/$VOL" || echo "  (fsck reported problems — see above)"
+  # nomount: fsck_apfs refuses to check a mounted volume, and its refusal exits
+  # non-zero — which reads exactly like a filesystem problem, or gets swallowed
+  # and reads exactly like a pass. Check before mounting.
+  attach no nomount || return 1
+  run 300 FSCK fsck_apfs -n "/dev/$VOL" || return 1
+  mount_volume || return 1
   run 300 VERIFY verify_files "$APFSMNT/crashwork" || return 1
   echo "  after crash: $(ctl stats)"
   teardown
   echo "CRASH-PASS"
+}
+
+scenario_corrupt() {
+  echo "=== corrupt: payload flipped on the wire; digests must catch it"
+  if [ "${DIGEST:-None}" != "CRC32C" ]; then
+    echo "  SKIPPED — rerun with DIGEST=CRC32C so digests are negotiated on"
+    return 0
+  fi
+  attach || return 1
+  run 300 WRITE write_files "$APFSMNT/corruptwork" 2 16 || return 1
+
+  echo "  $(ctl fault corruptdatain on)"
+  # The claim under test is *not* "reads fail". It is that corrupted bytes
+  # never reach the application: either the digest check kills the session, or
+  # the read errors. Silently returning wrong data is the failure.
+  run 240 CORRUPTREAD verify_files "$APFSMNT/corruptwork"
+  local rc=$?
+  echo "  $(ctl fault corruptdatain off)"
+  if [ $rc -eq 124 ]; then echo "  WEDGED under corruption"; return 1; fi
+  if grep -q MISMATCH /tmp/rstep.out 2>/dev/null; then
+    echo "  CORRUPTION-REACHED-APPLICATION — the digest did not catch it"
+    return 1
+  fi
+  echo "  no corrupted bytes surfaced (read errored or the session dropped)"
+
+  sleep 5
+  run 300 REVERIFY verify_files "$APFSMNT/corruptwork" || return 1
+  teardown
+  echo "CORRUPT-PASS"
 }
 
 scenario_pause() {
