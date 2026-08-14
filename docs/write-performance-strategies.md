@@ -32,7 +32,38 @@ transport limit.
 
 ---
 
-## Strategy 1 — Stop FUA-ing every write; use `closeItem` as the barrier
+## Strategy 1 — Stop FUA-ing every write: TESTED AND FALSIFIED
+
+**Result: `closeItem` is not a barrier. FUA stays.**
+
+The extension was instrumented to log every write, open, close and
+synchronize, and a workload issued five `fsync`s four seconds apart so the
+correlation would be unambiguous:
+
+```
+FSYNC 0 issued at 03:06:21
+03:06:21  write off=2807054336 len=16384   rmw=false
+03:06:21  write off=2806005760 len=1048576 rmw=false
+FSYNC 1 issued at 03:06:25
+03:06:25  write off=2808102912 len=16384   rmw=false
+03:06:25  write off=2807054336 len=1048576 rmw=false
+```
+
+**No `CLOSE keeping=0` follows any fsync.** Across the run there were five such
+closes and every one happened at mount time; the only closes during the
+workload were `keeping=1`, which retains read access and triggers no flush.
+
+So `fsync` reaches us as ordinary writes and nothing else — the same conclusion
+already established for `synchronize`, now confirmed for the close path too.
+Had we dropped FUA and relied on close, every fsync'd write would have sat in
+the target's volatile write cache indefinitely, which is exactly the durability
+hole FUA exists to close.
+
+**Worth testing, and worth not shipping.** The hypothesis was plausible and the
+payoff would have been large — it would also have benchmarked beautifully and
+lost data on a target power failure.
+
+### Original hypothesis (kept for context)
 
 **Expected gain: large (up to ~117 MB/s burst, likely ~95 MB/s sustained).**
 **Risk: durability, if the assumption is wrong. Must be validated first.**
@@ -58,7 +89,27 @@ FUA stays. If they line up, this is by far the biggest available win.
 
 ---
 
-## Strategy 2 — Eliminate read-modify-write amplification by aligning to 4 KiB
+## Strategy 2 — Align to the LUN block size: DONE, amplification eliminated
+
+**Result: read-modify-write went from routine to zero.**
+
+The volume now reports the block size measured from the LUN by SCSI READ
+CAPACITY at login (4096 on this target) instead of a hardcoded 512. With
+tracing on, every write is block-aligned:
+
+```
+writes=17  rmw_true=0
+```
+
+and a 32 MB workload written in 8 KiB blocks also produced zero. Previously
+DiskImages issued 512-granularity I/O against a 4Kn LUN, so a partial write
+cost an extra network round trip to read the edge blocks — read 4 KiB, write
+4 KiB, to change 512 bytes.
+
+The sequential benchmark cannot see this, being 1 MiB aligned, which is why the
+soak's 235,278 read-modify-write patches were the evidence that mattered.
+
+### Original reasoning (kept for context)
 
 **Expected gain: potentially large for small-write workloads; none for the
 sequential benchmark. Risk: low.**
