@@ -18,19 +18,27 @@ struct ISCSIInitiatorApp: App {
 }
 
 struct ContentView: View {
+    @StateObject private var setup = SetupCoordinator()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("iSCSI Initiator")
                 .font(.largeTitle).bold()
 
-            Text("Probe build. Measures FSKit module enablement (M0-b) and "
-                 + "daemon registration via SMAppService (M2).")
+            Text("Setup runs on every launch and reports what is actually true, "
+                 + "rather than listing steps.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            FSKitProbeView()
+            SetupView(setup: setup)
 
-            DaemonPanelView()
+            DisclosureGroup("Probes (M0-b / M2 instrumentation)") {
+                VStack(alignment: .leading, spacing: 12) {
+                    FSKitProbeView()
+                    DaemonPanelView()
+                }
+                .padding(.top, 6)
+            }
 
             Spacer()
         }

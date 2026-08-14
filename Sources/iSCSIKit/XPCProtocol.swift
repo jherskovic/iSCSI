@@ -51,6 +51,20 @@ import Foundation
     /// before anything is configured, so it deliberately touches no session
     /// state and cannot fail for any reason other than the daemon being absent.
     func daemonInfo(reply: @escaping (Data?, Error?) -> Void)
+
+    /// Make `fskitd` re-read `enabledModules.plist`.
+    ///
+    /// Needed only on macOS 26.x, where the System Settings switch refuses to
+    /// enable a third-party module and the app writes the entry itself. The
+    /// write alone changes nothing: `fskitd` caches the enabled set and only
+    /// re-reads it when it restarts, so `mount` keeps reporting
+    /// "Module … is disabled!" until it does.
+    ///
+    /// It lives here because signalling a system daemon needs root, and this
+    /// process already is. Deliberately takes no arguments: it is one fixed
+    /// action, not a "run this as root" primitive. Every caller is pinned by
+    /// the code-signing requirement in ClientAuthorization.
+    func refreshFSKitEnablement(reply: @escaping (Error?) -> Void)
 }
 
 /// The Mach service name the daemon registers and clients connect to.

@@ -131,6 +131,32 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
+    public func refreshFSKitEnablement(reply: @escaping (Error?) -> Void) {
+        // killall, not `launchctl kickstart -k`. SIP forbids launchctl job
+        // control on Apple's daemons — "150: Operation not permitted while
+        // System Integrity Protection is engaged" — while signalling a process
+        // as root is allowed, and launchd respawns it on demand. Measured, see
+        // docs/backend-a-fskit-notes.md.
+        //
+        // The argument list is a literal. Nothing from the client reaches it.
+        let killall = Process()
+        killall.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+        killall.arguments = ["fskitd"]
+        do {
+            try killall.run()
+            killall.waitUntilExit()
+            // killall exits 1 when nothing matched. That is not a failure here:
+            // fskitd is on-demand, so "not running" means the next mount starts
+            // a fresh one that reads the file we just wrote — which is the goal.
+            DaemonLog.lifecycle("refreshFSKitEnablement: killall fskitd exited "
+                                + "\(killall.terminationStatus)")
+            reply(nil)
+        } catch {
+            DaemonLog.error("refreshFSKitEnablement failed: \(error)")
+            reply(error)
+        }
+    }
+
     public func listSessions(reply: @escaping ([String]) -> Void) {
         let box = SendableBox(reply)
         Task { box.value(await core.sessionHandles()) }

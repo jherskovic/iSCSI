@@ -231,45 +231,27 @@ final class DaemonController: ObservableObject {
 
 // MARK: - The XPC round trip
 
-/// One-shot connections rather than a long-lived one, because everything here
-/// is a liveness question: a cached connection that has gone stale answers the
-/// question wrong, in the direction that looks like success.
+/// One-shot connections rather than a long-lived one, because everything the
+/// setup flow asks is a liveness question: a cached connection that has gone
+/// stale answers wrongly, and in the direction that looks like success.
 enum DaemonConnection {
     struct Unreachable: LocalizedError {
         let reason: String
         var errorDescription: String? { reason }
     }
 
+    /// Ask the daemon to make `fskitd` re-read the enabled-modules list.
+    /// Only used on the macOS 26.x branch of setup step E.
+    static func refreshFSKitEnablement() async throws {
+        try await call { proxy, finish in
+            proxy.refreshFSKitEnablement { error in
+                finish(error.map { .failure($0) } ?? .success(()))
+            }
+        }
+    }
+
     static func info() async throws -> DaemonInfo {
-        let connection = NSXPCConnection(machServiceName: iscsiDaemonServiceName,
-                                         options: .privileged)
-        connection.remoteObjectInterface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
-        connection.resume()
-        defer { connection.invalidate() }
-
-        return try await withCheckedThrowingContinuation { continuation in
-            // NSXPC calls exactly one of the error handler or the reply, but
-            // guarantees neither if the peer dies mid-call, so guard against
-            // resuming the continuation twice *and* against never resuming it.
-            let resumed = OSAllocatedUnfairLock(initialState: false)
-            func finish(_ result: Result<DaemonInfo, Error>) {
-                let alreadyResumed = resumed.withLock { was -> Bool in
-                    defer { was = true }
-                    return was
-                }
-                guard !alreadyResumed else { return }
-                continuation.resume(with: result)
-            }
-
-            let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                finish(.failure(error))
-            } as? ISCSIDaemonProtocol
-
-            guard let proxy else {
-                finish(.failure(Unreachable(reason: "the daemon does not implement the protocol")))
-                return
-            }
-
+        try await call { proxy, finish in
             proxy.daemonInfo { data, error in
                 if let error {
                     finish(.failure(error))
@@ -279,6 +261,61 @@ enum DaemonConnection {
                     finish(.failure(Unreachable(reason: "the daemon replied with nothing")))
                 }
             }
+        }
+    }
+
+    /// Open a connection, hand the proxy to `body`, and bridge whichever of the
+    /// reply block or the error handler fires into one continuation.
+    ///
+    /// NSXPC calls exactly one of those in the ordinary cases but guarantees
+    /// neither if the peer dies mid-call, so this guards against resuming twice
+    /// (a crash) and, via the invalidation handler, against never resuming at
+    /// all (a hang the user experiences as a frozen setup screen).
+    private static func call<T: Sendable>(
+        _ body: @escaping @Sendable (ISCSIDaemonProtocol,
+                                     @escaping @Sendable (Result<T, any Error>) -> Void) -> Void
+    ) async throws -> T {
+        // NSXPCConnection's methods are documented as callable from any thread,
+        // but the class is not annotated Sendable — and the paths that have to
+        // invalidate it (the reply block, the error handler, the invalidation
+        // and interruption handlers) genuinely do run on arbitrary queues. This
+        // is the case nonisolated(unsafe) exists for: the safety argument is
+        // Apple's documentation, not the compiler's inference.
+        nonisolated(unsafe) let connection = NSXPCConnection(
+            machServiceName: iscsiDaemonServiceName, options: .privileged)
+        connection.remoteObjectInterface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let resumed = OSAllocatedUnfairLock(initialState: false)
+                @Sendable func finish(_ result: Result<T, any Error>) {
+                    let already = resumed.withLock { was -> Bool in
+                        defer { was = true }
+                        return was
+                    }
+                    guard !already else { return }
+                    connection.invalidate()
+                    continuation.resume(with: result)
+                }
+
+                connection.invalidationHandler = {
+                    finish(.failure(Unreachable(reason: "the daemon is not running")))
+                }
+                connection.interruptionHandler = {
+                    finish(.failure(Unreachable(reason: "the daemon stopped mid-call")))
+                }
+                connection.resume()
+
+                guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+                    finish(.failure(error))
+                }) as? ISCSIDaemonProtocol else {
+                    finish(.failure(Unreachable(reason: "the daemon does not implement the protocol")))
+                    return
+                }
+                body(proxy, finish)
+            }
+        } onCancel: {
+            connection.invalidate()
         }
     }
 }
