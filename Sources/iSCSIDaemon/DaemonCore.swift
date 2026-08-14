@@ -18,12 +18,16 @@ public actor DaemonCore {
     /// How to build a transport to a portal. Injected so tests can use
     /// MemoryPipe and production uses NetworkTransport.
     private let transportFactory: @Sendable (String, UInt16) async throws -> any ConnectionTransport
+    /// Whether writes carry FUA. See the note at the call site in `login`.
+    private let writeThrough: Bool
 
     public init(
         initiatorName: String,
+        writeThrough: Bool = true,
         transportFactory: @escaping @Sendable (String, UInt16) async throws -> any ConnectionTransport
     ) {
         self.initiatorName = initiatorName
+        self.writeThrough = writeThrough
         self.transportFactory = transportFactory
     }
 
@@ -55,8 +59,24 @@ public actor DaemonCore {
             try await factory(host, port)
         }
         try await session.activate()
-        let device = ISCSIBlockDevice(session: session, lun: lun)
+        // Write-through by default. Backend A receives no barrier signal from
+        // FSKit, so the daemon cannot know when a filesystem above the disk
+        // image wanted a flush; if the target caches writes volatilely, an
+        // acknowledged write can be lost on power failure while APFS believes
+        // its barrier was honoured. FUA costs throughput and buys crash
+        // consistency, which is the right trade for a network disk. It is a
+        // no-op when the target's write cache is already disabled.
+        let device = ISCSIBlockDevice(session: session, lun: lun, writeThrough: writeThrough)
         _ = try await device.readCapacity() // fail fast if the LUN is bad
+
+        // Report the target's cache policy once per session: if WCE is set and
+        // we are not writing through, durability depends on flushes we never
+        // receive.
+        if let wce = try? await device.writeCacheEnabled() {
+            let line = "iscsid: \(targetIQN) lun \(lun): write cache "
+                + "\(wce ? "ENABLED" : "disabled"), writeThrough=\(writeThrough)\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
 
         handleCounter += 1
         let handle = "s\(handleCounter)"

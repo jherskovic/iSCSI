@@ -112,11 +112,31 @@ public enum CDB {
         return cdb
     }
 
-    public static func write16(lba: UInt64, blocks: UInt32) -> Data {
+    /// WRITE(16). Set `fua` to force the data to stable media before the target
+    /// returns status (Force Unit Access, CDB byte 1 bit 3).
+    ///
+    /// This matters for Backend A: FSKit signals no barriers, so the extension
+    /// cannot know when a filesystem above the disk image wanted a flush. If
+    /// the target has a volatile write cache, the only way to keep APFS's
+    /// ordering guarantees meaningful is to make each write durable as it is
+    /// acknowledged.
+    public static func write16(lba: UInt64, blocks: UInt32, fua: Bool = false) -> Data {
         var cdb = Data(count: 16)
         cdb.setU8(0x8A, 0)
+        cdb.setU8(fua ? 0x08 : 0x00, 1)
         cdb.setBE64(lba, 2)
         cdb.setBE32(blocks, 10)
+        return cdb
+    }
+
+    /// MODE SENSE(10) for one mode page. Page 0x08 is the caching page, whose
+    /// WCE bit says whether the target's write cache is volatile — i.e. whether
+    /// FUA / SYNCHRONIZE CACHE are doing anything.
+    public static func modeSense10(pageCode: UInt8, allocationLength: UInt16 = 192) -> Data {
+        var cdb = Data(count: 10)
+        cdb.setU8(0x5A, 0)
+        cdb.setU8(pageCode & 0x3F, 2)   // PC=0: current values
+        cdb.setBE16(allocationLength, 7)
         return cdb
     }
 

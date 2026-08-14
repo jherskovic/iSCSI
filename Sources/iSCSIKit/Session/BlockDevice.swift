@@ -36,10 +36,54 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     /// bounds memory per request.
     private let maxTransferBytes: Int
 
-    public init(session: ISCSISession, lun: UInt64 = 0, maxTransferBytes: Int = 1 << 20) {
+    /// When true, every WRITE carries Force Unit Access, so the target commits
+    /// the data to stable media before returning status.
+    ///
+    /// This exists because Backend A gets no barrier signal: FSKit never calls
+    /// `synchronize`, so the layer above cannot tell us when a filesystem
+    /// wanted a flush. If the target's write cache is volatile, an
+    /// acknowledged-but-cached write can be lost on power failure while APFS
+    /// believes its barrier was honoured — which is precisely how ordering
+    /// guarantees turn into corruption. Write-through keeps each acknowledged
+    /// write durable, at a cost in throughput.
+    private let writeThrough: Bool
+
+    public init(session: ISCSISession, lun: UInt64 = 0, maxTransferBytes: Int = 1 << 20,
+                writeThrough: Bool = false) {
         self.session = session
         self.lun = lun
         self.maxTransferBytes = maxTransferBytes
+        self.writeThrough = writeThrough
+    }
+
+    /// Reads the caching mode page (0x08) and reports whether the target's
+    /// write cache is enabled (WCE). If it is, cached writes are volatile and
+    /// `writeThrough` (or an explicit flush) is required for durability.
+    ///
+    /// Returns nil when the target does not provide the page.
+    public func writeCacheEnabled() async throws -> Bool? {
+        let result = try await executeAbsorbingUnitAttention(SCSITask(
+            lun: lunAddress,
+            cdb: CDB.modeSense10(pageCode: 0x08),
+            direction: .read(expectedLength: 192)
+        ))
+        let data = result.data
+        guard result.isGood, data.count >= 8 else { return nil }
+
+        // MODE SENSE(10) header is 8 bytes; block descriptors may follow.
+        let blockDescLen = Int(data.beU16(6))
+        var i = 8 + blockDescLen
+        // Walk mode pages looking for 0x08; its byte 2 bit 2 is WCE.
+        while i + 2 < data.count {
+            let page = data.u8(i) & 0x3F
+            let pageLen = Int(data.u8(i + 1))
+            if page == 0x08 {
+                return (data.u8(i + 2) & 0x04) != 0
+            }
+            if pageLen == 0 { break }
+            i += 2 + pageLen
+        }
+        return nil
     }
 
     private var lunAddress: UInt64 { lun << 48 }
@@ -133,7 +177,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
             let chunk = data[cursor ..< cursor + byteLen]
             let result = try await executeAbsorbingUnitAttention(SCSITask(
                 lun: lunAddress,
-                cdb: CDB.write16(lba: lba, blocks: UInt32(blocks)),
+                cdb: CDB.write16(lba: lba, blocks: UInt32(blocks), fua: writeThrough),
                 direction: .write(Data(chunk))
             ))
             guard result.isGood else {
