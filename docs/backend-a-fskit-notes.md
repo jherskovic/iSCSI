@@ -421,6 +421,36 @@ Settings: drag-install → launch → button → root `killall fskitd` → `moun
 succeeds and `lun0.img` is there. **The 26.x fallback is viable as a shipping
 path**, and needs no Full Disk Access step in the setup machine.
 
+### Decision: v1 keeps a 26.0 floor and branches at runtime
+
+| | macOS 27+ | macOS 26.x |
+|---|---|---|
+| mechanism | `FSClient.openFileSystemExtensionsSettings()`, user flips the switch | consent sheet → app writes the entry → daemon signals `fskitd` |
+| readiness signal | `FSModuleIdentity.isEnabled` | `FSModuleIdentity.isEnabled` (verified to agree with `mount` on 26.x) |
+| user actions | one switch | one "Enable" button |
+| Full Disk Access | no | no |
+| reboot | no | no |
+
+Branch on OS version at **runtime**, never at compile time.
+
+Note that the 26.x path is the *smoother* of the two — the user does less. That
+is not a reason to use it on 27. The switch is a user-consent gate; routing
+around it where it works would be circumventing consent rather than improving
+the experience. On 26.x there is no working switch and no way to navigate to the
+pane, so the app obtains that consent itself, in a sheet that names
+`enabledModules.plist` explicitly before touching it.
+
+Two obligations that come with shipping the fallback:
+
+1. **File the Feedback** (`feedback-fskit-enablement-26x.md`). Shipping a
+   workaround for an OS bug with no tracking number means never learning when it
+   is fixed, and this one should be deleted the moment 26.x enables properly.
+2. **The post-update repair path is not optional on 26.x.** A Sparkle update
+   replaces the bundle, which re-registers the appex, which makes the existing
+   enablement entry predate the registration — and `fskit_agent` prunes exactly
+   those at the next boot. The every-launch state machine has to notice and
+   rewrite. On 27 the same event costs the user a second trip to the switch.
+
 ## Soak and crash consistency (2026-08-13)
 
 ### 20-minute soak — passed
