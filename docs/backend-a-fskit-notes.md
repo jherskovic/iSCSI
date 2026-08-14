@@ -217,7 +217,53 @@ is registered but has **never been instantiated even once**.
    <private>" records and likely name the actual rejection reason. This was
    about to be tried when the VM froze.
 
-## END TO END ON OUR OWN MODULE (2026-08-13, macOS 26.6.1)
+## WORKING ON A REAL iSCSI LUN (2026-08-13, macOS 26.6.1)
+
+The complete Backend A chain, against the TrueNAS scratch target:
+
+```
+APFS  ->  /dev/disk9s1  ->  DiskImages (CRawDiskImage)  ->  lun0.img
+      ->  our FSKit module  ->  XPC  ->  iscsid  ->  TCP  ->  target
+```
+
+| step | result |
+|---|---|
+| `mount -F -t iSCSI iscsi://192.168.0.101/<iqn>/0` | mounts; `lun0.img` = 42949672960 B (40 GiB), geometry from READ CAPACITY |
+| `hdiutil attach -imagekey diskimage-class=CRawDiskImage` | attaches |
+| `newfs_apfs` | succeeds; container **synthesized** as `/dev/disk9s1` |
+| `mount_apfs` | mounts; `df` reports the full 40 GiB |
+| positional readdir/getattr probe | both complete — no wedge |
+| 128 MiB random write | 162 MB/s |
+| unmount → detach → reattach → remount → SHA-256 | **byte-exact** |
+
+### The bug that blocked this: block alignment
+
+Before the fix the LUN mounted, read and wrote correctly, and `fsck_apfs`
+pronounced the container healthy — but `diskarbitrationd` probed with `apfs`
+and failed with EIO, so the container was never synthesized and nothing could
+be mounted.
+
+`ISCSIBlockDevice` requires block-aligned offsets and whole-block lengths
+(`BlockDeviceError.misaligned`, plus a truncating `length / blockSize`), and
+`DaemonStore` forwarded FSKit's arbitrary byte ranges unchanged. Against a
+**4Kn** LUN that is invisible for ordinary file access — the page cache issues
+aligned requests — and fatal for DiskImages, which reads the backing file at
+512-byte granularity. Hence EIO *only* while probing.
+
+Two things made this findable:
+
+- **A control.** A 40 GiB *local* sparse image synthesizes its container fine,
+  which ruled out image size and bare-container probing and pointed at
+  `DaemonStore` specifically.
+- **`fsck_apfs` disagreeing with `diskarbitrationd`.** When one reader calls the
+  data healthy and another gets EIO, the data is fine and the *access pattern*
+  is not.
+
+The arithmetic now lives in `BlockAligner` (iSCSIKit) with 10 unit tests, so it
+can be exercised without a live 4Kn target. One test records why this hid for so
+long: with a 512-byte LUN every such request is already exact.
+
+## Earlier: end to end with a local backing store
 
 Our FSKit module mounts and the whole Backend A stack runs on it:
 

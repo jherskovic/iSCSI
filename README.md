@@ -3,11 +3,11 @@
 A modern iSCSI initiator for macOS 26/27 on Apple Silicon. macOS ships no
 initiator; the old open-source option is a dead kext. This project puts the
 iSCSI/TCP protocol engine in a user-space Swift daemon and presents the LUN as
-a real block device — via an FSKit/`hdiutil` backend (**working end-to-end**:
-the block device comes from Apple's DiskImages framework, so it sidesteps the
-DriverKit wedge entirely), and ultimately via a DriverKit virtual SCSI HBA once
-Apple lifts the software-controller throughput limit (see
-`docs/architecture.md`).
+a real block device. The FSKit/`hdiutil` backend **works today against a real
+target**: a 40 GiB LUN mounts as APFS, with the block device coming from Apple's
+DiskImages framework rather than a kext, which also sidesteps the DriverKit wedge
+entirely. A DriverKit virtual SCSI HBA remains the eventual path once Apple lifts
+the software-controller throughput limit (see `docs/architecture.md`).
 
 ## Status
 
@@ -18,7 +18,7 @@ Apple lifts the software-controller throughput limit (see
 | 2 | Negotiation engine, login state machine, CHAP | ✅ done |
 | 3 | Session/connection engine, scriptable MockTarget, hostile-script suite | ✅ done |
 | 4 | `NetworkTransport` (TCP), `iscsictl`, iscsid daemon (BlockDevice + XPC) | ✅ **verified vs real TrueNAS**; daemon built + tested |
-| 5 | FSKit + `hdiutil` block-device backend | ✅ **works end-to-end**, including a **real 40 GiB LUN** mounted over XPC→iscsid→TCP. APFS formats/mounts on the attached image, 32 MiB round-trip byte-exact, no wedge. FSKit signals no barriers at all, so durability rides on close (see `docs/backend-a-fskit-notes.md`) |
+| 5 | FSKit + `hdiutil` block-device backend | ✅ **works on a real 40 GiB iSCSI LUN**: APFS formats, mounts and reports 40 GiB; 128 MiB at 162 MB/s, byte-exact across detach/reattach; no wedge |
 | 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **real disk; ExFAT works end-to-end, APFS now formats and mounts**; see the open issues below |
 | 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
 
