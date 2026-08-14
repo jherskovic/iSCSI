@@ -81,6 +81,16 @@ final class DaemonController: ObservableObject {
 
     private var service: SMAppService { .daemon(plistName: Self.plistName) }
 
+    /// Whether the plist SMAppService is being asked about is actually in the
+    /// bundle. The reason to check rather than infer: `.notFound` was assumed to
+    /// mean "the plist is missing" and told the user their app was incomplete,
+    /// on a machine where the plist was demonstrably present. Look at the disk.
+    static var bundledPlistExists: Bool {
+        FileManager.default.fileExists(atPath: Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Library/LaunchDaemons")
+            .appendingPathComponent(plistName).path)
+    }
+
     private var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
     }
@@ -97,9 +107,16 @@ final class DaemonController: ObservableObject {
             state = .requiresApproval
             detail = "SMAppService.status = requiresApproval"
         case .notFound:
-            state = .notFound
-            detail = "SMAppService.status = notFound — is \(Self.plistName) in "
-                   + "Contents/Library/LaunchDaemons?"
+            // Measured on a clean machine: a service that has never been
+            // registered reports .notFound and has no Background Task
+            // Management record at all, while .notRegistered is what you get
+            // after registering and then unregistering. So .notFound is the
+            // ordinary starting state, not a defect — unless the plist really
+            // is absent, which is the one case worth alarming about.
+            state = Self.bundledPlistExists ? .notRegistered : .notFound
+            detail = "SMAppService.status = notFound; bundled plist "
+                   + (Self.bundledPlistExists ? "present (never registered yet)"
+                                              : "MISSING from the bundle")
         case .enabled:
             detail = "SMAppService.status = enabled; probing XPC"
             await probe()
