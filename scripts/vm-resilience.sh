@@ -101,9 +101,13 @@ start_sim() {
   # off, so this is the only place the CRC32C path runs under load — and the
   # only place payload corruption can be tested for detection rather than
   # silently absorbed.
+  # FIRSTBURST lets the whole stack be run at the value the initiator now asks
+  # for. The default 64 KiB matches the real NAS; 1048576 is what a target that
+  # allows it negotiates, and that shape needs exercising through the daemon,
+  # not just in unit tests.
   "$SIM" --port "$PORT" --control-port "$CTLPORT" --block-size 4096 \
          --capacity-mib "$CAPACITY_MIB" --backing-file "$LUNIMG" \
-         --digest "${DIGEST:-None}" \
+         --digest "${DIGEST:-None}" --first-burst "${FIRSTBURST:-65536}" \
          >"$SIMLOG" 2>&1 &
   for _ in $(seq 1 20); do
     [ "$(ctl ping)" = "ok" ] && return 0

@@ -161,6 +161,16 @@ answers with less and we honour it. **On the real NAS this changes nothing** —
 it caps FirstBurstLength at 64 KiB, so the extra R2T round trip per megabyte
 stays. The gain is available to targets that allow more.
 
+Verified rather than assumed, because a throughput number alone would not have
+caught a `bufferOffset` off-by-one in the unsolicited tail — writes would have
+corrupted every megabyte at the same reported rate. Three integration tests
+round-trip 2–4 MiB byte-exact at a negotiated 1 MiB first burst (fully
+unsolicited, unsolicited-plus-R2T, and with an 8 KiB immediate segment so the
+tail carries the most Data-Out PDUs), each asserting the negotiated value first
+so it cannot pass while exercising the old 64 KiB shape. The full Backend A
+stack was then re-run through the daemon at `FIRSTBURST=1048576`: baseline,
+drop and crash all pass, `fsck_apfs` clean.
+
 ### One number here is a simulator artifact
 
 FUA measures *faster* than non-FUA (1196 vs 1055 MB/s), which is backwards. It
