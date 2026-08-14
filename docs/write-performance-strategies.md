@@ -78,10 +78,31 @@ deferring it. Measure with a small-random-write workload, not `bench.py`.
 
 ---
 
-## Strategy 3 — Reclaim space: implement UNMAP / trim pass-through
+## Strategy 3 — Trim / UNMAP pass-through: NOT VIABLE
 
-**Expected gain: addresses the observed 65 → 49 MB/s decay. Risk: low.**
-**Status: currently not implemented at all.**
+**Status: ruled out. FSKit exposes no discard operation.**
+
+Searching every FSKit header turns up no hole-punch, discard, deallocate or
+trim operation anywhere in the volume protocol surface. The only two candidates
+are both dead ends:
+
+- `FSItemDeactivationForPreallocatedItems` — described as "a sort of
+  trim-on-close behavior", but it only releases space previously obtained via
+  `FSVolumePreallocateOperations`. Our single fixed-size file never preallocates.
+- `FSVolumeSeekRegionHandler` — read-only sparseness reporting (SEEK_HOLE /
+  SEEK_DATA). It answers questions about holes; it cannot create them.
+
+So APFS's trim stops at DiskImages and can never reach the extension. This is
+structurally the same gap as the missing barrier signal: FSKit models a
+filesystem's *contents*, and the file abstraction it hands an implementation has
+no discard verb.
+
+The consequence is worth stating plainly: **on a thin-provisioned zvol, a
+Backend A LUN grows monotonically toward fully allocated and never shrinks.**
+Reclamation has to happen out of band — recreating the LUN, or a target-side
+tool — not through the data path.
+
+*(Retained below for context: what this was intended to address.)*
 
 Writes degraded by 25% as the volume filled and was rewritten. On a
 thin-provisioned ZFS zvol that is the expected shape: nothing ever tells the
