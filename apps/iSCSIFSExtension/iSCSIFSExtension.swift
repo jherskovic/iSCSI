@@ -64,6 +64,24 @@ private let kBlockSize = 512
 /// store does not have to be visible to hdiutil or anyone else.
 private let kProtoBackingDir = NSHomeDirectory() + "/Documents"
 
+/// Per-operation tracing, for correlating barriers with close calls.
+///
+/// Gated on a marker file rather than a build flag or environment variable: the
+/// extension is launched by FSKit, so its environment is not ours to set, and a
+/// rebuild costs a full re-register-and-reboot cycle. Touching
+/// ~/Library/Containers/me.herko.iSCSIInitiator.fsext/Data/Documents/trace
+/// turns it on for the next mount.
+let traceEnabled: Bool = FileManager.default.fileExists(atPath: NSHomeDirectory() + "/Documents/trace")
+
+@inline(__always)
+func trace(_ message: @autoclosure () -> String) {
+    guard traceEnabled else { return }
+    // Evaluate before interpolating: os_log's interpolation would make the
+    // autoclosure escaping, which it is not.
+    let rendered = message()
+    fsLog.log("TRACE \(rendered, privacy: .public)")
+}
+
 /// Reduces a caller-supplied URL to a single safe filename component.
 ///
 /// An FSKit resource URL is caller-influenced input: `iscsi://h/../../etc/x`
@@ -107,6 +125,11 @@ final class ISCSIFileSystemExtension: UnaryFileSystemExtension {
 /// this protocol.
 protocol LUNStore: AnyObject {
     var byteCount: UInt64 { get }
+    /// The underlying device's block size. Reported up through statfs so the
+    /// layers above align to it: the LUN is 4Kn, and advertising 512 made
+    /// DiskImages issue 512-granularity I/O, turning every partial write into
+    /// a read-modify-write round trip.
+    var blockSize: UInt64 { get }
     var summary: String { get }
     func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int
     func write(_ data: Data, at offset: UInt64) throws -> Int
@@ -117,6 +140,9 @@ protocol LUNStore: AnyObject {
 /// `proto`, which keeps a working configuration available for isolating FSKit
 /// problems from network ones.
 final class BackingStore: LUNStore {
+    /// The prototype file has no inherent block size; 4096 matches a 4Kn LUN
+    /// so the local path exercises the same alignment as the real one.
+    let blockSize: UInt64 = 4096
     private let fd: Int32
     private let lock = NSLock()
     let byteCount: UInt64
@@ -248,6 +274,7 @@ final class DaemonStore: LUNStore {
     /// The arithmetic lives in `BlockAligner` (iSCSIKit) so it can be unit
     /// tested without a mounted volume and a live target.
     private let aligner: BlockAligner
+    let blockSize: UInt64
 
     private(set) var readCount = 0
     private(set) var writeCount = 0
@@ -299,6 +326,7 @@ final class DaemonStore: LUNStore {
         byteCount = blockSize.uint64Value * blockCount.uint64Value
         guard byteCount > 0, blockSize.uint64Value > 0 else { throw POSIXError(.EIO) }
         aligner = BlockAligner(blockSize: blockSize.uint64Value, capacity: byteCount)
+        self.blockSize = blockSize.uint64Value
 
         fsLog.log("DaemonStore session=\(handle, privacy: .public) size=\(self.byteCount) blockSize=\(blockSize.uint64Value)")
     }
@@ -389,6 +417,9 @@ final class DaemonStore: LUNStore {
         }
 
         lock.lock(); writeCount += 1; writeBytes += UInt64(plan.count); lock.unlock()
+        // rmw=true means this write cost an extra round trip to read the edge
+        // blocks — the thing the 4096-byte statfs block size aims to eliminate.
+        trace("write off=\(offset) len=\(plan.count) rmw=\(!plan.isExact)")
         return plan.count
     }
 
@@ -603,8 +634,9 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
 
     var volumeStatistics: FSStatFSResult {
         let s = FSStatFSResult(fileSystemTypeName: "iSCSIProto")
-        let blocks = store.byteCount / UInt64(kBlockSize)
-        s.blockSize = kBlockSize
+        let bs = Int(store.blockSize)
+        let blocks = store.byteCount / store.blockSize
+        s.blockSize = bs
         s.ioSize = 1 << 20
         s.totalBlocks = blocks
         s.availableBlocks = 0
@@ -646,6 +678,7 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
     /// Logged unconditionally so the answer is visible even if nothing else is.
     func synchronize(flags: FSSyncFlags, replyHandler reply: @escaping ((any Error)?) -> Void) {
         fsLog.log("SYNCHRONIZE flags=\(flags.rawValue)")
+        trace("SYNCHRONIZE flags=\(flags.rawValue)")
         do {
             try store.flush()
             reply(nil)
@@ -723,7 +756,7 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
 
     func openItem(_ item: FSItem, modes: FSVolume.OpenModes,
                   replyHandler reply: @escaping ((any Error)?) -> Void) {
-        fsLog.log("OPEN modes=\(modes.rawValue)")
+        trace("OPEN modes=\(modes.rawValue)")
         reply(nil)
     }
 
@@ -731,7 +764,10 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
     /// store durable, so flush here regardless of whether `synchronize` fires.
     func closeItem(_ item: FSItem, modes: FSVolume.OpenModes,
                    replyHandler reply: @escaping ((any Error)?) -> Void) {
-        fsLog.log("CLOSE keeping=\(modes.rawValue) — \(self.store.summary, privacy: .public)")
+        trace("CLOSE keeping=\(modes.rawValue) flushing=\(modes.isEmpty)")
+        if !traceEnabled {
+            fsLog.log("CLOSE keeping=\(modes.rawValue) — \(self.store.summary, privacy: .public)")
+        }
         if modes.isEmpty { try? store.flush() }
         reply(nil)
     }
