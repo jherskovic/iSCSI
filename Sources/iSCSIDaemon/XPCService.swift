@@ -102,6 +102,35 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
+    /// Deliberately synchronous and stateless: it must answer even when the
+    /// session engine is wedged, because "the daemon is alive but its sessions
+    /// are stuck" and "the daemon is not running" need different instructions
+    /// and this is the call that tells them apart.
+    public func daemonInfo(reply: @escaping (Data?, Error?) -> Void) {
+        // Bundle.main for an executable inside <app>/Contents/MacOS resolves to
+        // the containing .app, so the daemon reports the version of the app it
+        // shipped with — exactly what the version-mismatch check needs. Running
+        // loose from `swift run` there is no Info.plist, hence "dev".
+        let info = Bundle.main.infoDictionary
+        let relaxed: Bool
+        #if DEBUG
+        relaxed = true
+        #else
+        relaxed = false
+        #endif
+        let payload = DaemonInfo(
+            version: info?["CFBundleShortVersionString"] as? String ?? "dev",
+            build: info?["CFBundleVersion"] as? String ?? "0",
+            pid: ProcessInfo.processInfo.processIdentifier,
+            authorizationRelaxed: relaxed
+        )
+        do {
+            reply(try JSONEncoder().encode(payload), nil)
+        } catch {
+            reply(nil, error)
+        }
+    }
+
     public func listSessions(reply: @escaping ([String]) -> Void) {
         let box = SendableBox(reply)
         Task { box.value(await core.sessionHandles()) }

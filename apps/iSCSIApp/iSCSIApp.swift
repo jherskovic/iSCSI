@@ -23,12 +23,14 @@ struct ContentView: View {
             Text("iSCSI Initiator")
                 .font(.largeTitle).bold()
 
-            Text("Milestone 0-b probe build — measures whether a notarized "
-                 + "Developer ID build can be enabled in System Settings.")
+            Text("Probe build. Measures FSKit module enablement (M0-b) and "
+                 + "daemon registration via SMAppService (M2).")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
             FSKitProbeView()
+
+            DaemonPanelView()
 
             Spacer()
         }

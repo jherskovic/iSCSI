@@ -44,6 +44,13 @@ import Foundation
 
     /// Live session handles.
     func listSessions(reply: @escaping ([String]) -> Void)
+
+    /// Identity and liveness. Reply carries a JSON-encoded `DaemonInfo`.
+    ///
+    /// The first call the setup flow makes and the only one that has to work
+    /// before anything is configured, so it deliberately touches no session
+    /// state and cannot fail for any reason other than the daemon being absent.
+    func daemonInfo(reply: @escaping (Data?, Error?) -> Void)
 }
 
 /// The Mach service name the daemon registers and clients connect to.

@@ -68,6 +68,9 @@ targets:
     # plain `xcodegen generate` silently produced an app with no filesystem
     # module and no build error. Declare it here so regeneration is safe.
     dependencies:
+      # The setup flow and the GUI speak ISCSIDaemonProtocol directly.
+      - package: iSCSI
+        product: iSCSIKit
       - target: iSCSIFSExtension
         embed: true
       # Contents/MacOS/iscsid. It used to be installed by hand to
