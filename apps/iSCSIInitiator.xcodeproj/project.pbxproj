@@ -21,6 +21,7 @@
 		55788E1D687E363D11E508DE /* TargetsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A78E2D4EB65C66F2C89DCBF1 /* TargetsView.swift */; };
 		63DF83BB8A3C38F8726719F4 /* DaemonController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D391D2F85F1E895FFA385D9 /* DaemonController.swift */; };
 		7DF0B704FFA3482AABAFE5F3 /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1930AC270A5C69BFDB1258AA /* iSCSIKit */; };
+		806A6B4A377EDE0322099A45 /* Uninstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05248BE0BC00DDCB8993C611 /* Uninstaller.swift */; };
 		834DE1E9C3D343D8B7027A79 /* iSCSIDaemonKit in Frameworks */ = {isa = PBXBuildFile; productRef = 31DCE2C37A7F2B58783C7457 /* iSCSIDaemonKit */; };
 		83E3A3242A55B4C0F8AA573B /* ExtensionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB19582709CC88A804AB9C0C /* ExtensionController.swift */; };
 		8BA66503B292639C7301422A /* iSCSIFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -28,6 +29,7 @@
 		A62AA91BCC64D9EF76D8FB54 /* FSKitSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF1BC41F137227EA4CAFCF0D /* FSKitSteps.swift */; };
 		ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B994EEC4E49C9C783699E6 /* FSKitProbe.swift */; };
 		AF1FD391FC1153FBE7F490E4 /* iSCSIBootstrap.iig in Sources */ = {isa = PBXBuildFile; fileRef = EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */; };
+		B131D51A4DE8326CD0998844 /* UninstallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66A066551C98F53B7638A06D /* UninstallView.swift */; };
 		B77CB9C6828A0BC03BDBDF53 /* FSKitEnablement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */; };
 		BDCC0B27CD1E5C4DC0C16396 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DDEAF78D697AF7DFDE1F9A4 /* main.swift */; };
 		BF50F567786DC8AD3B01B8D8 /* initiator.icon in Resources */ = {isa = PBXBuildFile; fileRef = D3CE19CCF76F0D1615284CE8 /* initiator.icon */; };
@@ -95,6 +97,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		05248BE0BC00DDCB8993C611 /* Uninstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Uninstaller.swift; sourceTree = "<group>"; };
 		0710492659A0FA46BDD2108A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = iSCSIBootstrap.cpp; sourceTree = "<group>"; };
 		0CC1D231F0FFC5DB1C566C42 /* InstallLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallLocation.swift; sourceTree = "<group>"; };
@@ -113,6 +116,7 @@
 		5DF2DEFBFF72FCC0059FE6E5 /* SetupCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupCoordinator.swift; sourceTree = "<group>"; };
 		5F8B8631D4F5E81291847966 /* iSCSIApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iSCSIApp.entitlements; sourceTree = "<group>"; };
 		63687E9A8247C4F8AD9C2785 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		66A066551C98F53B7638A06D /* UninstallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UninstallView.swift; sourceTree = "<group>"; };
 		6B913BC483648A1C6DE80191 /* iSCSIFSExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iSCSIFSExtension.entitlements; sourceTree = "<group>"; };
 		6D391D2F85F1E895FFA385D9 /* DaemonController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonController.swift; sourceTree = "<group>"; };
 		723340E094F2D9CBBD1B60F5 /* iSCSI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = iSCSI; path = ..; sourceTree = SOURCE_ROOT; };
@@ -225,6 +229,7 @@
 				5DF2DEFBFF72FCC0059FE6E5 /* SetupCoordinator.swift */,
 				3585A0A81F56D11FC7F6743D /* SetupStep.swift */,
 				DD771E80CF6EBE9DCF6AA988 /* SetupView.swift */,
+				05248BE0BC00DDCB8993C611 /* Uninstaller.swift */,
 			);
 			path = Setup;
 			sourceTree = "<group>";
@@ -245,6 +250,7 @@
 				3071CFD21D92FAF593C1D5E5 /* DiscoveryView.swift */,
 				E5D39B691CCE7444B689581C /* SessionsView.swift */,
 				A78E2D4EB65C66F2C89DCBF1 /* TargetsView.swift */,
+				66A066551C98F53B7638A06D /* UninstallView.swift */,
 			);
 			path = Windows;
 			sourceTree = "<group>";
@@ -520,6 +526,8 @@
 				1ED426491C5207B50045C36D /* SetupStep.swift in Sources */,
 				F74EF9940358FC4AEA094B4D /* SetupView.swift in Sources */,
 				55788E1D687E363D11E508DE /* TargetsView.swift in Sources */,
+				B131D51A4DE8326CD0998844 /* UninstallView.swift in Sources */,
+				806A6B4A377EDE0322099A45 /* Uninstaller.swift in Sources */,
 				05C744922CDB7C96CBE2A9E5 /* iSCSIApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

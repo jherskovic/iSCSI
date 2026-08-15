@@ -49,6 +49,7 @@ struct ISCSIInitiatorApp: App {
 struct MainWindow: View {
     @ObservedObject var model: AppModel
     @State private var section: Section? = .targets
+    @State private var isUninstalling = false
 
     enum Section: String, CaseIterable, Identifiable {
         case targets, discover, sessions, setup
@@ -94,6 +95,12 @@ struct MainWindow: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         SetupView(setup: model.setup)
+
+                        HStack {
+                            Spacer()
+                            Button("Remove iSCSI Initiator…") { isUninstalling = true }
+                        }
+
                         DisclosureGroup("Diagnostics") {
                             VStack(alignment: .leading, spacing: 12) {
                                 FSKitProbeView()
@@ -115,6 +122,9 @@ struct MainWindow: View {
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await model.refresh() }
+        }
+        .sheet(isPresented: $isUninstalling) {
+            UninstallView(model: model)
         }
         .alert(item: $model.lastError) { error in
             Alert(title: Text(error.title),

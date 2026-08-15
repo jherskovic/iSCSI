@@ -302,6 +302,29 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
+    public func removeAllData(reply: @escaping (Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            // Secrets first, and one per target rather than a blanket wipe: the
+            // list of what to delete lives in the file we are about to remove,
+            // so doing it the other way round leaves keychain items nothing
+            // knows the names of.
+            for target in await targets.all() {
+                KeychainStore.deleteCHAPSecret(for: target.id)
+            }
+            do {
+                let directory = TargetStore.defaultURL.deletingLastPathComponent()
+                if FileManager.default.fileExists(atPath: directory.path) {
+                    try FileManager.default.removeItem(at: directory)
+                }
+                DaemonLog.lifecycle("removeAllData: cleared \(directory.path)")
+                box.value(nil)
+            } catch {
+                box.value(ISCSIError.nsError(from: error, context: "Removing saved data"))
+            }
+        }
+    }
+
     public func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void) {
         let box = SendableBox(reply)
         Task {

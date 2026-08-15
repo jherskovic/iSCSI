@@ -112,6 +112,15 @@ import Foundation
     /// Every live session with its negotiated parameters, recovery count and
     /// cache state. Reply: JSON `[SessionInfo]`.
     func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void)
+
+    /// Delete everything the daemon owns: the targets file, its directory, and
+    /// every stored CHAP secret.
+    ///
+    /// Part of uninstall, and it has to be called while the daemon still exists.
+    /// The secrets live in *its* keychain context — once it is unregistered the
+    /// app cannot reach them, and they would sit there after the app is in the
+    /// Trash with nothing left that knows they are there.
+    func removeAllData(reply: @escaping (Error?) -> Void)
 }
 
 /// The Mach service name the daemon registers and clients connect to.
