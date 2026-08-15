@@ -120,6 +120,7 @@ jobs:
       - name: The version and build number are releasable
         env:
           IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+          WILL_PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
           set -euo pipefail
           version=$(awk '/MARKETING_VERSION:/ {gsub(/"/,"",$2); print $2; exit}' apps/project.yml)
@@ -136,12 +137,23 @@ jobs:
           # Sparkle orders releases by build number and ignores the marketing
           # version entirely, so shipping a new version on a stale build number
           # replaces the previous entry in the feed instead of adding to it.
-          highest=$(awk -F'[<>]' '/sparkle:version>/ {print $3}' appcast.xml | sort -n | tail -1)
-          if [ -n "$highest" ] && [ "$build" -le "$highest" ]; then
-            echo "::error::CURRENT_PROJECT_VERSION is $build, but the appcast already has $highest. Bump it in apps/project.yml."
-            exit 1
+          #
+          # Asked of update-appcast.py rather than reimplemented here. The first
+          # version of this step restated the rule and got it wrong in a way that
+          # only showed up in the situation everyone hits first: it refused any
+          # build already in the feed, so the very release you just shipped could
+          # not be dry-run, which is the run you make while setting up
+          # credentials.
+          #
+          # And only when this run will actually write the feed. A dry run
+          # publishes nothing, so what the feed already contains cannot be a
+          # reason to stop it.
+          if [ "$WILL_PUBLISH" = "true" ]; then
+            scripts/update-appcast.py --check-only --version "$version" --build "$build"
+          else
+            echo "  dry run: not checking the build number against the feed"
           fi
-          echo "version $version, build $build (feed tops out at ${highest:-nothing})"
+          echo "version $version, build $build"
 
       # A dedicated keychain, thrown away with the runner. Importing into the
       # login keychain would work too, but this makes the blast radius obvious

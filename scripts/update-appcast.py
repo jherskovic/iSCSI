@@ -45,12 +45,26 @@ def main() -> int:
     p.add_argument("--appcast", default="appcast.xml")
     p.add_argument("--version", required=True, help="marketing version, e.g. 0.3.0")
     p.add_argument("--build", required=True, help="CFBundleVersion, the sort key")
-    p.add_argument("--signature", required=True)
-    p.add_argument("--length", required=True)
-    p.add_argument("--url", required=True, help="where the DMG will be downloadable")
+    p.add_argument("--signature")
+    p.add_argument("--length")
+    p.add_argument("--url", help="where the DMG will be downloadable")
     p.add_argument("--min-system", default="26.0")
     p.add_argument("--notes-url", default="")
+    # Run the refusals below and exit without touching the file. The release
+    # pipeline calls this before it builds anything, so a forgotten build number
+    # costs thirty seconds instead of an archive and two notarizations. Having
+    # the early check call this script rather than restate its rule is the point:
+    # a second copy of the rule is a second thing to get subtly wrong, and the
+    # first draft of it was wrong — stricter than this one, and it rejected
+    # re-cutting a version that had not shipped.
+    p.add_argument("--check-only", action="store_true",
+                   help="validate --version/--build against the feed, write nothing")
     args = p.parse_args()
+
+    if not args.check_only:
+        for required in ("signature", "length", "url"):
+            if getattr(args, required) is None:
+                p.error(f"--{required} is required unless --check-only is given")
 
     # Entity-expansion attacks live in a DOCTYPE, and a legitimate appcast has
     # no reason to carry one. Refusing outright is cheaper and more certain than
@@ -65,6 +79,11 @@ def main() -> int:
                 return 1
 
     if not os.path.exists(args.appcast):
+        # Nothing to conflict with, and --check-only must not create the file:
+        # it runs on a CI checkout that may be a dry run publishing nothing.
+        if args.check_only:
+            print(f"  no {args.appcast} yet; build {args.build} is free")
+            return 0
         with open(args.appcast, "w") as f:
             f.write(EMPTY_FEED)
 
@@ -112,6 +131,11 @@ def main() -> int:
               f"Sparkle only ever offers the highest build, so this entry would be "
               f"published and never seen.", file=sys.stderr)
         return 1
+
+    if args.check_only:
+        print(f"  build {args.build} is usable for version {args.version} "
+              f"(feed tops out at {max(builds) if builds else 'nothing'})")
+        return 0
 
     # Replace rather than append: re-cutting a release that was never published
     # is normal, and two <item>s for one build would leave Sparkle picking
