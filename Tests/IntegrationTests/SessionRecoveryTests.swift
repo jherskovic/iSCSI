@@ -115,12 +115,36 @@ struct SessionRecoveryTests {
             policy: testPolicy(nopInterval: .milliseconds(50))
         )
         try await session.activate()
-        // Keepalive ping times out (250 ms) → connection closed → next
+
+        // Keepalive ping times out (250 ms) → connection closed → the next
         // execute() recovers onto the healthy target.
-        try await Task.sleep(for: .milliseconds(600))
-        let result = try await session.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
+        //
+        // Polled rather than slept. A fixed 600 ms was enough on a developer
+        // machine and not on a loaded CI runner, where it failed for want of
+        // scheduling rather than want of recovery — the worst kind of red,
+        // because it teaches people to re-run instead of read. The assertion is
+        // unchanged: recovery must still land on the second target. Only the
+        // waiting is now bounded by an outcome instead of a stopwatch.
+        //
+        // execute() is inside the loop because it is what drives recovery, and
+        // it succeeds against the mute target until the keepalive kills that
+        // connection — so the exit condition is the second connection, not a
+        // successful command.
+        let deadline = ContinuousClock.now + .seconds(10)
+        var recovered: SCSITaskResult?
+        while ContinuousClock.now < deadline {
+            let attempt = try? await session.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
+            if await fleet.connectionsServed >= 2 {
+                recovered = attempt
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        #expect(await fleet.connectionsServed >= 2,
+                "the keepalive never noticed the mute peer within 10s")
+        let result = try #require(recovered, "no command completed after recovery")
         #expect(result.isGood)
-        #expect(await fleet.connectionsServed >= 2)
         await fleet.shutdown()
     }
 

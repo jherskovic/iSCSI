@@ -13,7 +13,10 @@ concurrency:
 jobs:
   package:
     name: Package tests
-    runs-on: macos-15
+    # macOS 26 like everything else. The package itself declares .macOS(.v15)
+    # and does build there, but nothing ships to 15 — testing on it measures a
+    # configuration no user has.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +34,7 @@ jobs:
 
   hygiene:
     name: Project hygiene
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
