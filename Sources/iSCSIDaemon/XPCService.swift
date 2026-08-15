@@ -1,5 +1,6 @@
 #if canImport(Network)
 import Foundation
+import os
 import iSCSIKit
 
 /// XPC reply blocks are safe to invoke from any thread but aren't typed
@@ -16,9 +17,42 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 
     private let targets: TargetStore
 
+    /// Handles created on *this* connection.
+    ///
+    /// The registry in DaemonCore is one flat namespace of "s1", "s2", … shared
+    /// by every client, so any connected process could log out, read from, or
+    /// write to a session it did not open, by guessing a two-character string.
+    /// The code-signing requirement means only our own app and extension can
+    /// connect, which makes it a correctness bug rather than a way in — but both
+    /// of those are connected at the same time, so it is reachable in normal
+    /// operation rather than theoretical.
+    ///
+    /// A lock rather than an actor: this is consulted on every read and write,
+    /// and the object is created per connection so contention is nil.
+    private let owned = OSAllocatedUnfairLock(initialState: Set<String>())
+
     public init(core: DaemonCore, targets: TargetStore = TargetStore()) {
         self.core = core
         self.targets = targets
+    }
+
+    private func claim(_ handle: String) {
+        owned.withLock { $0.insert(handle) }
+    }
+
+    private func release(_ handle: String) {
+        owned.withLock { $0.remove(handle) }
+    }
+
+    /// Refuses rather than silently doing nothing: a client using a handle it
+    /// does not own is a bug in that client, and it should hear about it.
+    private func checkOwned(_ handle: String) -> NSError? {
+        guard owned.withLock({ $0.contains(handle) }) else {
+            return ISCSIError.nsError(
+                from: SessionError.notActive,
+                context: "Session \(handle) does not belong to this connection")
+        }
+        return nil
     }
 
     public func discover(host: String, port: NSNumber, reply: @escaping ([String]?, Error?) -> Void) {
@@ -51,6 +85,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value, chap: chap
                 )
+                self.claim(handle)
                 box.value(handle, nil)
             } catch {
                 box.value(nil, ISCSIError.nsError(from: error,
@@ -60,6 +95,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     }
 
     public func logout(session: String, reply: @escaping (Error?) -> Void) {
+        if let denied = checkOwned(session) { reply(denied); return }
+        release(session)
         let box = SendableBox(reply)
         Task {
             do { try await core.logout(session); box.value(nil) }
@@ -68,6 +105,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     }
 
     public func capacity(session: String, reply: @escaping (NSNumber, NSNumber, Error?) -> Void) {
+        if let denied = checkOwned(session) { reply(0, 0, denied); return }
         let box = SendableBox(reply)
         Task {
             do {
@@ -81,6 +119,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     }
 
     public func read(session: String, offset: NSNumber, length: NSNumber, reply: @escaping (Data?, Error?) -> Void) {
+        if let denied = checkOwned(session) { reply(nil, denied); return }
         let box = SendableBox(reply)
         Task {
             do {
@@ -93,6 +132,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     }
 
     public func write(session: String, offset: NSNumber, data: Data, reply: @escaping (Error?) -> Void) {
+        if let denied = checkOwned(session) { reply(denied); return }
         let box = SendableBox(reply)
         Task {
             do { try await core.write(session, offset: offset.uint64Value, data: data); box.value(nil) }
@@ -101,6 +141,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     }
 
     public func flush(session: String, reply: @escaping (Error?) -> Void) {
+        if let denied = checkOwned(session) { reply(denied); return }
         let box = SendableBox(reply)
         Task {
             do { try await core.flush(session); box.value(nil) }
@@ -252,6 +293,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     }
 
     public func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void) {
+        if let denied = checkOwned(session) { reply(nil, denied); return }
         let box = SendableBox(reply)
         Task {
             do { box.value(try JSONEncoder().encode(await core.reportLUNs(session)), nil) }

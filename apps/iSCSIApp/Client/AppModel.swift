@@ -113,13 +113,24 @@ final class AppModel: ObservableObject {
         busy.insert(target.id)
         defer { busy.remove(target.id) }
         do {
-            // Log in first: the FSKit extension will ask the daemon for this
-            // target's blocks the moment the mount happens, and a mount that
-            // races the session produces a filesystem error rather than an
-            // authentication one.
-            _ = try await DaemonConnection.login(
+            // A pre-flight login that is immediately closed again.
+            //
+            // The FSKit extension opens its *own* session when the mount
+            // happens (iSCSIFSExtension.swift:309) and logs out when the volume
+            // is deactivated, so the app must not hold one: doing that opened
+            // two sessions per attach against the same LUN, and detach only
+            // ever closed one of them.
+            //
+            // It is still worth making the round trip, because it is the only
+            // place a credential or reachability problem can be reported as
+            // itself. Once the mount is doing the login, the same failure
+            // arrives as "mount: Unable to invoke task", which sends the user
+            // looking at the filesystem extension instead of at their password.
+            let probe = try await DaemonConnection.login(
                 host: target.host, port: target.port, targetIQN: target.targetIQN,
                 lun: target.lun, chapUser: target.chapUser)
+            try? await DaemonConnection.logout(session: probe)
+
             _ = try await attachments.attach(target)
             sessions = try await DaemonConnection.sessions()
         } catch {
@@ -133,10 +144,10 @@ final class AppModel: ObservableObject {
         guard let attachment = attachments.attachments.first(where: { $0.targetID == target.id })
         else { return }
         do {
+            // Unmounting is what closes the session: the extension logs out in
+            // deactivateVolume. The app owns no session of its own to close —
+            // see the note in attach().
             try await attachments.detach(tag: attachment.tag)
-            if let session = sessions.first(where: { $0.targetIQN == target.targetIQN }) {
-                try await DaemonConnection.logout(session: session.handle)
-            }
             sessions = try await DaemonConnection.sessions()
         } catch {
             present(error, doing: "Detaching “\(target.displayName)”")
