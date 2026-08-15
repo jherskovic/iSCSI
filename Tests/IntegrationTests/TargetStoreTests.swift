@@ -59,9 +59,14 @@ struct TargetStoreTests {
         let url = temporaryURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
+        // Genuinely different targets. An earlier version of this test used two
+        // records that differed only by id — which is the duplicate the store
+        // now collapses, so the test was asserting the bug.
         let store = TargetStore(url: url)
-        try await store.save(sample("a"))
-        try await store.save(sample("b"))
+        var a = sample("a"); a.host = "nas-one.local"
+        var b = sample("b"); b.host = "nas-two.local"
+        try await store.save(a)
+        try await store.save(b)
         try await store.delete(id: "a")
         #expect(await store.all().map(\.id) == ["b"])
     }
@@ -83,6 +88,65 @@ struct TargetStoreTests {
         #expect(FileManager.default.fileExists(atPath: quarantined.path),
                 "the unreadable file must be kept, not silently discarded")
         #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    /// The bug this prevents was found in the field: adding a target from
+    /// Discover mints a fresh UUID, so discovering the same portal twice put two
+    /// records in the file for one LUN. Both derive the same MountpointTag, so
+    /// they share a mount point — attaching the second lands on the first's
+    /// mount and detaching either tears down the other's volume.
+    @Test("the same target added twice collapses to one record")
+    func duplicateTargetsCollapse() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = TargetStore(url: url)
+
+        let first = sample("first-id")
+        try await store.save(first)
+
+        // Same host/port/IQN/LUN, different id — exactly what Discover produces
+        // on a second run.
+        var twin = sample("second-id")
+        twin.displayName = "Renamed by the second add"
+        let stored = try await store.save(twin)
+
+        let all = await store.all()
+        #expect(all.count == 1, "two records for one LUN would share a mount point")
+        // The original id survives, so the keychain item and the mount point
+        // stay valid; taking the newcomer's id would orphan both.
+        #expect(stored.id == "first-id")
+        #expect(all.first?.id == "first-id")
+        #expect(all.first?.displayName == "Renamed by the second add")
+    }
+
+    @Test("targets differing only by LUN are not duplicates")
+    func differentLUNsCoexist() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = TargetStore(url: url)
+
+        var lun0 = sample("a"); lun0.lun = 0
+        var lun1 = sample("b"); lun1.lun = 1
+        try await store.save(lun0)
+        try await store.save(lun1)
+        #expect(await store.all().count == 2)
+    }
+
+    /// A file that already went wrong should heal, not stay wrong forever.
+    @Test("an already-duplicated file is repaired on the next save")
+    func existingDuplicatesAreRepaired() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        // Hand-written, as a pre-fix installation's file would look.
+        let both = [sample("one"), sample("two"), sample("three")]
+        try JSONEncoder().encode(both).write(to: url)
+
+        let store = TargetStore(url: url)
+        #expect(await store.all().count == 3)
+        try await store.save(sample("one"))
+        #expect(await store.all().count == 1)
     }
 
     @Test("a missing file is not an error")

@@ -42,14 +42,47 @@ public actor TargetStore {
         return loaded
     }
 
-    public func save(_ record: TargetRecord) throws {
+    /// Insert or update. Returns the record as stored, whose id may differ from
+    /// the one passed in — see below.
+    ///
+    /// Identity is (host, port, targetIQN, lun), not the id. Two records with
+    /// the same four values are the same target however they were created, and
+    /// allowing both is actively harmful: `MountpointTag` is derived from
+    /// exactly those values, so twins share a mount point. Attaching the second
+    /// would silently land on the first's mount, and detaching either would tear
+    /// down the other's volume.
+    ///
+    /// It happened: adding a target from Discover mints a fresh UUID, so
+    /// discovering the same portal twice produced two records for one LUN.
+    ///
+    /// When a twin exists, the **existing** id wins and its fields are updated.
+    /// That keeps the keychain item and the mount point stable, where taking the
+    /// newcomer's id would orphan a stored secret and strand a live mount.
+    @discardableResult
+    public func save(_ record: TargetRecord) throws -> TargetRecord {
         var records = all()
-        if let index = records.firstIndex(where: { $0.id == record.id }) {
-            records[index] = record
+        var incoming = record
+
+        if let index = records.firstIndex(where: { $0.id != record.id && isSameTarget($0, record) }) {
+            incoming.id = records[index].id
+            records[index] = incoming
+            // Any *other* twins are collapsed too, so a file that already went
+            // wrong is repaired the next time it is written rather than kept.
+            records.removeAll { $0.id != incoming.id && isSameTarget($0, incoming) }
+        } else if let index = records.firstIndex(where: { $0.id == record.id }) {
+            records[index] = incoming
         } else {
-            records.append(record)
+            records.append(incoming)
         }
         try persist(records)
+        return incoming
+    }
+
+    private func isSameTarget(_ a: TargetRecord, _ b: TargetRecord) -> Bool {
+        a.host.caseInsensitiveCompare(b.host) == .orderedSame
+            && a.port == b.port
+            && a.targetIQN == b.targetIQN
+            && a.lun == b.lun
     }
 
     public func delete(id: String) throws {
