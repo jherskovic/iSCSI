@@ -288,7 +288,8 @@ enum DaemonConnection {
     /// neither if the peer dies mid-call, so this guards against resuming twice
     /// (a crash) and, via the invalidation handler, against never resuming at
     /// all (a hang the user experiences as a frozen setup screen).
-    private static func call<T: Sendable>(
+    // Not private: DaemonClient.swift builds the rest of the surface on it.
+    static func call<T: Sendable>(
         _ body: @escaping @Sendable (ISCSIDaemonProtocol,
                                      @escaping @Sendable (Result<T, any Error>) -> Void) -> Void
     ) async throws -> T {
