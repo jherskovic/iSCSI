@@ -59,6 +59,47 @@ jobs:
         with:
           fetch-depth: 0
 
+      # First, and all six at once.
+      #
+      # Each credential used to be checked by the step that needed it, so a
+      # repository with nothing configured failed on the certificate and said
+      # "DEVELOPER_ID_CERT_P12 is not set" — which reads as one missing
+      # certificate rather than as a release pipeline that was never given any
+      # credentials, and costs a round trip per secret to discover otherwise.
+      # Name everything that is missing, before spending a minute on Homebrew.
+      - name: Every credential this needs is present
+        env:
+          DEVELOPER_ID_CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          # No bash arrays: the runner's /bin/bash is 3.2, where expanding an
+          # empty array under `set -u` is itself an error — which would report
+          # a shell bug instead of the missing secrets.
+          set -uo pipefail
+          missing=""
+          count=0
+          for name in DEVELOPER_ID_CERT_P12 DEVELOPER_ID_CERT_PASSWORD \
+                      ASC_KEY_P8 ASC_KEY_ID ASC_ISSUER_ID SPARKLE_ED_PRIVATE_KEY; do
+            eval "value=\${$name:-}"
+            if [ -z "$value" ]; then
+              missing="$missing $name"
+              count=$((count + 1))
+            else
+              echo "  ok  $name"
+            fi
+          done
+          if [ "$count" -gt 0 ]; then
+            echo "::error::$count of 6 repository secrets are not set:$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions."
+            echo "docs/releasing.md has the command that produces each one."
+            exit 1
+          fi
+          echo "all six present"
+
       - name: Toolchain
         run: |
           xcodebuild -version

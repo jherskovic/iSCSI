@@ -46,7 +46,22 @@ extension produces a DMG that installs fine and cannot mount anything.
 Six repository secrets, under Settings → Secrets and variables → Actions. All
 six live on the runner for the length of one job, in `$RUNNER_TEMP` and a
 throwaway keychain, and are deleted in a step that runs even when the build
-fails.
+fails. The workflow checks for all six before it does anything else and names
+every one that is missing, so a repository with none configured says so in
+twenty seconds rather than failing on the first one it happens to need.
+
+Every command below pipes into `gh secret set` rather than through the
+clipboard, so no key material lands in a paste buffer. For the short values, run
+`gh secret set NAME` with nothing piped in and paste at its hidden prompt —
+that keeps them out of shell history too.
+
+```sh
+base64 < DeveloperID.p12          | gh secret set DEVELOPER_ID_CERT_P12
+base64 < AuthKey_XXXXXXXX.p8      | gh secret set ASC_KEY_P8
+gh secret set DEVELOPER_ID_CERT_PASSWORD   # paste at the prompt
+gh secret set ASC_KEY_ID                   # paste at the prompt
+gh secret set ASC_ISSUER_ID                # paste at the prompt
+```
 
 ### `DEVELOPER_ID_CERT_P12` and `DEVELOPER_ID_CERT_PASSWORD`
 
@@ -94,9 +109,13 @@ If this leaks: revoke the key in App Store Connect and generate another.
 "$(find ~/Library/Developer/Xcode/DerivedData \
     -path '*/artifacts/sparkle/Sparkle/bin/generate_keys' -type f | head -1)" \
     -x "$TMPDIR/sparkle_key"
-pbcopy < "$TMPDIR/sparkle_key"          # paste as SPARKLE_ED_PRIVATE_KEY
+gh secret set SPARKLE_ED_PRIVATE_KEY < "$TMPDIR/sparkle_key"
 rm -P "$TMPDIR/sparkle_key"
 ```
+
+Signing from an exported key file was checked against signing from the keychain
+and produces a byte-identical signature, so this transfer cannot quietly change
+what the app will accept.
 
 **This is the most dangerous secret in the project, and the only one that cannot
 be revoked.** Its public half is compiled into `SUPublicEDKey` in every copy of
