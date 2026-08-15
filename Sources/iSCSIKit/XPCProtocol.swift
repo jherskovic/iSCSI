@@ -113,6 +113,22 @@ import Foundation
     /// cache state. Reply: JSON `[SessionInfo]`.
     func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void)
 
+    /// Log in, read the geometry, and log out again — entirely inside the
+    /// daemon. Reply: a JSON `LUNInfo`.
+    ///
+    /// Exists so a client can check "can I actually reach this target with
+    /// these credentials?" without ever holding a session. A client that did
+    /// this as login-then-logout would have to make both calls on the same XPC
+    /// connection, since handles are owned by the connection that created them
+    /// — and a client that opens a connection per call (which is the right
+    /// shape for infrequent, liveness-sensitive calls) cannot. That mismatch
+    /// leaked a session per attach before this existed.
+    ///
+    /// The geometry comes back because the caller usually wants it anyway, and
+    /// it costs nothing once logged in.
+    func testConnection(host: String, port: NSNumber, targetIQN: String, lun: NSNumber,
+                        chapUser: String?, reply: @escaping (Data?, Error?) -> Void)
+
     /// Delete everything the daemon owns: the targets file, its directory, and
     /// every stored CHAP secret.
     ///

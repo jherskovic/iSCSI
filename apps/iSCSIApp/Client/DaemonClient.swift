@@ -87,6 +87,18 @@ extension DaemonConnection {
         }
     }
 
+    /// Check reachability and credentials without holding a session. See the
+    /// protocol note — this exists because handles are connection-scoped and
+    /// this client opens a connection per call.
+    static func testConnection(host: String, port: UInt16, targetIQN: String,
+                               lun: UInt64, chapUser: String?) async throws -> LUNInfo {
+        try await decode(LUNInfo.self) { proxy, finish in
+            proxy.testConnection(host: host, port: NSNumber(value: port),
+                                 targetIQN: targetIQN, lun: NSNumber(value: lun),
+                                 chapUser: chapUser) { data, error in finish(data, error) }
+        }
+    }
+
     static func login(host: String, port: UInt16, targetIQN: String,
                       lun: UInt64, chapUser: String?) async throws -> String {
         try await call { proxy, finish in

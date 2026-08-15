@@ -302,6 +302,36 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
+    public func testConnection(host: String, port: NSNumber, targetIQN: String,
+                               lun: NSNumber, chapUser: String?,
+                               reply: @escaping (Data?, Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            do {
+                let chap = chapUser.flatMap { user in
+                    KeychainStore.chapSecret(for: user).map {
+                        CHAP.Credentials(name: user, secret: $0)
+                    }
+                }
+                let handle = try await core.login(
+                    host: host, port: port.uint16Value, targetIQN: targetIQN,
+                    lun: lun.uint64Value, chap: chap)
+                // Always close it, including when reading the capacity fails.
+                // A probe that leaves a session behind is worse than no probe:
+                // it costs the target a connection for every failed attempt.
+                defer { Task { try? await self.core.logout(handle) } }
+
+                let (blockSize, blockCount) = try await core.capacity(handle)
+                let info = LUNInfo(lun: lun.uint64Value, blockSize: blockSize,
+                                   blockCount: blockCount)
+                box.value(try JSONEncoder().encode(info), nil)
+            } catch {
+                box.value(nil, ISCSIError.nsError(from: error,
+                                                  context: "Connecting to \(targetIQN)"))
+            }
+        }
+    }
+
     public func removeAllData(reply: @escaping (Error?) -> Void) {
         let box = SendableBox(reply)
         Task {

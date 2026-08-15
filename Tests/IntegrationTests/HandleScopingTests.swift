@@ -152,3 +152,63 @@ struct HandleScopingTests {
         #expect(sessions.contains { $0.handle == handle })
     }
 }
+
+/// The design conflict that produced a leak in the field, pinned so it cannot
+/// come back: handles are owned by the connection that created them, and the
+/// app's client opens a connection per call. A login/logout pair from that
+/// client therefore cannot work, and `testConnection` exists because of it.
+@Suite("Probing without holding a session")
+struct TestConnectionTests {
+
+    private func makeCore() -> (DaemonCore, HarnessBox) {
+        let disk = RAMDisk()
+        let harnesses = HarnessBox()
+        let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _ in
+            let (initiatorSide, targetSide) = MemoryPipe.pair()
+            let target = MockTarget(config: MockTargetConfig(), disk: disk,
+                                    transport: targetSide)
+            harnesses.add(Task { await target.run() })
+            return initiatorSide
+        }
+        return (core, harnesses)
+    }
+
+    @Test("testConnection reports geometry and leaves no session behind")
+    func probeLeavesNothing() async throws {
+        let (core, _harness) = makeCore()
+        let service = ISCSIXPCService(core: core)
+
+        let data: Data? = await withCheckedContinuation { continuation in
+            service.testConnection(host: "mock", port: 3260,
+                                   targetIQN: "iqn.2026-08.test.example:disk0",
+                                   lun: 0, chapUser: nil) { data, _ in
+                continuation.resume(returning: data)
+            }
+        }
+        let info = try JSONDecoder().decode(LUNInfo.self, from: try #require(data))
+        #expect(info.blockSize != nil)
+        #expect((info.blockCount ?? 0) > 0)
+
+        // The whole point. A probe that leaves a session behind costs the target
+        // a connection for every attach, and every failed attempt.
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await core.sessionHandles().isEmpty,
+                "testConnection must not leave a session open")
+    }
+
+    @Test("a probe against a target that does not exist leaves nothing either")
+    func failedProbeLeavesNothing() async throws {
+        let (core, _harness) = makeCore()
+        let service = ISCSIXPCService(core: core)
+
+        let error: Error? = await withCheckedContinuation { continuation in
+            service.testConnection(host: "mock", port: 3260, targetIQN: "iqn.nope:missing",
+                                   lun: 0, chapUser: nil) { _, error in
+                continuation.resume(returning: error)
+            }
+        }
+        #expect(error != nil)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await core.sessionHandles().isEmpty)
+    }
+}

@@ -116,23 +116,23 @@ final class AppModel: ObservableObject {
         busy.insert(target.id)
         defer { busy.remove(target.id) }
         do {
-            // A pre-flight login that is immediately closed again.
+            // Check reachability and credentials before mounting, without
+            // holding a session.
             //
-            // The FSKit extension opens its *own* session when the mount
-            // happens (iSCSIFSExtension.swift:309) and logs out when the volume
-            // is deactivated, so the app must not hold one: doing that opened
-            // two sessions per attach against the same LUN, and detach only
-            // ever closed one of them.
+            // It cannot be a login/logout pair from here: handles belong to the
+            // XPC connection that created them, and this client opens a fresh
+            // connection per call, so the logout would arrive on a connection
+            // that does not own the handle and be refused. That leaked one
+            // session per attach. testConnection does both inside the daemon.
             //
-            // It is still worth making the round trip, because it is the only
-            // place a credential or reachability problem can be reported as
-            // itself. Once the mount is doing the login, the same failure
-            // arrives as "mount: Unable to invoke task", which sends the user
-            // looking at the filesystem extension instead of at their password.
-            let probe = try await DaemonConnection.login(
+            // Worth doing at all because it is the only place a wrong secret or
+            // an unreachable portal is reported as itself. Once the mount is
+            // performing the login, the same failure surfaces as "mount: Unable
+            // to invoke task", which sends the user to the filesystem extension
+            // instead of to their password.
+            _ = try await DaemonConnection.testConnection(
                 host: target.host, port: target.port, targetIQN: target.targetIQN,
                 lun: target.lun, chapUser: target.chapUser)
-            try? await DaemonConnection.logout(session: probe)
 
             _ = try await attachments.attach(target)
             sessions = try await DaemonConnection.sessions()
