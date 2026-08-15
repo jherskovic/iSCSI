@@ -421,6 +421,53 @@ Settings: drag-install → launch → button → root `killall fskitd` → `moun
 succeeds and `lun0.img` is there. **The 26.x fallback is viable as a shipping
 path**, and needs no Full Disk Access step in the setup machine.
 
+### R2 resolved: the mount belongs to the app, not the daemon (2026-08-14)
+
+The risk register assumed a root daemon would perform the mount and worried it
+might not resolve the *user's* FSKit registration, with `launchctl asuser` as the
+mitigation and a per-user LaunchAgent as the fallback. Measured on the clean
+SIP-on VM, all three assumptions were wrong in a useful direction.
+
+| how `mount -F -t iSCSI iscsi://proto/lun0` was run | result |
+|---|---|
+| `sudo`, from a user shell | mounts |
+| from a **system-domain launchd job** (root, no user session) | `Unable to invoke task` |
+| same job wrapped in `launchctl asuser 501` | `Unable to invoke task` |
+| **as the user, no `sudo` at all** | **mounts** |
+
+The reason the daemon-side attempts fail is not privilege and not the bootstrap
+namespace — it is which process answers the lookup:
+
+```
+mount[1358] -[FSClient(Private) installedExtensionWithShortName:…]:
+            No extension with fsShortName (…) found.
+fskitd:     Getting own modules / Returning module array
+```
+
+From the system context `fskitd` answers out of **its own** module list, which
+does not contain third-party modules; from a user session the lookup resolves
+through that user's `fskit_agent`, which does. `launchctl asuser` does not help
+because the choice is not made by bootstrap namespace. This is the same
+user-agent-versus-root-daemon asymmetry that showed up on the SIP-off VM as
+`fskit_agent: Added 4 identifiers` against `fskitd: Added 3`, and it is real
+rather than rig damage.
+
+**Consequences, and they simplify the design:**
+
+1. **The app performs the mount, in the user's context.** No `launchctl asuser`
+   plumbing, and — the fallback the plan feared — **no per-user LaunchAgent**.
+2. **It needs no privilege**, so mounting does not have to cross XPC at all. The
+   daemon keeps what genuinely needs root: iSCSI sessions, block I/O, the
+   keychain, target persistence, and signalling `fskitd`.
+3. Boot-time auto-attach, if it is ever built, *does* need a per-user agent —
+   because the mount cannot happen before someone logs in. That is a property of
+   the feature, not of this design, and it should be priced into that feature
+   rather than pre-built now.
+
+`hdiutil attach` on the served file is the remaining unknown in the attach path;
+the bash-era script used `sudo`, and whether it truly needs it has not been
+tested.
+
 ### An unexplained state on the SIP-off dev VM — do not re-litigate
 
 On `herko@192.168.0.34` (the SIP-off DriverKit VM),
