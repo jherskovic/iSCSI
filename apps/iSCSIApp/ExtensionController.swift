@@ -1,4 +1,25 @@
 //
+//  Backend B (DriverKit virtual SCSI HBA) — parked behind ISCSI_BACKEND_B.
+//
+//  Not compiled into anything that ships. v1 is FSKit + DiskImages only, for two
+//  independent reasons: the APFS wedge documented in
+//  docs/feedback-virtual-scsi-wedge.md reproduces with iSCSI removed entirely,
+//  and the DriverKit family entitlements are approval-gated by Apple, so their
+//  presence makes every Developer ID export fail at profile resolution.
+//
+//  Kept rather than deleted because the reconnaissance in it is expensive and
+//  correct. Behind a flag rather than merely unreferenced because dead code that
+//  still links is dead code the next reader assumes is load-bearing.
+//
+//      swift build -Xswiftc -DISCSI_BACKEND_B
+//      xcodebuild ... SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) ISCSI_BACKEND_B'
+//
+//  See scripts/vm-deploy-dext.sh for the rest of what re-enabling needs.
+//
+
+#if ISCSI_BACKEND_B
+
+//
 //  ExtensionController.swift
 //  Drives DriverKit dext activation via SystemExtensions.framework. This is
 //  the real activation flow — the dext bundle id must match the one embedded
@@ -94,3 +115,5 @@ extension ExtensionController: OSSystemExtensionRequestDelegate {
         }
     }
 }
+
+#endif // ISCSI_BACKEND_B

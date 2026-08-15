@@ -26,7 +26,9 @@ public enum DaemonLog {
     public static let subsystem = "me.herko.iSCSIInitiator"
 
     private static let sessionLog = Logger(subsystem: subsystem, category: "session")
+    #if ISCSI_BACKEND_B
     private static let dextLog = Logger(subsystem: subsystem, category: "dext")
+    #endif
     private static let lifecycleLog = Logger(subsystem: subsystem, category: "lifecycle")
 
     /// Messages here are marked `.public`. os.Logger redacts interpolated
@@ -47,10 +49,12 @@ public enum DaemonLog {
         echo(message)
     }
 
+    #if ISCSI_BACKEND_B
     public static func dextMessage(_ message: String) {
         dextLog.notice("\(message, privacy: .public)")
         echo("iscsid[dext]: \(message)")
     }
+    #endif
 
     public static func error(_ message: String) {
         lifecycleLog.error("\(message, privacy: .public)")

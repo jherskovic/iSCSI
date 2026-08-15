@@ -14,9 +14,22 @@ struct ISCSICtl: AsyncParsableCommand {
         commandName: "iscsictl",
         abstract: "Control the macOS iSCSI initiator.",
         version: "0.1.0",
-        subcommands: [Discover.self, Verify.self, ReadBench.self, WriteBench.self, Wipe.self, DextAttach.self,
-                      DextStatsCommand.self]
+        subcommands: ISCSICtl.enabledSubcommands
     )
+}
+
+extension ISCSICtl {
+    /// The dext subcommands exist only when Backend B is compiled in, so the
+    /// list is assembled rather than literal — otherwise turning the flag off
+    /// leaves a reference to a type that is no longer there.
+    static var enabledSubcommands: [any ParsableCommand.Type] {
+        var commands: [any ParsableCommand.Type] =
+            [Discover.self, Verify.self, ReadBench.self, WriteBench.self, Wipe.self]
+        #if ISCSI_BACKEND_B
+        commands += [DextAttach.self, DextStatsCommand.self]
+        #endif
+        return commands
+    }
 }
 
 struct GlobalOptions: ParsableArguments {
@@ -450,6 +463,7 @@ struct Wipe: AsyncParsableCommand {
 /// Bare ssh keeps working during a wedge, so this is the channel that still
 /// says whether every task we were handed was completed — and whether the
 /// dext's own watchdog thread is still running.
+#if ISCSI_BACKEND_B  // Backend B, parked — see DextBridge.swift
 struct DextStatsCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dext-stats",
@@ -611,3 +625,5 @@ struct DextAttach: AsyncParsableCommand {
         #endif
     }
 }
+
+#endif // ISCSI_BACKEND_B
