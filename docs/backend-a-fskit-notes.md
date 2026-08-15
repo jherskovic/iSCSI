@@ -464,9 +464,27 @@ rather than rig damage.
    the feature, not of this design, and it should be priced into that feature
    rather than pre-built now.
 
-`hdiutil attach` on the served file is the remaining unknown in the attach path;
-the bash-era script used `sudo`, and whether it truly needs it has not been
-tested.
+`hdiutil attach` on the served file was the remaining unknown — the bash-era
+script ran the whole flow under `sudo`, so nothing distinguished which step
+needed it. Tested: it does not.
+
+```
+$ /sbin/mount -F -t iSCSI iscsi://proto/lun0 ~/r2mnt        # no sudo -> mounts
+$ hdiutil attach -imagekey diskimage-class=CRawDiskImage \
+      -noverify -nomount ~/r2mnt/lun0.img                    # no sudo -> /dev/disk7
+```
+
+**So the entire attach path is unprivileged and user-context.** `AttachmentManager`
+belongs in the app, not in the daemon — which deletes a set of problems the plan
+had budgeted for rather than solving them: resolving the user's home from
+`connection.effectiveUserIdentifier`, running DiskArbitration inside a root
+daemon, and reconciling orphaned mounts when the daemon restarts. Reconciliation
+becomes an app-launch concern, which the setup machine already does on every
+launch.
+
+`sudo` in `scripts/iscsi-attach.sh` was never analysed — it was there because the
+script also poked the daemon, and it covered every step indiscriminately. Do not
+carry it into the port.
 
 ### An unexplained state on the SIP-off dev VM — do not re-litigate
 
