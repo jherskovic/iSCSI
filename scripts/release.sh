@@ -349,8 +349,11 @@ artifacts, which appear once the app has been built at least once."
     # DMG, so a signature taken earlier describes a file that no longer exists —
     # and Sparkle would reject the very build we just shipped.
     SIGNED=$("$SIGN_UPDATE" "$DMG")
-    ED_SIG=$(sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' <<<"$SIGNED")
-    ED_LEN=$(sed -n 's/.*sparkle:length="\([^"]*\)".*/\1/p' <<<"$SIGNED")
+    # sign_update prints  sparkle:edSignature="..." length="..."  — note that
+    # only the signature carries the namespace prefix. Matching both spellings
+    # of length, because that asymmetry is not something to rely on.
+    ED_SIG=$(sed -n 's/.*edSignature="\([^"]*\)".*/\1/p' <<<"$SIGNED")
+    ED_LEN=$(sed -n 's/.*[ :]length="\([0-9]*\)".*/\1/p' <<<"$SIGNED")
     [ -n "$ED_SIG" ] && [ -n "$ED_LEN" ] || die "could not read a signature out of: $SIGNED"
 
     BUILD_NUMBER=$(plutil -extract CFBundleVersion raw "$APP/Contents/Info.plist")

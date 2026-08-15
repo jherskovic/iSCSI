@@ -1,0 +1,16 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>iSCSI Initiator</title>
+    <description>Updates for iSCSI Initiator.</description>
+    <language>en</language>
+    <item>
+      <title>Version 0.3.0</title>
+      <pubDate>Sat, 15 Aug 2026 14:51:28 +0000</pubDate>
+      <sparkle:version>7</sparkle:version>
+      <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/jherskovic/iSCSI/releases/download/v0.3.0/iSCSI%20Initiator-0.3.0.dmg" length="6636221" type="application/octet-stream" sparkle:edSignature="BBTFzA4G4pDbMxWk2xdeOXc6FNHmAqjURwVaxTOQNPeqONWtQFZDuokVzwQwsLLZ325agTzPiG6jFMKkzMI8CA==" />
+    </item>
+  </channel>
+</rss>
