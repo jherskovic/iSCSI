@@ -73,8 +73,15 @@ import Foundation
 
     /// Reply: JSON `[TargetRecord]`.
     func listTargets(reply: @escaping (Data?, Error?) -> Void)
-    /// `record` is a JSON `TargetRecord`. Inserts or replaces by id.
-    func saveTarget(_ record: Data, reply: @escaping (Error?) -> Void)
+    /// `record` is a JSON `TargetRecord`. Inserts or updates.
+    ///
+    /// Replies with the record **as stored**, whose id may differ from the one
+    /// sent: the store treats (host, port, targetIQN, lun) as identity, and when
+    /// the incoming record duplicates an existing target the existing id is
+    /// kept. Callers must use the returned id for anything keyed by it —
+    /// notably the CHAP secret — or they will file it under an id nothing
+    /// refers to.
+    func saveTarget(_ record: Data, reply: @escaping (Data?, Error?) -> Void)
     func deleteTarget(id: String, reply: @escaping (Error?) -> Void)
 
     // MARK: - Credentials

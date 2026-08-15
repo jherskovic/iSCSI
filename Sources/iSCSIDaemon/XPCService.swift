@@ -219,14 +219,15 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
-    public func saveTarget(_ record: Data, reply: @escaping (Error?) -> Void) {
+    public func saveTarget(_ record: Data, reply: @escaping (Data?, Error?) -> Void) {
         let box = SendableBox(reply)
         Task {
             do {
-                try await targets.save(JSONDecoder().decode(TargetRecord.self, from: record))
-                box.value(nil)
+                let stored = try await targets.save(
+                    JSONDecoder().decode(TargetRecord.self, from: record))
+                box.value(try JSONEncoder().encode(stored), nil)
             } catch {
-                box.value(ISCSIError.nsError(from: error, context: "Saving the target"))
+                box.value(nil, ISCSIError.nsError(from: error, context: "Saving the target"))
             }
         }
     }

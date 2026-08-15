@@ -82,10 +82,13 @@ final class AppModel: ObservableObject {
 
     func save(_ target: TargetRecord, secret: String?) async {
         do {
-            try await DaemonConnection.saveTarget(target)
+            // Use the id the daemon actually stored under. Adding a target
+            // that already exists keeps the existing record's id, so filing the
+            // secret under the id we sent would put it somewhere nothing looks.
+            let stored = try await DaemonConnection.saveTarget(target)
             // The secret goes in its own call and never into targets.json.
             if let secret, !secret.isEmpty {
-                try await DaemonConnection.setCHAPSecret(targetID: target.id, secret: secret)
+                try await DaemonConnection.setCHAPSecret(targetID: stored.id, secret: secret)
             }
             targets = try await DaemonConnection.listTargets()
         } catch {

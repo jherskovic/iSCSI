@@ -27,12 +27,13 @@ extension DaemonConnection {
         }
     }
 
-    static func saveTarget(_ record: TargetRecord) async throws {
+    /// Returns the record as stored. The id can differ from the one sent — see
+    /// the protocol note — so anything keyed by it must use the result.
+    @discardableResult
+    static func saveTarget(_ record: TargetRecord) async throws -> TargetRecord {
         let encoded = try JSONEncoder().encode(record)
-        try await call { proxy, finish in
-            proxy.saveTarget(encoded) { error in
-                finish(error.map { .failure($0) } ?? .success(()))
-            }
+        return try await decode(TargetRecord.self) { proxy, finish in
+            proxy.saveTarget(encoded) { data, error in finish(data, error) }
         }
     }
 
