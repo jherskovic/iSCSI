@@ -8,9 +8,42 @@ but it works: you can mount LUNs as APFS, with the block device provided by Appl
 DiskImages framework. A DriverKit virtual SCSI HBA is the eventual goal once Apple lifts
 some very real throughput limits (see `docs/architecture.md`).
 
+## AI warning
+
+The vast majority of the work here was done by Claude Code using Opus 5 and Fable 5.
+It was closely supervised, but most of the architecture and discovery was by trial-and-error,
+because lots of things that _should_ work, don't. Most of that is purposefully left in the repo
+to act as documentation and memory. Claude also wrote most of the documentation, although I
+reviewed and edited it.
+
+## Repo/development
+
+There are a large number of test/integration scripts that rely on my exact setup. I used
+two disposable VMs on my dev machine to test ideas and iterate. One had XCode installed,
+SIP disabled, extension barriers disabled, etc. This was used mostly for initial testing
+and letting Claude try out ideas harmlessly. The other was as 'virgin' as possible in
+order to figure out what required user prompts, whether notarization worked, etc. You'll
+see plenty of references to this in the test scripts, with logins to `herko@192.168.0.x`,
+and even an embedded password or two. They were all left in for documentation, reference,
+and history. No secrets are actually compromised.
+
+I also manually test the initiator on a completely different bare-metal macOS 26 machine.
+It works. It's not just VMs.
+
+Most of the work and testing is done against a LUN on my actual TrueNAS server in my
+homelab. There is also a target simulator that can be, and was, used for destructive
+testing.
+
+There are some speed enhancements, but it is single-connection for simplicity and
+stability. Don't expect it to be a speed demon. I achieve about 70 MB/sec against my
+hardware HDD-backed RAID Z1 array, even over 10 gbps. Usable, but no records will be
+broken. True optimization will need more users, more time, and to be done at a later
+step in the process. It's too early for that, and things like multiple streams were
+tested and discarded because they conferred zero speed benefits on my setup.
+
 ## Status
 
-**It ships.** A notarized DMG, dragged to Applications, gets you an APFS volume
+A notarized DMG, dragged to Applications, gets you an APFS volume
 in Finder without ever opening Terminal. Verified end to end on 2026-08-14 on a
 clean macOS 26.6.1 machine with SIP on, no Xcode, no Apple ID and no developer
 account, against a real TrueNAS target: discover → add → attach → copy files →
@@ -22,13 +55,13 @@ stack is verified against real hardware, not just the simulator.
 
 What the app does today:
 
-- **Setup that checks rather than instructs.** Four conditions — installed in
-  Applications, background service running, filesystem extension registered,
-  filesystem extension enabled — re-checked on every launch and every return to
-  the foreground. The screen renders results, never a numbered list, so it can
-  say which half of a half-finished install failed. It also repairs: an update
-  that drops the extension's registration shows up as an ordinary unsatisfied
-  step with a button.
+- **Guides you through setting up.** For this to actually work it must satisfy
+  four conditions: installed in Applications, background service running,
+  filesystem extension registered, filesystem extension enabled. This is
+  re-checked on every launch and every return to the foreground. The screen
+  renders the results, of checks so you can easily see what steps are needed.
+  It also repairs: an update that drops the extension's registration shows up
+  as an ordinary unsatisfied step with a button.
 - **Discover, add, attach, detach**, from a menu bar item or a window, with CHAP.
 - **A diagnostics pane** showing negotiated login parameters, session recovery
   count, and the target's write-cache state — everything the daemon knew and
@@ -40,27 +73,28 @@ What the app does today:
 ### The FSKit enablement gate, and what it costs
 
 macOS requires the user to enable a third-party filesystem extension. On
-**macOS 27 that switch works** and the app deep-links to it. On **macOS 26.x it
-is present but refuses to move** — reproduced independently against Apple's own
-FSKitSample — and the URL that would open the pane does not navigate either. So
-on 26.x the app asks for consent itself and writes the entry, then has the
-daemon signal `fskitd`. No reboot, no Full Disk Access.
+macOS 27 beta, that switch works, and the app deep-links to it. On macOS 26.x it
+is present but doesn't actually move. Feedback filed with Apple, will update this
+if they fix it. It was reproduced independently against Apple's own FSKitSample.
+On 26.x the app asks for consent and writes the necessary entry itself, sidestepping
+the bug.
 
 Both branches are measured, on both OS versions, with a notarized build and SIP
 on. `docs/backend-a-fskit-notes.md` has the evidence and
 `docs/feedback-fskit-enablement-26x.md` is the Feedback report.
 
-### Backend B (DriverKit) is parked
+### There's a parked future backend.
 
-All dext code sits behind the `ISCSI_BACKEND_B` compile flag and is in nothing
-that ships. It is blocked on two things that are not ours to fix:
+Future work is on a different backend that uses a DriverKit extension. It was
+extensively tested but it simply doesn't work, and requires Apple to fix an issue.
 
 - **APFS wedges the block device after the first access**, and it is not an
   iSCSI problem: built with `ISCSI_DEXT_SCRATCH_DISK 1` the dext serves a RAM
   buffer from its own memory — no daemon, no network, no target — and APFS
   wedges identically, while ExFAT on the same driver is fine and APFS on an
-  `hdiutil` RAM disk is fine. `scripts/vm-scratch-apfs.sh` reproduces it and
-  `docs/feedback-virtual-scsi-wedge.md` is the Feedback draft.
+  `hdiutil` RAM disk is fine. In other words, there's a bug somewhere in APFS'
+  implementation... or in the interaction of these two things that I cannot
+  figure out.
 - **The DriverKit family entitlements are approval-gated**, so their presence
   makes every Developer ID export fail at profile resolution.
 
@@ -68,9 +102,9 @@ The reconnaissance in it is expensive and correct, so it is flagged rather than
 deleted. `swift build -Xswiftc -DISCSI_BACKEND_B` turns it back on; see the
 header of `scripts/vm-deploy-dext.sh` for what else re-enabling needs.
 
-One earlier blocker *was* ours and is fixed: presenting the LUN as **removable**
-media makes macOS record `WriteCacheState = No` and elide every flush in-kernel,
-so APFS's barriers became silent no-ops. Presented as a fixed disk, flushes
+There are some other delicate issues embodied in the implementation. For example,
+presenting the LUN as **removable** media makes macOS elide every flush in-kernel,
+so APFS's barriers became silent no-ops. When presented as a fixed disk, flushes
 reach the wire. See "The flush gap" in `docs/architecture.md`.
 
 ## Building
@@ -83,12 +117,11 @@ open iSCSIInitiator.xcodeproj
 
 Two schemes. **iSCSI Initiator** is what ships: the app, the embedded FSKit
 extension, and `iscsid` inside the bundle. **iSCSIDext-dev** builds the
-DriverKit extension on its own, for a SIP-off VM.
+DriverKit extension on its own, for a SIP-off machine.
 
 The app builds against the macOS 26 SDK. Its one macOS 27 API,
 `FSClient.openFileSystemExtensionsSettings()`, is reached by selector
-(`FSKitSettingsLink`) precisely so that CI can build the app at all — before
-that it compiled only on a machine with an Xcode beta.
+(`FSKitSettingsLink`) so that the app CAN build with XCode 26 and the 26 SDK.
 
 ## Releasing
 
@@ -97,32 +130,14 @@ scripts/release.sh                  # notarized, stapled DMG + signed appcast en
 scripts/release.sh --skip-notarize  # for iterating on the script itself, nothing else
 ```
 
-The script archives, exports a Developer ID build, and then asserts the things
-that fail silently: every nested Mach-O carries hardened runtime and a secure
-timestamp, the FSKit extension and `iscsid` are present, every bundle reports
-the same version, the shipped daemon has no DEBUG authorization bypass, there is
-exactly one LaunchDaemon plist whose `Label` matches its filename, and the app
-*inside the DMG* is stapled — not just the copy in `build/export`. It notarizes
-and staples the app and the DMG separately, signs the DMG for Sparkle **after**
-stapling, and writes the release into `appcast.xml`.
-
-Publishing is printed, not performed: it is what makes an artifact visible to
-everyone already running the app. The printed order matters — create the GitHub
-release first, then commit the feed, because the feed points at the release
-asset.
-
-One-time setup is a notarytool credential profile and a Sparkle key pair
-(`scripts/sparkle-generate-keys.sh`); the script names the exact command when
-either is missing.
+The script archives, exports a Developer ID build, and then ensures that things
+that may fail silently are detected.
 
 ## Testing
 
 CI (`.github/workflows/ci.yml`) runs the package tests, the app build, and the
 project-hygiene checks. The most valuable of those regenerates the Xcode project
-from `apps/project.yml` and fails on any diff — the `.pbxproj` once carried a
-hand-patched embed phase that `project.yml` did not declare, so `xcodegen
-generate` silently produced an app with **no filesystem module** and no build
-error.
+from `apps/project.yml` and fails on any diff.
 
 Two VMs, and which one answers a question matters:
 
@@ -194,7 +209,7 @@ power with a volatile write cache):
 
 ```bash
 swift run iscsi-target-sim --port 3260 --capacity-mib 1024 &
-swift run iscsictl verify 127.0.0.1 --target iqn.2026-08.me.herko.sim:lun0 --write
+swift run iscsictl verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --write
 printf 'crash\n' | nc 127.0.0.1 3262     # target power loss, on demand
 ```
 
