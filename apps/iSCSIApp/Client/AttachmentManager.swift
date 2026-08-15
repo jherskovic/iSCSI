@@ -19,6 +19,7 @@
 //      lun0.img  --hdiutil attach-->  /dev/diskN  --DiskArbitration-->  /Volumes/…
 //
 
+import AppKit
 import Foundation
 import iSCSIKit
 
@@ -75,6 +76,45 @@ enum AttachmentError: LocalizedError {
 @MainActor
 final class AttachmentManager: ObservableObject {
     @Published private(set) var attachments: [Attachment] = []
+
+    private var unmountObserver: NSObjectProtocol?
+
+    init() {
+        // Ejecting in Finder takes down the APFS volume and the disk image, and
+        // leaves the FSKit mount — and the iSCSI session behind it — running.
+        // The user sees the volume disappear and reasonably believes they have
+        // detached; the session stays open against the NAS until the app is
+        // next brought forward, or forever if it is not.
+        //
+        // NSWorkspace rather than DiskArbitration: this is an app asking "did a
+        // volume I mounted go away", which is exactly what the workspace
+        // notification answers, without a C callback API and a run-loop source.
+        unmountObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didUnmountNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let url = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL
+            else { return }
+            MainActor.assumeIsolated { self?.volumeDisappeared(at: url.path) }
+        }
+    }
+
+    // No deinit removing the observer. Swift 6 forbids a nonisolated deinit
+    // touching main-actor state, and there is nothing to clean up in practice:
+    // this object lives for the life of the app, and the closure holds self
+    // weakly, so were it ever deallocated the observer would fire into nothing
+    // rather than resurrect it.
+
+    /// A volume we put there has gone. Take down what is left underneath it.
+    private func volumeDisappeared(at path: String) {
+        guard let orphan = attachments.first(where: { $0.volumePaths.contains(path) })
+        else { return }
+        Task {
+            // detach() is written to tolerate layers that are already gone, so
+            // the same path handles "the user ejected" and "the user pressed
+            // Detach" without either needing to know about the other.
+            try? await detach(tag: orphan.tag)
+        }
+    }
 
     static func hiddenDirectory(tag: String) -> URL {
         FileManager.default.homeDirectoryForCurrentUser
