@@ -486,6 +486,69 @@ launch.
 script also poked the daemon, and it covered every step indiscriminately. Do not
 carry it into the port.
 
+### Registered *twice* looks exactly like not registered (2026-08-15)
+
+`mount -F` resolves a module by its `FSShortName`. When more than one bundle
+claims `iSCSI`, it cannot choose, and reports:
+
+```
+mount: Loading resource: The operation couldn't be completed.
+       (com.apple.extensionKit.errorDomain error 2.)
+mount: File system named iSCSI not found
+```
+
+"not found" reads as *not installed*, while the setup screen correctly reports
+every check green — because every check asks about **presence**, and presence
+was never the problem.
+
+Found on a real machine with **fourteen** registered copies. They came from:
+
+- **Every `xcodebuild`.** Each build leaves a registered copy in DerivedData,
+  plus one per archive, plus `build/export` and the DMG staging directory.
+- **Every mounted disk image.** LaunchServices registers the app inside a
+  mounted DMG, and `hdiutil detach` does **not** unregister it. This is the one
+  a user can hit: install by dragging, leave the image mounted, and there are
+  two. Two is enough.
+- `release.sh` itself, once the staple-verification step started mounting the
+  DMG at a temp path. It now unregisters that mount.
+
+**`pluginkit` will not show you this.** It deduplicates by bundle identifier and
+reports a single entry, which is why every earlier diagnosis of this looked
+healthy. Only LaunchServices sees them all, and FSKit reads LaunchServices:
+
+```sh
+lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$lsregister" -dump | grep -c "iSCSIFSExtension.appex"     # expect 1
+"$lsregister" -u "/path/to/stale/iSCSI Initiator.app"      # remove one
+```
+
+This also retroactively explains the SIP-off VM below, where two records existed
+and removing one did not help — there were almost certainly more that were never
+counted. The section is left as written because the reasoning at the time was
+honest, but its conclusion ("the machine is the variable") was half right for
+the wrong reason.
+
+The app now prunes duplicates from the Register button and diagnoses them when a
+mount fails, rather than on every check: a full `lsregister -dump` is ~2.3s over
+300k lines, which is far too slow for something that runs on every foreground.
+
+### `hdiutil attach -nomount` is deprecated with no usable replacement
+
+Attaching a LUN that has no filesystem needs `-nomount`, or `hdiutil` refuses
+outright with "no mountable file systems" — the normal state of every newly
+created LUN. macOS 26 warns:
+
+> `hdiutil attach -nomount` is deprecated. Please use `diskutil image attach
+> --noMount` instead.
+
+**That replacement cannot express what we need.** `diskutil image attach` has no
+`--imagekey`, so there is no way to force `diskimage-class=CRawDiskImage` — and
+a LUN is raw bytes with no disk-image header, so without it DiskImages has
+nothing to recognise. `hdiutil` stays until Apple either removes the flag or
+gives `diskutil` an equivalent; if the former happens first, the fallback is
+attaching read-write without `-nomount` and treating the failure as "unformatted"
+by inspecting the device rather than the exit status.
+
 ### An unexplained state on the SIP-off dev VM — do not re-litigate
 
 On `herko@192.168.0.34` (the SIP-off DriverKit VM),
