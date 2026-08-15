@@ -40,6 +40,9 @@ struct MenuBarContent: View {
                     }
                 }
             }
+            CheckForUpdatesButton(updates: model.updates)
+                .padding(.horizontal, 12).padding(.vertical, 3)
+
             menuButton("iSCSI Initiator…", systemImage: "macwindow") {
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)

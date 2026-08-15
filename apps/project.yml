@@ -16,6 +16,13 @@ options:
 packages:
   iSCSI:
     path: ..
+  # Sparkle lives here rather than in Package.swift on purpose: it must not
+  # become a dependency of iSCSIKit, which the FSKit extension and the daemon
+  # both link. An updater has no business inside a filesystem extension or a
+  # root daemon.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.9.5
 
 settings:
   base:
@@ -71,6 +78,7 @@ targets:
       # The setup flow and the GUI speak ISCSIDaemonProtocol directly.
       - package: iSCSI
         product: iSCSIKit
+      - package: Sparkle
       - target: iSCSIFSExtension
         embed: true
       # Contents/MacOS/iscsid. It used to be installed by hand to

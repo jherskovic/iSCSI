@@ -73,6 +73,29 @@ else
     printf '\033[33m  NOTARIZATION SKIPPED — output is for pipeline testing only\033[0m\n'
 fi
 
+# Sparkle's EdDSA key. The public half is compiled into the app; the private
+# half lives in the login keychain of whoever cuts releases. Shipping the
+# placeholder would produce an app that downloads updates it cannot verify —
+# which Sparkle refuses to install, so the failure lands on users as an updater
+# that silently never works.
+SU_KEY=$(plutil -extract SUPublicEDKey raw apps/iSCSIApp/Info.plist 2>/dev/null || echo "")
+if [ "$SU_KEY" = "REPLACE_WITH_SPARKLE_PUBLIC_KEY" ] || [ -z "$SU_KEY" ]; then
+    if [ "$SKIP_NOTARIZE" -eq 1 ]; then
+        printf '\033[33m  warning: Sparkle public key not set; updates will not work\033[0m\n'
+    else
+        die "SUPublicEDKey in apps/iSCSIApp/Info.plist is still the placeholder.
+
+Generate the key pair once — the private half goes into your login keychain and
+never touches this repo:
+
+    ./scripts/sparkle-generate-keys.sh
+
+Then paste the public key it prints into apps/iSCSIApp/Info.plist."
+    fi
+else
+    echo "  sparkle key            ${SU_KEY:0:12}…"
+fi
+
 if [ -n "$(git status --porcelain)" ]; then
     printf '\033[33m  warning: working tree is dirty; the DMG will not match any commit\033[0m\n'
 fi

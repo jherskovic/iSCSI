@@ -9,7 +9,9 @@
 /* Begin PBXBuildFile section */
 		005DB4F0958B24DB903379EA /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 472754F976FFDF196B86A23E /* iSCSIKit */; };
 		05C744922CDB7C96CBE2A9E5 /* iSCSIApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FC18B26402E15EC48C74856 /* iSCSIApp.swift */; };
+		0A1E5B3A505EB26A5F1C8F16 /* UpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 506DA6C808D5BBEAD9778417 /* UpdateController.swift */; };
 		1673E5B748C232A8D518AA47 /* FSKitSettingsLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F548C397A6CAF9CAF9061B5 /* FSKitSettingsLink.swift */; };
+		197D1925D2B3619796CC96B7 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E2704969A8A1DF93C000BEE0 /* Sparkle */; };
 		19AEC47ED3920AE1C239870B /* MenuBarContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B7C2E394D634AD1AF184FFC /* MenuBarContent.swift */; };
 		1A42FB71385B64D8C7B498E1 /* iSCSIFSExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3079D57585D96DD2ADCA8879 /* iSCSIFSExtension.swift */; };
 		1ED426491C5207B50045C36D /* SetupStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3585A0A81F56D11FC7F6743D /* SetupStep.swift */; };
@@ -118,6 +120,7 @@
 		3DC08C498B489B3118E2CF64 /* iSCSIDext.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = iSCSIDext.iig; sourceTree = "<group>"; };
 		4C16A5233C6A1510F7298B94 /* iscsid */ = {isa = PBXFileReference; includeInIndex = 0; path = iscsid; sourceTree = BUILT_PRODUCTS_DIR; };
 		4D00ADBA0B6BA390CD8BA86F /* AttachmentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentManager.swift; sourceTree = "<group>"; };
+		506DA6C808D5BBEAD9778417 /* UpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateController.swift; sourceTree = "<group>"; };
 		576E38B77C9C8D46244A84E2 /* FSKitSettingsLinkCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FSKitSettingsLinkCheck.swift; sourceTree = "<group>"; };
 		5DF2DEFBFF72FCC0059FE6E5 /* SetupCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupCoordinator.swift; sourceTree = "<group>"; };
 		5F8B8631D4F5E81291847966 /* iSCSIApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iSCSIApp.entitlements; sourceTree = "<group>"; };
@@ -152,6 +155,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C0CA4A2C5992DEA05AFFA359 /* iSCSIKit in Frameworks */,
+				197D1925D2B3619796CC96B7 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -249,6 +253,7 @@
 				4D00ADBA0B6BA390CD8BA86F /* AttachmentManager.swift */,
 				EE16E15977B192C9F17111AD /* DaemonClient.swift */,
 				3CFABF815361ED5F578A112C /* LastPortal.swift */,
+				506DA6C808D5BBEAD9778417 /* UpdateController.swift */,
 			);
 			path = Client;
 			sourceTree = "<group>";
@@ -398,6 +403,7 @@
 			name = iSCSIApp;
 			packageProductDependencies = (
 				06E933808FB15BD15AC1AD5D /* iSCSIKit */,
+				E2704969A8A1DF93C000BEE0 /* Sparkle */,
 			);
 			productName = iSCSIApp;
 			productReference = 90DA087A85B91E84CD0AB5D4 /* iSCSIApp.app */;
@@ -459,6 +465,7 @@
 			mainGroup = 42F85755989DD49B28E3E3E8;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				346247409A4358FD8A91EE1C /* XCRemoteSwiftPackageReference "Sparkle" */,
 				D1EB709EF73F890A95E1304A /* XCLocalSwiftPackageReference ".." */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -540,6 +547,7 @@
 				55788E1D687E363D11E508DE /* TargetsView.swift in Sources */,
 				B131D51A4DE8326CD0998844 /* UninstallView.swift in Sources */,
 				806A6B4A377EDE0322099A45 /* Uninstaller.swift in Sources */,
+				0A1E5B3A505EB26A5F1C8F16 /* UpdateController.swift in Sources */,
 				05C744922CDB7C96CBE2A9E5 /* iSCSIApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -888,6 +896,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		346247409A4358FD8A91EE1C /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		06E933808FB15BD15AC1AD5D /* iSCSIKit */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -904,6 +923,11 @@
 		472754F976FFDF196B86A23E /* iSCSIKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = iSCSIKit;
+		};
+		E2704969A8A1DF93C000BEE0 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 346247409A4358FD8A91EE1C /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

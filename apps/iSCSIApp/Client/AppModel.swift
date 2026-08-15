@@ -23,6 +23,16 @@ import iSCSIKit
 final class AppModel: ObservableObject {
     let setup = SetupCoordinator()
     let attachments = AttachmentManager()
+    let updates = UpdateController()
+
+    init() {
+        // The updater asks this before replacing the bundle. Answering it from
+        // live state rather than a cached flag matters: the window between
+        // "downloaded" and "installing" is exactly when someone attaches.
+        updates.isAnythingAttached = { [weak attachments] in
+            attachments?.attachments.contains(where: \.isFullyAttached) ?? false
+        }
+    }
 
     @Published private(set) var targets: [TargetRecord] = []
     @Published private(set) var sessions: [SessionInfo] = []
@@ -152,6 +162,8 @@ final class AppModel: ObservableObject {
             // see the note in attach().
             try await attachments.detach(tag: attachment.tag)
             sessions = try await DaemonConnection.sessions()
+            // An update may have been waiting for exactly this.
+            updates.installPendingUpdateIfReady()
         } catch {
             present(error, doing: "Detaching “\(target.displayName)”")
         }
