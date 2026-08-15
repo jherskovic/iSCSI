@@ -18,7 +18,14 @@
 //  Verified in the field when 0.1.3 landed over 0.1.2 and the Register button
 //  fixed exactly that. See docs/daemon-registration.md.
 //
+//  Postponing correctly is only half the job. The first field report of this
+//  working was "clicking Install and Relaunch does nothing" — which is exactly
+//  what refusing looks like from the outside, and is indistinguishable from a
+//  broken updater. Sparkle's own window closes and its UI has nothing more to
+//  say, so anything the user learns has to come from here.
+//
 
+import AppKit
 import Combine
 import Foundation
 import Sparkle
@@ -29,6 +36,12 @@ final class UpdateController: NSObject, ObservableObject {
     /// Set by the app model so the postpone check can see live state without
     /// this class owning any.
     var isAnythingAttached: () -> Bool = { false }
+    /// What is attached, in the words the user would use for it. Naming the
+    /// volume is the difference between a rule and an instruction.
+    var attachedVolumeNames: () -> [String] = { [] }
+    /// Offered as the default button, so the dialog that says why the update is
+    /// stuck can also be the thing that unsticks it.
+    var detachEverything: () async -> Void = {}
 
     @Published private(set) var canCheckForUpdates = false
     /// Non-nil when an update is downloaded and waiting for volumes to go away.
@@ -78,11 +91,60 @@ extension UpdateController: SPUUpdaterDelegate {
                              shouldPostponeRelaunchForUpdate item: SUAppcastItem,
                              untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
         let handler = InstallHandler(invoke: installHandler)
+        let version = item.displayVersionString
         return MainActor.assumeIsolated {
             guard isAnythingAttached() else { return false }
-            pendingUpdateVersion = item.displayVersionString
+            pendingUpdateVersion = version
             resumeInstallation = handler
+            // Scheduled rather than run inline. This method owes Sparkle a Bool
+            // synchronously, and a modal here would put a dialog on top of the
+            // update window Sparkle is in the middle of taking down — and hold
+            // its teardown open behind a click.
+            Task { @MainActor [weak self] in
+                self?.explainPostponement(version: version)
+            }
             return true
+        }
+    }
+}
+
+// MARK: - Saying so
+
+private extension UpdateController {
+    /// The dialog the user gets instead of silence.
+    func explainPostponement(version: String) {
+        let names = attachedVolumeNames()
+        let subject = names.isEmpty
+            ? "a volume that is attached"
+            : ListFormatter.localizedString(byJoining: names.map { "“\($0)”" })
+
+        NSApp.activate()
+
+        let alert = NSAlert()
+        // Informational, not a warning: refusing is the app working correctly,
+        // and dressing it as a problem would teach the user to distrust it.
+        alert.alertStyle = .informational
+        alert.messageText = "Version \(version) will install after you detach"
+        alert.informativeText = """
+            Installing now would replace the filesystem extension that \
+            \(subject) is using, and anything writing to it at that moment \
+            would lose the process answering its reads and writes.
+
+            The update is downloaded and ready. It will install itself and \
+            relaunch the app as soon as the last volume is detached, or the \
+            next time you launch.
+            """
+        alert.addButton(withTitle: "Detach and Install")
+        alert.addButton(withTitle: "Later")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { @MainActor [weak self] in
+            await self?.detachEverything()
+            // Also reached by the app model watching attachments, which is what
+            // covers a Finder eject. Calling here too is what makes the button
+            // feel like it did something; installPendingUpdateIfReady clears its
+            // handler before invoking it, so arriving twice is harmless.
+            self?.installPendingUpdateIfReady()
         }
     }
 }
@@ -97,10 +159,11 @@ struct CheckForUpdatesButton: View {
             Button("Check for Updates…") { updates.checkForUpdates() }
                 .disabled(!updates.canCheckForUpdates)
             if let version = updates.pendingUpdateVersion {
-                // Says why nothing is happening. An update that has downloaded
-                // and then appears to do nothing reads as a broken updater.
-                Text("Version \(version) is ready and will install once every "
-                     + "volume is detached.")
+                // The standing reminder, for after the dialog has been
+                // dismissed. It names the relaunch because that is the part
+                // that is startling if it is not expected.
+                Text("Version \(version) is ready. It will install and relaunch "
+                     + "once every volume is detached.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

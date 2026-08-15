@@ -100,3 +100,51 @@ Why parsing bugs here are crashes rather than wrong answers: `Data`'s accessors
 in `Support/Endian.swift` are slice-tolerant but **not** bounds-checked —
 `self[startIndex + offset]` traps. Any target-controlled parsing must prove its
 offsets in bounds before reading.
+
+## The update-postpone rule (manual, and awkward on purpose)
+
+Replacing the bundle while a LUN is attached pulls the FSKit extension out from
+under a live filesystem. `UpdateController` refuses to let that happen, and
+`SPUInstallerDriver.installWithToolAndRelaunch:` calls the postpone hook before
+it opens a connection to the installer — so returning `true` there stops the
+installation, not merely the relaunch. That is the property under test.
+
+The awkward part: **the postpone logic that runs is the one in the installed
+version, not the one in the update.** A fix to this path can never be exercised
+by shipping it; it takes the release *after*. So test it against a local feed.
+
+1. Install the build under test on the acceptance VM, notarized as always.
+2. Serve a doctored feed. Reuse a real, already-signed DMG — the enclosure has
+   to survive signature checking, and the version comparison is read from the
+   feed, so an existing DMG advertised under a higher build number gets Sparkle
+   all the way to "Install and Relaunch":
+
+   ```sh
+   mkdir -p /tmp/feed && cp "build/iSCSI-Initiator-0.3.2.dmg" /tmp/feed/
+   cp appcast.xml /tmp/feed/
+   # edit /tmp/feed/appcast.xml: bump sparkle:version well past the installed
+   # build, point the enclosure url at http://<this-mac>:8000/iSCSI-Initiator-0.3.2.dmg,
+   # leave length and edSignature exactly as they are
+   (cd /tmp/feed && python3 -m http.server 8000)
+   ```
+
+3. On the VM, redirect the feed without rebuilding — Sparkle reads this key from
+   user defaults ahead of the Info.plist:
+
+   ```sh
+   defaults write me.herko.iSCSIInitiator SUFeedURL "http://<this-mac>:8000/appcast.xml"
+   ```
+
+4. Attach a LUN. Then Check for Updates → Install and Relaunch.
+
+   Expected: an alert naming the attached volume, saying the update will install
+   and relaunch once it is detached, offering **Detach and Install** and
+   **Later**. Nothing is installed; the app does not quit.
+
+5. Click Later, then eject the volume **in Finder** rather than using Detach.
+   The update must install and the app relaunch anyway. This is the path that
+   does not go through `AppModel.detach`, and it stayed broken for a while
+   because the only release hook lived there.
+
+6. `defaults delete me.herko.iSCSIInitiator SUFeedURL` when finished, or the VM
+   keeps checking a web server that no longer exists.

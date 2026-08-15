@@ -15,6 +15,7 @@
 //  actual problem is that a background service was never approved.
 //
 
+import Combine
 import Foundation
 import SwiftUI
 import iSCSIKit
@@ -25,6 +26,8 @@ final class AppModel: ObservableObject {
     let attachments = AttachmentManager()
     let updates = UpdateController()
 
+    private var cancellables: Set<AnyCancellable> = []
+
     init() {
         // The updater asks this before replacing the bundle. Answering it from
         // live state rather than a cached flag matters: the window between
@@ -32,6 +35,36 @@ final class AppModel: ObservableObject {
         updates.isAnythingAttached = { [weak attachments] in
             attachments?.attachments.contains(where: \.isFullyAttached) ?? false
         }
+        updates.attachedVolumeNames = { [weak self] in
+            self?.rows.filter(\.isAttached).map { row in
+                row.volumePath.map { URL(fileURLWithPath: $0).lastPathComponent }
+                    ?? row.target.displayName
+            } ?? []
+        }
+        updates.detachEverything = { [weak self] in
+            guard let self else { return }
+            for row in rows where row.isAttached {
+                await detach(row.target)
+            }
+        }
+
+        // A postponed update is released by the last volume going away — however
+        // it goes away. Watching the attachment list covers pressing Detach,
+        // ejecting in Finder, and anything added later, where a call placed in
+        // detach() covers only the first: a Finder eject is handled inside
+        // AttachmentManager and never passes through this type at all.
+        //
+        // Deferred a runloop turn on purpose. @Published fires on willSet, so a
+        // sink that ran synchronously would ask "is anything attached?" while
+        // the property still holds the old list, conclude yes, and leave the
+        // update stuck — the exact bug this is here to fix, reintroduced in a
+        // form that looks correct.
+        attachments.$attachments
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.updates.installPendingUpdateIfReady() }
+            }
+            .store(in: &cancellables)
     }
 
     @Published private(set) var targets: [TargetRecord] = []
@@ -175,8 +208,10 @@ final class AppModel: ObservableObject {
             // see the note in attach().
             try await attachments.detach(tag: attachment.tag)
             sessions = try await DaemonConnection.sessions()
-            // An update may have been waiting for exactly this.
-            updates.installPendingUpdateIfReady()
+            // No installPendingUpdateIfReady() here. The sink in init() sees the
+            // attachment list change and handles this path and the Finder-eject
+            // path with one mechanism; calling it here as well would work, and
+            // would quietly suggest that this is the only path that needs it.
         } catch {
             present(error, doing: "Detaching “\(target.displayName)”")
         }
