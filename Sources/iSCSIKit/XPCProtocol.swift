@@ -65,6 +65,46 @@ import Foundation
     /// action, not a "run this as root" primitive. Every caller is pinned by
     /// the code-signing requirement in ClientAuthorization.
     func refreshFSKitEnablement(reply: @escaping (Error?) -> Void)
+
+    // MARK: - Configured targets
+    //
+    // All of these carry JSON-encoded Codable values as `Data`. See XPCModels
+    // for why that is preferred over NSSecureCoding object graphs.
+
+    /// Reply: JSON `[TargetRecord]`.
+    func listTargets(reply: @escaping (Data?, Error?) -> Void)
+    /// `record` is a JSON `TargetRecord`. Inserts or replaces by id.
+    func saveTarget(_ record: Data, reply: @escaping (Error?) -> Void)
+    func deleteTarget(id: String, reply: @escaping (Error?) -> Void)
+
+    // MARK: - Credentials
+    //
+    // Secrets only ever travel *into* the daemon. There is deliberately no call
+    // that returns one: a compromised client should not be able to read back
+    // what an earlier, trusted one stored.
+
+    func setCHAPSecret(targetID: String, secret: String, reply: @escaping (Error?) -> Void)
+    func deleteCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void)
+    /// So the UI can show "secret saved" without ever handling the secret.
+    func hasCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void)
+
+    // MARK: - Discovery and inspection
+
+    /// SendTargets against a portal, **with** optional CHAP.
+    ///
+    /// The older `discover(host:port:)` silently dropped credentials that
+    /// `DaemonCore.discover` has always accepted, which made discovery against
+    /// any authenticated portal impossible from the app. Reply: JSON
+    /// `[DiscoveredTargetInfo]`.
+    func discoverTargets(host: String, port: NSNumber, chapUser: String?,
+                         chapSecret: String?, reply: @escaping (Data?, Error?) -> Void)
+
+    /// REPORT LUNS against an established session. Reply: JSON `[LUNInfo]`.
+    func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void)
+
+    /// Every live session with its negotiated parameters, recovery count and
+    /// cache state. Reply: JSON `[SessionInfo]`.
+    func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void)
 }
 
 /// The Mach service name the daemon registers and clients connect to.

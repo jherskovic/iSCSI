@@ -14,8 +14,11 @@ private struct SendableBox<T>: @unchecked Sendable {
 public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     private let core: DaemonCore
 
-    public init(core: DaemonCore) {
+    private let targets: TargetStore
+
+    public init(core: DaemonCore, targets: TargetStore = TargetStore()) {
         self.core = core
+        self.targets = targets
     }
 
     public func discover(host: String, port: NSNumber, reply: @escaping ([String]?, Error?) -> Void) {
@@ -163,6 +166,105 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     public func listSessions(reply: @escaping ([String]) -> Void) {
         let box = SendableBox(reply)
         Task { box.value(await core.sessionHandles()) }
+    }
+
+    // MARK: - Configured targets
+
+    public func listTargets(reply: @escaping (Data?, Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            do { box.value(try JSONEncoder().encode(await targets.all()), nil) }
+            catch { box.value(nil, ISCSIError.nsError(from: error, context: "Reading saved targets")) }
+        }
+    }
+
+    public func saveTarget(_ record: Data, reply: @escaping (Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            do {
+                try await targets.save(JSONDecoder().decode(TargetRecord.self, from: record))
+                box.value(nil)
+            } catch {
+                box.value(ISCSIError.nsError(from: error, context: "Saving the target"))
+            }
+        }
+    }
+
+    public func deleteTarget(id: String, reply: @escaping (Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            do {
+                try await targets.delete(id: id)
+                // Remove the secret with the target it belonged to. Leaving an
+                // orphaned keychain item behind means a later target that reuses
+                // the id silently inherits someone else's credentials.
+                KeychainStore.deleteCHAPSecret(for: id)
+                box.value(nil)
+            } catch {
+                box.value(ISCSIError.nsError(from: error, context: "Deleting the target"))
+            }
+        }
+    }
+
+    // MARK: - Credentials
+
+    public func setCHAPSecret(targetID: String, secret: String, reply: @escaping (Error?) -> Void) {
+        KeychainStore.setCHAPSecret(secret, for: targetID)
+        reply(KeychainStore.chapSecret(for: targetID) == nil
+              ? ISCSIError.nsError(from: KeychainStore.StoreFailure.notPersisted,
+                                   context: "Saving the CHAP secret")
+              : nil)
+    }
+
+    public func deleteCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void) {
+        KeychainStore.deleteCHAPSecret(for: targetID)
+        reply(nil)
+    }
+
+    public func hasCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void) {
+        reply(KeychainStore.chapSecret(for: targetID) != nil)
+    }
+
+    // MARK: - Discovery and inspection
+
+    public func discoverTargets(host: String, port: NSNumber, chapUser: String?,
+                                chapSecret: String?, reply: @escaping (Data?, Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            do {
+                // The credentials actually reach DaemonCore here. The older
+                // discover() accepted a chapUser and dropped it on the floor,
+                // which made an authenticated portal undiscoverable from the app.
+                let chap: CHAP.Credentials? = {
+                    guard let chapUser, let chapSecret else { return nil }
+                    return CHAP.Credentials(name: chapUser, secret: chapSecret)
+                }()
+                let found = try await core.discover(host: host, port: port.uint16Value, chap: chap)
+                let info = found.map {
+                    DiscoveredTargetInfo(targetIQN: $0.name, addresses: $0.addresses)
+                }
+                box.value(try JSONEncoder().encode(info), nil)
+            } catch {
+                box.value(nil, ISCSIError.nsError(from: error,
+                                                  context: "Discovering targets at \(host)"))
+            }
+        }
+    }
+
+    public func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            do { box.value(try JSONEncoder().encode(await core.reportLUNs(session)), nil) }
+            catch { box.value(nil, ISCSIError.nsError(from: error, context: "Listing LUNs")) }
+        }
+    }
+
+    public func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            do { box.value(try JSONEncoder().encode(await core.sessionDetails()), nil) }
+            catch { box.value(nil, ISCSIError.nsError(from: error, context: "Listing sessions")) }
+        }
     }
 }
 

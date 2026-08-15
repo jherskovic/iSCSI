@@ -117,6 +117,67 @@ public actor DaemonCore {
         try await device(handle).flush()
     }
 
+    /// Every live session with everything the diagnostics pane needs.
+    ///
+    /// All of this already existed inside the actor and none of it had ever
+    /// crossed XPC, so a report could say "it felt slow" but never
+    /// "firstBurstLength negotiated down to 64 KiB and it recovered four times".
+    public func sessionDetails() async -> [SessionInfo] {
+        var out: [SessionInfo] = []
+        for (handle, entry) in sessions {
+            // Deliberately tolerant: a wedged session is exactly when someone
+            // opens this pane, so one unavailable field must not cost them the
+            // rest of the row.
+            let wce = try? await entry.device.writeCacheEnabled()
+            let blockSize = await entry.device.blockSize
+            let blockCount = await entry.device.blockCount
+            let recoveries = await entry.session.recoveryCount
+            let negotiated = await entry.session.parameters?.displayPairs ?? [:]
+            out.append(SessionInfo(
+                handle: handle,
+                targetIQN: entry.targetIQN,
+                lun: entry.lun,
+                blockSize: blockSize,
+                blockCount: blockCount,
+                writeCacheEnabled: wce ?? nil,
+                writeThrough: writeThrough,
+                recoveryCount: recoveries,
+                negotiated: negotiated
+            ))
+        }
+        return out.sorted { $0.handle < $1.handle }
+    }
+
+    /// REPORT LUNS against an established session.
+    ///
+    /// The first caller of `CDB.reportLuns`, which has been implemented and
+    /// unused since the SCSI layer was written. Without it the GUI can only
+    /// offer a LUN number typed from memory.
+    public func reportLUNs(_ handle: String) async throws -> [LUNInfo] {
+        guard let entry = sessions[handle] else { throw SessionError.notActive }
+        // Addressed to LUN 0: REPORT LUNS is answered by the target, not by a
+        // particular logical unit, and LUN 0 is the one guaranteed to exist.
+        let result = try await entry.session.executeChecked(
+            SCSITask(lun: 0, cdb: CDB.reportLuns(), direction: .read(expectedLength: 1024)))
+
+        // SPC LUN list: 4-byte list length (in bytes), 4 reserved, then one
+        // 8-byte LUN per entry.
+        let data = result.data
+        guard data.count >= 8 else { return [] }
+        let listLength = Int(data.beU32(0))
+        var luns: [LUNInfo] = []
+        var offset = 8
+        while offset + 8 <= min(data.count, 8 + listLength) {
+            // Peripheral-device addressing: the LUN is in the second byte of the
+            // first two-byte field for single-level addressing, which is all any
+            // target this app talks to will use.
+            let lun = UInt64(data.u8(offset + 1))
+            luns.append(LUNInfo(lun: lun))
+            offset += 8
+        }
+        return luns
+    }
+
     public func sessionHandles() -> [String] {
         Array(sessions.keys).sorted()
     }

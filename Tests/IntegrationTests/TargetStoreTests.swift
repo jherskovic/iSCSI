@@ -1,0 +1,172 @@
+//
+//  TargetStoreTests.swift
+//
+//  The store holds the user's entire configuration. Every failure mode here is
+//  one where they lose it, so the tests are mostly about not losing it.
+//
+
+import Foundation
+import Testing
+@testable import iSCSIDaemon
+@testable import iSCSIKit
+
+@Suite("Target persistence")
+struct TargetStoreTests {
+
+    private func temporaryURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("iscsi-targets-\(UUID().uuidString)")
+            .appendingPathComponent("targets.json")
+    }
+
+    private func sample(_ id: String = "t1") -> TargetRecord {
+        TargetRecord(id: id, displayName: "NAS", host: "192.168.0.101",
+                     targetIQN: "iqn.2026-08.me.herko:disk0", lun: 0,
+                     chapUser: "initiator", autoAttach: true)
+    }
+
+    @Test("saving and reading back round-trips")
+    func roundTrips() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let store = TargetStore(url: url)
+        try await store.save(sample())
+        #expect(await store.all() == [sample()])
+
+        // A fresh instance, so this reads the file rather than the cache.
+        #expect(await TargetStore(url: url).all() == [sample()])
+    }
+
+    @Test("saving an existing id replaces rather than duplicates")
+    func saveIsUpsert() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let store = TargetStore(url: url)
+        try await store.save(sample())
+        var edited = sample()
+        edited.displayName = "Renamed"
+        try await store.save(edited)
+
+        let all = await store.all()
+        #expect(all.count == 1)
+        #expect(all.first?.displayName == "Renamed")
+    }
+
+    @Test("deleting removes only the named target")
+    func deleteIsTargeted() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let store = TargetStore(url: url)
+        try await store.save(sample("a"))
+        try await store.save(sample("b"))
+        try await store.delete(id: "a")
+        #expect(await store.all().map(\.id) == ["b"])
+    }
+
+    /// A daemon that refuses to start because one JSON file is malformed turns
+    /// a cosmetic problem into a total outage. It should come up empty and keep
+    /// the broken file for inspection.
+    @Test("a corrupt file is set aside rather than crashing or being destroyed")
+    func corruptFileIsQuarantined() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data("{ this is not json".utf8).write(to: url)
+
+        #expect(await TargetStore(url: url).all().isEmpty)
+
+        let quarantined = url.appendingPathExtension("corrupt")
+        #expect(FileManager.default.fileExists(atPath: quarantined.path),
+                "the unreadable file must be kept, not silently discarded")
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test("a missing file is not an error")
+    func missingFileIsEmpty() async {
+        #expect(await TargetStore(url: temporaryURL()).all().isEmpty)
+    }
+
+    /// The secret must never be in this file. It is the difference between a
+    /// leaked support bundle disclosing topology and disclosing credentials.
+    @Test("no secret is ever written to disk")
+    func secretsNeverPersist() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        try await TargetStore(url: url).save(sample())
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(text.contains("initiator"), "the CHAP *username* is configuration")
+        // TargetRecord has no secret field at all; this asserts nobody adds one.
+        #expect(!text.lowercased().contains("secret"))
+        #expect(!text.lowercased().contains("password"))
+    }
+}
+
+/// Wire compatibility. The app and the daemon are separate binaries and can be
+/// different builds for the duration of an update, so a field rename that looks
+/// harmless in one process is a decode failure in the other.
+@Suite("XPC DTO wire format")
+struct XPCModelWireTests {
+
+    @Test("TargetRecord decodes from a committed golden payload")
+    func targetRecordGolden() throws {
+        let golden = """
+            {"autoAttach":true,"chapUser":"initiator","displayName":"NAS",
+             "host":"192.168.0.101","id":"t1","lun":0,"port":3260,
+             "targetIQN":"iqn.2026-08.me.herko:disk0"}
+            """
+        let record = try JSONDecoder().decode(TargetRecord.self, from: Data(golden.utf8))
+        #expect(record.id == "t1")
+        #expect(record.port == 3260)
+        #expect(record.autoAttach)
+        #expect(record.mutualChapUser == nil, "an absent optional must stay decodable")
+    }
+
+    @Test("DaemonInfo decodes from a committed golden payload")
+    func daemonInfoGolden() throws {
+        let golden = """
+            {"authorizationRelaxed":false,"build":"4","pid":1234,"version":"0.1.3"}
+            """
+        let info = try JSONDecoder().decode(DaemonInfo.self, from: Data(golden.utf8))
+        #expect(info.version == "0.1.3")
+        #expect(info.pid == 1234)
+        #expect(!info.authorizationRelaxed)
+    }
+
+    @Test("SessionInfo round-trips with its negotiated parameters")
+    func sessionInfoRoundTrips() throws {
+        var params = OperationalParameters()
+        params.firstBurstLength = 1_048_576
+        params.headerDigest = true
+
+        let info = SessionInfo(handle: "s1", targetIQN: "iqn.x", lun: 0,
+                               blockSize: 512, blockCount: 1024,
+                               writeCacheEnabled: true, writeThrough: true,
+                               recoveryCount: 2, negotiated: params.displayPairs)
+        let decoded = try JSONDecoder().decode(
+            SessionInfo.self, from: JSONEncoder().encode(info))
+
+        #expect(decoded == info)
+        #expect(decoded.negotiated["FirstBurstLength"] == "1048576")
+        #expect(decoded.negotiated["HeaderDigest"] == "CRC32C")
+        #expect(decoded.byteCount == 512 * 1024)
+    }
+
+    /// The diagnostics pane exists so a bug report can say what was negotiated.
+    /// If a parameter is missing from this dictionary it is invisible to every
+    /// report, so the ones that most often explain a performance question are
+    /// asserted present.
+    @Test("the parameters that explain performance questions are all displayed")
+    func displayPairsCoverTheUsefulOnes() {
+        let pairs = OperationalParameters().displayPairs
+        for key in ["MaxBurstLength", "FirstBurstLength", "ImmediateData",
+                    "InitialR2T", "MaxOutstandingR2T", "HeaderDigest",
+                    "DataDigest", "ErrorRecoveryLevel"] {
+            #expect(pairs[key] != nil, "\(key) is missing from the diagnostics pane")
+        }
+    }
+}

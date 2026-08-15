@@ -39,3 +39,142 @@ public struct DaemonInfo: Codable, Sendable, Equatable {
         self.authorizationRelaxed = authorizationRelaxed
     }
 }
+
+/// A target the user has configured. Persisted by the daemon; the CHAP *secret*
+/// is deliberately not a field — it lives in the keychain and is referenced by
+/// `id`, so a targets file that leaks discloses no credentials.
+public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var displayName: String
+    public var host: String
+    public var port: UInt16
+    public var targetIQN: String
+    public var lun: UInt64
+    /// CHAP username, if the target requires authentication. Keyed by `id` in
+    /// the keychain rather than by username, because two targets can legitimately
+    /// share a username with different secrets.
+    public var chapUser: String?
+    /// Mutual CHAP: we authenticate the target too.
+    public var mutualChapUser: String?
+    public var autoAttach: Bool
+
+    public init(id: String, displayName: String, host: String, port: UInt16 = 3260,
+                targetIQN: String, lun: UInt64 = 0, chapUser: String? = nil,
+                mutualChapUser: String? = nil, autoAttach: Bool = false) {
+        self.id = id
+        self.displayName = displayName
+        self.host = host
+        self.port = port
+        self.targetIQN = targetIQN
+        self.lun = lun
+        self.chapUser = chapUser
+        self.mutualChapUser = mutualChapUser
+        self.autoAttach = autoAttach
+    }
+}
+
+/// One target as advertised by a portal's SendTargets response.
+public struct DiscoveredTargetInfo: Codable, Sendable, Equatable {
+    public var targetIQN: String
+    public var addresses: [String]
+
+    public init(targetIQN: String, addresses: [String]) {
+        self.targetIQN = targetIQN
+        self.addresses = addresses
+    }
+}
+
+/// One LUN behind a target, from REPORT LUNS.
+public struct LUNInfo: Codable, Sendable, Equatable {
+    public var lun: UInt64
+    public var blockSize: Int?
+    public var blockCount: UInt64?
+
+    public var byteCount: UInt64? {
+        guard let blockSize, let blockCount else { return nil }
+        return UInt64(blockSize) * blockCount
+    }
+
+    public init(lun: UInt64, blockSize: Int? = nil, blockCount: UInt64? = nil) {
+        self.lun = lun
+        self.blockSize = blockSize
+        self.blockCount = blockCount
+    }
+}
+
+/// Everything known about a live session.
+///
+/// This is the diagnostic surface, and it is deliberately generous. Every field
+/// here already existed inside the daemon and none of it had ever crossed XPC,
+/// which meant a bug report could say "it was slow" but not "firstBurstLength
+/// negotiated down to 64 KiB and the session recovered four times". The data
+/// costs nothing to send and is the difference between an actionable report and
+/// a guess.
+public struct SessionInfo: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { handle }
+    public var handle: String
+    public var targetIQN: String
+    public var lun: UInt64
+    public var blockSize: Int?
+    public var blockCount: UInt64?
+    /// nil when the target returned no caching mode page.
+    public var writeCacheEnabled: Bool?
+    /// Whether we force FUA on every write, which is what makes durability
+    /// independent of a flush the FSKit path never receives.
+    public var writeThrough: Bool
+    /// How many times this session has been transparently rebuilt under a
+    /// dropped connection. Non-zero is not an error, but it is the first thing
+    /// worth knowing when someone reports intermittent slowness.
+    public var recoveryCount: Int
+    /// Negotiated login parameters, as label/value pairs ready to display.
+    /// A dictionary rather than a mirror of OperationalParameters so that adding
+    /// a parameter to the engine does not break the wire format.
+    public var negotiated: [String: String]
+
+    public var byteCount: UInt64? {
+        guard let blockSize, let blockCount else { return nil }
+        return UInt64(blockSize) * blockCount
+    }
+
+    public init(handle: String, targetIQN: String, lun: UInt64,
+                blockSize: Int? = nil, blockCount: UInt64? = nil,
+                writeCacheEnabled: Bool? = nil, writeThrough: Bool,
+                recoveryCount: Int, negotiated: [String: String]) {
+        self.handle = handle
+        self.targetIQN = targetIQN
+        self.lun = lun
+        self.blockSize = blockSize
+        self.blockCount = blockCount
+        self.writeCacheEnabled = writeCacheEnabled
+        self.writeThrough = writeThrough
+        self.recoveryCount = recoveryCount
+        self.negotiated = negotiated
+    }
+}
+
+extension OperationalParameters {
+    /// Display pairs for the Sessions detail pane. Ordered by how often they
+    /// explain a performance question, not by their order in the RFC.
+    public var displayPairs: [String: String] {
+        var out: [String: String] = [
+            "MaxBurstLength": String(maxBurstLength),
+            "FirstBurstLength": String(firstBurstLength),
+            "MaxRecvDataSegmentLength (target)": String(targetMaxRecvDataSegmentLength),
+            "MaxRecvDataSegmentLength (initiator)": String(initiatorMaxRecvDataSegmentLength),
+            "ImmediateData": immediateData ? "Yes" : "No",
+            "InitialR2T": initialR2T ? "Yes" : "No",
+            "MaxOutstandingR2T": String(maxOutstandingR2T),
+            "HeaderDigest": headerDigest ? "CRC32C" : "None",
+            "DataDigest": dataDigest ? "CRC32C" : "None",
+            "ErrorRecoveryLevel": String(errorRecoveryLevel),
+            "MaxConnections": String(maxConnections),
+            "DefaultTime2Wait": String(defaultTime2Wait),
+            "DefaultTime2Retain": String(defaultTime2Retain),
+            "DataPDUInOrder": dataPDUInOrder ? "Yes" : "No",
+            "DataSequenceInOrder": dataSequenceInOrder ? "Yes" : "No",
+        ]
+        if let tag = targetPortalGroupTag { out["TargetPortalGroupTag"] = String(tag) }
+        if let alias = targetAlias { out["TargetAlias"] = alias }
+        return out
+    }
+}
