@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      # The protocol engine, the daemon core, and everything that crosses XPC.
+      # No signing, no Xcode project, no FSKit — this half of the codebase is
+      # deliberately free of platform I/O so it can be tested anywhere.
+      - name: swift build
+        run: swift build
+
+      - name: swift test
+        run: swift test
+
+  hygiene:
+    name: Project hygiene
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # The highest-value check in this repo.
+      #
+      # The .pbxproj once carried a hand-patched "Embed ExtensionKit Extensions"
+      # phase that apps/project.yml did not declare, so a plain `xcodegen
+      # generate` silently produced an app with **no filesystem module** and no
+      # build error — a DMG that could not possibly work, from a build that
+      # looked clean. This makes that impossible to reintroduce.
+      - name: The generated project matches project.yml
+        run: |
+          cd apps && xcodegen generate
+          cd ..
+          if ! git diff --quiet -- apps/iSCSIInitiator.xcodeproj/project.pbxproj; then
+            echo "::error::apps/project.yml and the committed .pbxproj have diverged."
+            echo "Run 'cd apps && xcodegen generate' and commit the result."
+            git --no-pager diff -- apps/iSCSIInitiator.xcodeproj/project.pbxproj
+            exit 1
+          fi
+          echo "no drift"
+
+      - name: Every plist parses
+        run: |
+          find . -name '*.plist' \
+            -not -path './.git/*' -not -path '*/build/*' -not -path '*.xcodeproj/*' \
+            -print0 | xargs -0 plutil -lint
+
+      # There were two LaunchDaemon plists once, in different directories,
+      # disagreeing about Program vs ProgramArguments and about log paths, with
+      # nothing to say which was real. SMAppService resolves a daemon by its
+      # plist *filename*, so a second copy is not redundancy — it is an
+      # ambiguity that only shows up as "approved but nothing happens".
+      - name: Exactly one LaunchDaemon plist
+        run: |
+          count=$(find . -name 'me.herko.iSCSIInitiator.daemon.plist' \
+            -not -path './.git/*' -not -path '*/build/*' | wc -l | tr -d ' ')
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one daemon plist, found $count"
+            find . -name 'me.herko.iSCSIInitiator.daemon.plist' -not -path './.git/*'
+            exit 1
+          fi
+          echo "one daemon plist, as expected"
+
+      # The Label must equal the filename minus .plist, or SMAppService
+      # registers a service that can never be looked up again — including by
+      # unregister(), leaving the user a root daemon they cannot remove. It is
+      # silent at build time and at register() time. release.sh asserts this on
+      # the built bundle; this catches it in the source.
+      - name: The daemon's Label matches its filename
+        run: |
+          plist=apps/iSCSIApp/LaunchDaemons/me.herko.iSCSIInitiator.daemon.plist
+          label=$(plutil -extract Label raw "$plist")
+          expected=$(basename "$plist" .plist)
+          if [ "$label" != "$expected" ]; then
+            echo "::error::Label '$label' does not match filename '$expected.plist'"
+            exit 1
+          fi
+          grep -q '<key>BundleProgram</key>' "$plist" || {
+            echo "::error::the daemon plist must use BundleProgram, not an absolute Program path"
+            exit 1
+          }
+          echo "Label and BundleProgram are correct"
+
+# Deliberately absent: building the app target.
+#
+# `FSClient.openFileSystemExtensionsSettings()` is a macOS 27 API. It is guarded
+# at runtime with #available — the shipping deployment target is 26.0 — but it
+# still has to exist in the SDK to compile, so the app needs Xcode 27, which the
+# hosted runners do not have. Adding an xcodebuild step that is allowed to fail
+# would be worse than leaving it out: a check nobody trusts is one nobody reads.
+#
+# Add it when a runner image ships Xcode 27:
+#
+#   - run: cd apps && xcodebuild -project iSCSIInitiator.xcodeproj \
+#            -scheme 'iSCSI Initiator' -configuration Release \
+#            -destination 'generic/platform=macOS' \
+#            CODE_SIGNING_ALLOWED=NO build
+#
+# Until then the app is built on a developer machine by scripts/release.sh,
+# which asserts considerably more than a bare build would: signatures and
+# hardened runtime on every Mach-O, the appex present, the version consistent
+# across bundles, no DEBUG authorization bypass, and a stapled ticket on the app
+# *inside* the DMG.
