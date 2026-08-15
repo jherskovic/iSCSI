@@ -25,7 +25,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 let targets = try await core.discover(host: host, port: port.uint16Value)
                 box.value(targets.map { "\($0.name)\t\($0.addresses.joined(separator: ","))" }, nil)
             } catch {
-                box.value(nil, error as NSError)
+                box.value(nil, ISCSIError.nsError(from: error,
+                                                  context: "Discovering targets at \(host)"))
             }
         }
     }
@@ -49,7 +50,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 )
                 box.value(handle, nil)
             } catch {
-                box.value(nil, error as NSError)
+                box.value(nil, ISCSIError.nsError(from: error,
+                                                  context: "Connecting to \(targetIQN)"))
             }
         }
     }
@@ -58,7 +60,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             do { try await core.logout(session); box.value(nil) }
-            catch { box.value(error as NSError) }
+            catch { box.value(ISCSIError.nsError(from: error, context: "Disconnecting")) }
         }
     }
 
@@ -69,7 +71,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 let (bs, count) = try await core.capacity(session)
                 box.value(NSNumber(value: bs), NSNumber(value: count), nil)
             } catch {
-                box.value(0, 0, error as NSError)
+                box.value(0, 0, ISCSIError.nsError(from: error,
+                                                   context: "Reading the device size"))
             }
         }
     }
@@ -81,7 +84,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 let data = try await core.read(session, offset: offset.uint64Value, length: length.intValue)
                 box.value(data, nil)
             } catch {
-                box.value(nil, error as NSError)
+                box.value(nil, ISCSIError.nsError(from: error, context: "Reading"))
             }
         }
     }
@@ -90,7 +93,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             do { try await core.write(session, offset: offset.uint64Value, data: data); box.value(nil) }
-            catch { box.value(error as NSError) }
+            catch { box.value(ISCSIError.nsError(from: error, context: "Writing")) }
         }
     }
 
@@ -98,7 +101,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             do { try await core.flush(session); box.value(nil) }
-            catch { box.value(error as NSError) }
+            catch { box.value(ISCSIError.nsError(from: error, context: "Flushing")) }
         }
     }
 
