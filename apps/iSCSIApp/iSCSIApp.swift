@@ -50,6 +50,11 @@ struct MainWindow: View {
     @ObservedObject var model: AppModel
     @State private var section: Section? = .targets
     @State private var isUninstalling = false
+    /// Auto-selection happens once per window, never again. Re-running it on
+    /// every foreground would yank the user off whatever they were reading
+    /// each time they switched apps — which is exactly when they are most
+    /// likely to be reading something.
+    @State private var hasChosenLanding = false
 
     enum Section: String, CaseIterable, Identifiable {
         case targets, discover, sessions, setup
@@ -72,6 +77,22 @@ struct MainWindow: View {
             case .setup:    return "checklist"
             }
         }
+    }
+
+    /// Land on Setup when there is something to do there.
+    ///
+    /// Targets is the right home once everything works, but on a fresh install
+    /// it is an empty list with a disabled Add button and nothing saying that
+    /// the work is one screen away. `!isReady` covers first launch, since a new
+    /// install always has an unregistered daemon.
+    ///
+    /// Not "no targets yet": once setup is green, the empty Targets screen
+    /// explains itself and has the button you want, whereas an all-green Setup
+    /// screen would be a dead end.
+    private func chooseLandingSection() {
+        guard !hasChosenLanding else { return }
+        hasChosenLanding = true
+        if !model.isReady { section = .setup }
     }
 
     var body: some View {
@@ -117,6 +138,7 @@ struct MainWindow: View {
         .task {
             FSKitSettingsLinkCheck.verify()
             await model.refresh()
+            chooseLandingSection()
         }
         // Everything shown here can change without the app being told: the user
         // can eject in Finder, deny the daemon in System Settings, or power off

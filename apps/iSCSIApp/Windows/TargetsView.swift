@@ -135,8 +135,11 @@ struct TargetEditor: View {
         self.model = model
         self.existing = target
         _displayName = State(initialValue: target?.displayName ?? "")
-        _host = State(initialValue: target?.host ?? "")
-        _port = State(initialValue: String(target?.port ?? 3260))
+        // A new target starts at the last address used; an existing one always
+        // shows its own. Pre-filling an edit sheet with someone else's address
+        // would be a data-loss bug wearing a convenience costume.
+        _host = State(initialValue: target?.host ?? LastPortal.suggestedHost)
+        _port = State(initialValue: String(target?.port ?? LastPortal.port))
         _targetIQN = State(initialValue: target?.targetIQN ?? "")
         _lun = State(initialValue: String(target?.lun ?? 0))
         _chapUser = State(initialValue: target?.chapUser ?? "")
@@ -211,6 +214,7 @@ struct TargetEditor: View {
             mutualChapUser: mutualChapUser.isEmpty ? nil : mutualChapUser,
             autoAttach: existing?.autoAttach ?? false)
 
+        LastPortal.remember(host: record.host, port: record.port)
         Task {
             await model.save(record, secret: chapSecret.isEmpty ? nil : chapSecret)
             dismiss()

@@ -26,6 +26,7 @@
 		834DE1E9C3D343D8B7027A79 /* iSCSIDaemonKit in Frameworks */ = {isa = PBXBuildFile; productRef = 31DCE2C37A7F2B58783C7457 /* iSCSIDaemonKit */; };
 		83E3A3242A55B4C0F8AA573B /* ExtensionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB19582709CC88A804AB9C0C /* ExtensionController.swift */; };
 		8BA66503B292639C7301422A /* iSCSIFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		9FAF8F9B4328CBD250375CA0 /* LastPortal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CFABF815361ED5F578A112C /* LastPortal.swift */; };
 		A5942087ABDE23B87B1E18A0 /* SetupCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF2DEFBFF72FCC0059FE6E5 /* SetupCoordinator.swift */; };
 		A62AA91BCC64D9EF76D8FB54 /* FSKitSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF1BC41F137227EA4CAFCF0D /* FSKitSteps.swift */; };
 		ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B994EEC4E49C9C783699E6 /* FSKitProbe.swift */; };
@@ -112,6 +113,7 @@
 		3079D57585D96DD2ADCA8879 /* iSCSIFSExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iSCSIFSExtension.swift; sourceTree = "<group>"; };
 		3585A0A81F56D11FC7F6743D /* SetupStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupStep.swift; sourceTree = "<group>"; };
 		35C8645A7CB24A5D14623009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		3CFABF815361ED5F578A112C /* LastPortal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LastPortal.swift; sourceTree = "<group>"; };
 		3D7813599A3D7B14A72BA71F /* me.herko.iSCSIInitiator.daemon.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = me.herko.iSCSIInitiator.daemon.plist; sourceTree = "<group>"; };
 		3DC08C498B489B3118E2CF64 /* iSCSIDext.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = iSCSIDext.iig; sourceTree = "<group>"; };
 		4C16A5233C6A1510F7298B94 /* iscsid */ = {isa = PBXFileReference; includeInIndex = 0; path = iscsid; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -246,6 +248,7 @@
 				63687E9A8247C4F8AD9C2785 /* AppModel.swift */,
 				4D00ADBA0B6BA390CD8BA86F /* AttachmentManager.swift */,
 				EE16E15977B192C9F17111AD /* DaemonClient.swift */,
+				3CFABF815361ED5F578A112C /* LastPortal.swift */,
 			);
 			path = Client;
 			sourceTree = "<group>";
@@ -528,6 +531,7 @@
 				BF960E140AA6D05153B72C27 /* FSKitSettingsLinkCheck.swift in Sources */,
 				A62AA91BCC64D9EF76D8FB54 /* FSKitSteps.swift in Sources */,
 				2E1FFE246D597C651BD5C482 /* InstallLocation.swift in Sources */,
+				9FAF8F9B4328CBD250375CA0 /* LastPortal.swift in Sources */,
 				19AEC47ED3920AE1C239870B /* MenuBarContent.swift in Sources */,
 				2FCD39A4CA774D55F3735886 /* SessionsView.swift in Sources */,
 				A5942087ABDE23B87B1E18A0 /* SetupCoordinator.swift in Sources */,

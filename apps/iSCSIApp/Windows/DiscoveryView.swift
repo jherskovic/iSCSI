@@ -13,8 +13,8 @@ import iSCSIKit
 struct DiscoveryView: View {
     @ObservedObject var model: AppModel
 
-    @State private var host = ""
-    @State private var port = "3260"
+    @State private var host = LastPortal.suggestedHost
+    @State private var port = String(LastPortal.port)
     @State private var chapUser = ""
     @State private var chapSecret = ""
     @State private var found: [DiscoveredTargetInfo] = []
@@ -109,6 +109,14 @@ struct DiscoveryView: View {
         Task {
             defer { isSearching = false; searched = true }
             do {
+                // Remembered on a *successful* search: an address that answered
+                // is worth suggesting again, one that was mistyped is not.
+                defer {
+                    if !found.isEmpty {
+                        LastPortal.remember(host: host.trimmingCharacters(in: .whitespaces),
+                                            port: UInt16(port) ?? 3260)
+                    }
+                }
                 found = try await DaemonConnection.discoverTargets(
                     host: host.trimmingCharacters(in: .whitespaces),
                     port: UInt16(port) ?? 3260,
