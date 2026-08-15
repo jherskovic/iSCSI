@@ -90,6 +90,27 @@ public actor DaemonCore {
         line += ": write cache " + cacheLabel + ", writeThrough=" + wtLabel
         DaemonLog.session(line)
 
+        // Route recovery events into the unified log. Without this a session
+        // can drop, rebuild itself five times and give up, leaving nothing
+        // behind but the original login banner and an I/O that never returns —
+        // which is exactly what happened on 2026-08-15 and could not be
+        // diagnosed afterwards.
+        let logTarget = targetIQN
+        await session.setEventHandler { event in
+            switch event {
+            case .connectionLost(let reason):
+                DaemonLog.session("\(logTarget): connection lost (\(reason)); recovering")
+            case .recoveryAttempt(let number, let total):
+                DaemonLog.session("\(logTarget): recovery attempt \(number)/\(total)")
+            case .recovered(let total):
+                DaemonLog.session("\(logTarget): recovered (\(total) time(s) so far)")
+            case .recoveryExhausted(let lastError):
+                DaemonLog.error("\(logTarget): RECOVERY EXHAUSTED after \(lastError). "
+                                + "Every I/O on this session will now fail, and anything "
+                                + "already waiting on it stays blocked until it does.")
+            }
+        }
+
         handleCounter += 1
         let handle = "s\(handleCounter)"
         sessions[handle] = SessionEntry(session: session, device: device, targetIQN: targetIQN, lun: lun)

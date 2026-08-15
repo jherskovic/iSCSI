@@ -1,5 +1,22 @@
 import Foundation
 
+/// Things worth telling someone about, which are not errors the caller sees.
+///
+/// Recovery is deliberately invisible to callers — that is its whole point — but
+/// invisible to *operators* is a different thing. A session that quietly rebuilt
+/// itself five times and then gave up produced, before this existed, exactly no
+/// record: an I/O that never returned, and a log containing only the original
+/// login banner. Diagnosing that took hours and ended in a guess.
+public enum SessionEvent: Sendable {
+    /// The connection dropped; recovery is starting.
+    case connectionLost(reason: String)
+    case recoveryAttempt(number: Int, of: Int)
+    /// Back in business, having rebuilt the session this many times in total.
+    case recovered(totalRecoveries: Int)
+    /// Gave up. Every subsequent I/O on this session will fail.
+    case recoveryExhausted(lastError: String)
+}
+
 public enum SessionError: Error, Equatable, Sendable {
     case notActive
     case loggedOut
@@ -53,6 +70,14 @@ public actor ISCSISession {
     private var loggedOut = false
     /// Diagnostics for tests and status reporting.
     public private(set) var recoveryCount = 0
+
+    /// Called for each `SessionEvent`. Set by the daemon to route them into the
+    /// unified log; nil everywhere else, so tests and the CLI pay nothing.
+    private var onEvent: (@Sendable (SessionEvent) -> Void)?
+
+    public func setEventHandler(_ handler: @escaping @Sendable (SessionEvent) -> Void) {
+        onEvent = handler
+    }
 
     public init(
         login: LoginConfig,
@@ -205,6 +230,7 @@ public actor ISCSISession {
             try await existing.value
             return
         }
+        onEvent?(.connectionLost(reason: error.map { "\($0)" } ?? "no active connection"))
         if let old = connection {
             connection = nil
             loginResult = nil
@@ -213,9 +239,11 @@ public actor ISCSISession {
         keepaliveTask?.cancel()
         keepaliveTask = nil
 
-        let task = Task { [policy] in
+        let task = Task { [policy, onEvent] in
             var lastError = error.map { "\($0)" } ?? "initial"
             for attempt in 0 ..< policy.maxRecoveryAttempts {
+                onEvent?(.recoveryAttempt(number: attempt + 1,
+                                          of: policy.maxRecoveryAttempts))
                 if attempt > 0 || error != nil {
                     let factor = 1 << min(attempt, 8)
                     let delay = min(
@@ -227,11 +255,13 @@ public actor ISCSISession {
                 try Task.checkCancellation()
                 do {
                     _ = try await self.establishForRecovery()
+                    onEvent?(.recovered(totalRecoveries: await self.recoveryCount))
                     return
                 } catch {
                     lastError = "\(error)"
                 }
             }
+            onEvent?(.recoveryExhausted(lastError: lastError))
             throw SessionError.recoveryExhausted(lastError: lastError)
         }
         recoveryTask = task
