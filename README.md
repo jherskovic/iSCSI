@@ -1,101 +1,137 @@
-# macOS iSCSI Initiator (DriverKit)
+# macOS iSCSI Initiator
 
 A modern iSCSI initiator for macOS 26/27 on Apple Silicon. macOS ships no
 initiator; the old open-source option is a dead kext. This project puts the
 iSCSI/TCP protocol engine in a user-space Swift daemon and presents the LUN as
-a real block device. The FSKit/`hdiutil` backend **works today against a real
-target**: a 40 GiB LUN mounts as APFS, with the block device coming from Apple's
-DiskImages framework rather than a kext, which also sidesteps the DriverKit wedge
-entirely. A DriverKit virtual SCSI HBA remains the eventual path once Apple lifts
-the software-controller throughput limit (see `docs/architecture.md`).
+a real block device. The current FSKit/`hdiutil` backend in this project is a bit hacky,
+but it works: you can mount LUNs as APFS, with the block device provided by Apple's
+DiskImages framework. A DriverKit virtual SCSI HBA is the eventual goal once Apple lifts
+some very real throughput limits (see `docs/architecture.md`).
 
 ## Status
 
-| Phase | What | State |
-|------|------|-------|
-| 0 | SwiftPM scaffolding, fuzz harness | ✅ done |
-| 1 | PDU codec (all 17 PDU types), framer, CRC32C | ✅ done |
-| 2 | Negotiation engine, login state machine, CHAP | ✅ done |
-| 3 | Session/connection engine, scriptable MockTarget, hostile-script suite | ✅ done |
-| 4 | `NetworkTransport` (TCP), `iscsictl`, iscsid daemon (BlockDevice + XPC) | ✅ **verified vs real TrueNAS**; daemon built + tested |
-| 5 | FSKit + `hdiutil` block-device backend | ✅ **works on a real 40 GiB iSCSI LUN**; 137 GB verified at 90 MB/s read / 57 MB/s write — ~92% of the transport ceiling; survives a power cut |
-| 6 | DriverKit dext (virtual SCSI HBA) | 🚧 **real disk; ExFAT works end-to-end, APFS now formats and mounts**; see the open issues below |
-| 7 | Fault-injection / soak / e2e scripts | ✅ scripts written (run once a LUN is mounted) |
+**It ships.** A notarized DMG, dragged to Applications, gets you an APFS volume
+in Finder without ever opening Terminal. Verified end to end on 2026-08-14 on a
+clean macOS 26.6.1 machine with SIP on, no Xcode, no Apple ID and no developer
+account, against a real TrueNAS target: discover → add → attach → copy files →
+detach → re-attach. Full transcript in `docs/acceptance-2026-08-14.md`.
 
-170 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
-clean over 100 independent seeds (`scripts/fuzz-campaign.sh`). The full protocol stack is **verified end-to-end
-against a real TrueNAS target** (login negotiation → INQUIRY → READ CAPACITY →
-write + SYNCHRONIZE CACHE → read-back verify → logout).
+226 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
+clean over 100 independent seeds (`scripts/fuzz-campaign.sh`). The protocol
+stack is verified against real hardware, not just the simulator.
 
-The dext presents the LUN as a real block device on macOS 26.6: it attaches at
-boot, the disk appears when the daemon logs in, and **ExFAT formats, mounts and
-runs on it**. Data integrity is CRC-verified byte-exact across thousands of
-ops including 16-way concurrent same-region storms, and the failure plumbing
-is sound (~30k tasks: no double completions, no watchdog misfires, no leaks).
+What the app does today:
 
-**The barrier bug is fixed.** APFS used to wedge the storage stack at mount
-because the kernel never sent SYNCHRONIZE CACHE to this device — and the cause
-turned out to be ours: presenting the LUN as *removable* media makes macOS's
-SCSI block driver record `WriteCacheState = No` and elide every flush in-kernel
-in a few microseconds, so APFS's barriers were silent no-ops. Presented as a
-fixed disk, flushes reach the wire (`tools/dkflush.c` measures this directly),
-`newfs_apfs` succeeds and the volume mounts. Full evidence and the measurement
-table are in `docs/architecture.md` ("The flush gap").
+- **Setup that checks rather than instructs.** Four conditions — installed in
+  Applications, background service running, filesystem extension registered,
+  filesystem extension enabled — re-checked on every launch and every return to
+  the foreground. The screen renders results, never a numbered list, so it can
+  say which half of a half-finished install failed. It also repairs: an update
+  that drops the extension's registration shows up as an ordinary unsatisfied
+  step with a button.
+- **Discover, add, attach, detach**, from a menu bar item or a window, with CHAP.
+- **A diagnostics pane** showing negotiated login parameters, session recovery
+  count, and the target's write-cache state — everything the daemon knew and
+  had never told anyone.
+- **Uninstall** that removes its own daemon, secrets, and extension registration
+  in the one order that works.
+- **Updates** via Sparkle, which refuse to install while a volume is attached.
 
-Still open, and why this is not a daily driver yet:
-- Removable was itself a workaround for the 45-second `ClearNotReadyStatus`
-  trap that permanently kills a fixed disk not ready at probe. The dext
-  currently papers over that with a diagnostic build flag
-  (`ISCSI_DEXT_FIXED_DISK_PROBE`) that hardcodes geometry; the real fix is to
-  gate controller matching on the daemon being attached.
-- **After the first access to a freshly mounted APFS volume, the device stops
-  serving I/O entirely** — and this has nothing to do with iSCSI. Built with
-  `ISCSI_DEXT_SCRATCH_DISK 1` the dext serves a RAM buffer from its own memory
-  (no daemon, no network, no target, every command answered inline) and APFS
-  wedges identically. It needs APFS *and* our driver: APFS on an hdiutil RAM
-  disk is fine, ExFAT on our driver is fine (whole disk or GPT slice), and the
-  failure is positional — the first access completes, the second blocks, in
-  either order. Raw `dd` and flush ioctls hang too, while the dext stays
-  provably healthy: it answers IOKit calls in 0 ms and its counters show every
-  task completed exactly once. Ruled out by controlled tests: barriers,
-  truncation, byte counts, completion accounting, task-management functions,
-  power management, concurrency, command volume, transfer size, and the nested
-  media layer — see `docs/architecture.md` for the matrix and the method for
-  each. `scripts/vm-scratch-apfs.sh` is the self-contained reproducer, and
-  `docs/feedback-virtual-scsi-wedge.md` is a ready-to-file Feedback draft.
-- `diskutil`'s partition-map rewrite still races a media re-probe
-  (`Couldn't read partition map` / `failed to write superblock`).
-- Wipe the scratch LUN (`iscsictl wipe …`) before attaching, or auto-mount
-  drags you straight back into whichever of these is unfixed.
+### The FSKit enablement gate, and what it costs
 
-## Building the app + extensions (Xcode)
+macOS requires the user to enable a third-party filesystem extension. On
+**macOS 27 that switch works** and the app deep-links to it. On **macOS 26.x it
+is present but refuses to move** — reproduced independently against Apple's own
+FSKitSample — and the URL that would open the pane does not navigate either. So
+on 26.x the app asks for consent itself and writes the entry, then has the
+daemon signal `fskitd`. No reboot, no Full Disk Access.
+
+Both branches are measured, on both OS versions, with a notarized build and SIP
+on. `docs/backend-a-fskit-notes.md` has the evidence and
+`docs/feedback-fskit-enablement-26x.md` is the Feedback report.
+
+### Backend B (DriverKit) is parked
+
+All dext code sits behind the `ISCSI_BACKEND_B` compile flag and is in nothing
+that ships. It is blocked on two things that are not ours to fix:
+
+- **APFS wedges the block device after the first access**, and it is not an
+  iSCSI problem: built with `ISCSI_DEXT_SCRATCH_DISK 1` the dext serves a RAM
+  buffer from its own memory — no daemon, no network, no target — and APFS
+  wedges identically, while ExFAT on the same driver is fine and APFS on an
+  `hdiutil` RAM disk is fine. `scripts/vm-scratch-apfs.sh` reproduces it and
+  `docs/feedback-virtual-scsi-wedge.md` is the Feedback draft.
+- **The DriverKit family entitlements are approval-gated**, so their presence
+  makes every Developer ID export fail at profile resolution.
+
+The reconnaissance in it is expensive and correct, so it is flagged rather than
+deleted. `swift build -Xswiftc -DISCSI_BACKEND_B` turns it back on; see the
+header of `scripts/vm-deploy-dext.sh` for what else re-enabling needs.
+
+One earlier blocker *was* ours and is fixed: presenting the LUN as **removable**
+media makes macOS record `WriteCacheState = No` and elide every flush in-kernel,
+so APFS's barriers became silent no-ops. Presented as a fixed disk, flushes
+reach the wire. See "The flush gap" in `docs/architecture.md`.
+
+## Building
 
 ```sh
 cd apps
 xcodegen generate          # produces iSCSIInitiator.xcodeproj
 open iSCSIInitiator.xcodeproj
-# Set your signing Team in project.yml or the Signing pane, then build.
 ```
 
-Two schemes: **iSCSI Initiator** is what ships (the app plus the embedded FSKit
-extension), and **iSCSIDext-dev** builds the DriverKit extension on its own. The
-dext is deliberately not part of the shipping app — its entitlements are
-approval-gated by Apple, and it requires a SIP-off test VM to load. See
-`docs/vm-setup.md` and `docs/entitlements.md`.
+Two schemes. **iSCSI Initiator** is what ships: the app, the embedded FSKit
+extension, and `iscsid` inside the bundle. **iSCSIDext-dev** builds the
+DriverKit extension on its own, for a SIP-off VM.
+
+The app builds against the macOS 26 SDK. Its one macOS 27 API,
+`FSClient.openFileSystemExtensionsSettings()`, is reached by selector
+(`FSKitSettingsLink`) precisely so that CI can build the app at all — before
+that it compiled only on a machine with an Xcode beta.
 
 ## Releasing
 
 ```sh
-scripts/release.sh                  # notarized, stapled DMG
-scripts/release.sh --skip-notarize  # signed DMG only, for testing the pipeline
+scripts/release.sh                  # notarized, stapled DMG + signed appcast entry
+scripts/release.sh --skip-notarize  # for iterating on the script itself, nothing else
 ```
 
-Archives, exports a Developer ID build, asserts that every nested Mach-O carries
-hardened runtime and a secure timestamp, notarizes and staples the app *and* the
-DMG, then verifies with `spctl` and `stapler validate`. The FSKit entitlement
-needs no request to Apple; Xcode mints the profiles automatically. One-time
-setup is a notarytool credential profile — the script tells you the exact
-command if it is missing.
+The script archives, exports a Developer ID build, and then asserts the things
+that fail silently: every nested Mach-O carries hardened runtime and a secure
+timestamp, the FSKit extension and `iscsid` are present, every bundle reports
+the same version, the shipped daemon has no DEBUG authorization bypass, there is
+exactly one LaunchDaemon plist whose `Label` matches its filename, and the app
+*inside the DMG* is stapled — not just the copy in `build/export`. It notarizes
+and staples the app and the DMG separately, signs the DMG for Sparkle **after**
+stapling, and writes the release into `appcast.xml`.
+
+Publishing is printed, not performed: it is what makes an artifact visible to
+everyone already running the app. The printed order matters — create the GitHub
+release first, then commit the feed, because the feed points at the release
+asset.
+
+One-time setup is a notarytool credential profile and a Sparkle key pair
+(`scripts/sparkle-generate-keys.sh`); the script names the exact command when
+either is missing.
+
+## Testing
+
+CI (`.github/workflows/ci.yml`) runs the package tests, the app build, and the
+project-hygiene checks. The most valuable of those regenerates the Xcode project
+from `apps/project.yml` and fails on any diff — the `.pbxproj` once carried a
+hand-patched embed phase that `project.yml` did not declare, so `xcodegen
+generate` silently produced an app with **no filesystem module** and no build
+error.
+
+Two VMs, and which one answers a question matters:
+
+- **SIP on, no Xcode, no Apple ID** — the end-user acceptance rig. The only
+  place that can answer anything about consent, entitlements or Gatekeeper.
+- **SIP off** — the fast loop for the daemon, XPC, and the setup machine's own
+  logic. It cannot answer consent questions, because self-asserted entitlements
+  pass there, and its FSKit view is not trustworthy (see the note in
+  `docs/backend-a-fskit-notes.md`).
 
 ## Layout
 
@@ -109,29 +145,35 @@ Sources/
     Session/         ISCSIConnection + ISCSISession (recovery, keepalive)
     Transport/       ConnectionTransport, NetworkTransport (TCP), MemoryPipe
     SCSI/            SCSITask, CDB builders, sense parsing
+    XPCProtocol      the daemon's surface, shared by app, extension and daemon
+    XPCModels        Codable DTOs that cross as Data, not NSSecureCoding
+    ISCSIError       one error domain; sense bytes and recovery text survive XPC
+    MountpointTag    sha256(portal|target|lun) — a compatibility contract
   MockTarget/        scriptable target: protocol engine, volatile write cache,
                      TCP listener (drives both the tests and the simulator)
   iscsi-target-sim/  standalone local target + loopback control socket
   iscsictl/          control CLI (discover, verify, read-bench, write-bench)
   iscsid/            daemon: owns sessions, vends block I/O over XPC
-  iSCSIFSExtension/  (apps/) FSKit module presenting the LUN as a file
+  iSCSIDaemon/       daemon core, target store, keychain, XPC authorization
   pdu-fuzz/          structure-aware fuzzer
+apps/
+  iSCSIApp/          the app: setup machine, menu bar, windows, attach path
+  iSCSIFSExtension/  FSKit module presenting the LUN as a file
+  iSCSIDext/         DriverKit virtual SCSI HBA (parked, ISCSI_BACKEND_B)
 Tests/
-  iSCSIKitTests/     96 unit tests
-  IntegrationTests/  65 tests: happy paths, hostile scripts, recovery, TCP
-                     loopback, crash consistency, stalled-target resilience
-packaging/           LaunchDaemon plist for iscsid
+  iSCSIKitTests/     132 tests
+  IntegrationTests/  94 tests: happy paths, hostile scripts, recovery, TCP
+                     loopback, crash consistency, stalled-target resilience,
+                     XPC authorization, handle scoping, target persistence
 scripts/
-  iscsi-attach.sh    attach a LUN end-to-end (FSKit mount hidden in Caches)
-  iscsi-detach.sh    tear it down innermost-first
+  release.sh         notarized DMG + Sparkle signature + appcast
+  iscsi-attach.sh    the bash-era attach path, superseded by the app
   bench.py           large-sequential throughput benchmark
   soak.py            small-file / read-modify-write soak
   crash-consistency.py  power-cut durability check
-  vm-resilience.sh   fault matrix: drop / stall / crash / pause / corrupt
-  vm-sim-bench.sh    loopback throughput with no transport ceiling
-  fuzz.sh            ASan fuzz driver
+  vm-*.sh            VM deployment, fault matrix, and reproducers
   fuzz-campaign.sh   N-seed fuzzing campaign
-docs/                architecture, entitlements, test playbook
+docs/                architecture, measurements, and the two Feedback drafts
 ```
 
 ## Try it
@@ -157,5 +199,7 @@ printf 'crash\n' | nc 127.0.0.1 3262     # target power loss, on demand
 ```
 
 See `docs/architecture.md` for the two-backend design and the DriverKit
-throughput caveat, `docs/resilience.md` for the fault matrix and what it
-found, and `docs/test-playbook.md` for the full test strategy.
+throughput caveat, `docs/backend-a-fskit-notes.md` for how the shipping backend
+actually behaves on both OS versions, `docs/daemon-registration.md` for what
+SMAppService really does, `docs/resilience.md` for the fault matrix, and
+`docs/test-playbook.md` for the full test strategy.

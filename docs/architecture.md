@@ -1,5 +1,23 @@
 # Architecture
 
+> **What ships today (2026-08-15): Backend A only.**
+>
+> The product is the app, the FSKit extension, and `iscsid` — a notarized DMG
+> that mounts a LUN as APFS with no Terminal. Verified end to end on a clean
+> SIP-on machine against real hardware; see `docs/acceptance-2026-08-14.md`.
+>
+> **Backend B is parked behind the `ISCSI_BACKEND_B` compile flag** and is in
+> nothing that ships. Everything below describing it is reconnaissance and
+> design, kept because it is expensive and correct — not a description of
+> current behaviour. The two blockers are Apple's: the APFS wedge (which
+> reproduces with iSCSI removed entirely) and the approval-gated DriverKit
+> entitlements.
+>
+> The attach path also moved since this was written. It is unprivileged and
+> lives in the *app*, not the daemon: `mount -F` resolves the module through the
+> user's `fskit_agent`, and a root daemon's lookup goes to `fskitd`, which holds
+> no third-party modules. See the R2 section of `backend-a-fskit-notes.md`.
+
 ## Why two processes
 
 DriverKit extensions (dexts) **cannot open TCP sockets** — no BSD sockets, no
@@ -522,7 +540,10 @@ before/after effective geometry and stays quiet when they match (verified:
 `changed=0`, no re-probe line). **This did not fix the hang** — the hang
 reproduces with no re-probe at all — but it removes a real confounder.
 
-## Next: make the LUN a fixed disk that exists only while the daemon is attached
+## Parked: make the LUN a fixed disk that exists only while the daemon is attached
+
+*This was "Next" when Backend B was the plan. It is now the first thing to do
+**if** Backend B is revived — which is blocked on the APFS wedge, not on this.*
 
 Gate controller matching on the daemon: keep the bootstrap nub always-matched
 with its own user client, have the daemon publish geometry to IT, and only
