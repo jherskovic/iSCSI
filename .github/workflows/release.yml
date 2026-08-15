@@ -1,0 +1,251 @@
+name: Release
+
+# Push a tag, get a notarized DMG on the Releases page and an appcast entry
+# pointing at it.
+#
+#     git tag v0.3.3 && git push origin v0.3.3
+#
+# Or run it by hand from the Actions tab. A manual run defaults to a dry run:
+# it builds, signs and notarizes, but publishes nothing and does not touch the
+# feed. Use that to prove the credentials work before trusting a tag with them,
+# because the expensive failure here is silent — an export that cannot resolve
+# the FSKit provisioning profile produces an app with no filesystem module.
+#
+# This job deliberately holds no logic of its own. scripts/release.sh carries
+# every assertion about what a shippable artifact looks like, and it is the same
+# script that runs on the author's Mac. A second, CI-only implementation would
+# drift from it, and the drift would be discovered by users.
+#
+# Required repository secrets — docs/releasing.md has the recipe for each:
+#   DEVELOPER_ID_CERT_P12       base64 of the .p12 (identity + private key)
+#   DEVELOPER_ID_CERT_PASSWORD  its export password
+#   ASC_KEY_P8                  base64 of the App Store Connect .p8
+#   ASC_KEY_ID                  the key's ID
+#   ASC_ISSUER_ID               the issuer UUID
+#   SPARKLE_ED_PRIVATE_KEY      Sparkle's EdDSA private key (generate_keys -x)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the release and update the appcast (otherwise dry run)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# Never two releases at once. They would race on the appcast commit, and the
+# loser would silently drop the winner's entry.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, notarize, publish
+    runs-on: macos-26
+    # Two notary round trips, each usually a few minutes and occasionally much
+    # longer when Apple is busy.
+    timeout-minutes: 90
+
+    steps:
+      # Full history: the appcast commit at the end pushes to main from what is
+      # otherwise a shallow, detached checkout of a tag, and a shallow push is
+      # a class of failure worth not having at the very last step of a release.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          # If a future image bumps Xcode to something whose SDK breaks the
+          # build, pin it here with DEVELOPER_DIR rather than discovering it in
+          # a release. The app job in ci.yml builds on this same image, so a
+          # break shows up there first.
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+
+      - name: Install build tools
+        run: brew install xcodegen create-dmg
+
+      # The tag is the claim; project.yml is the fact. If they disagree, the DMG
+      # filename, the appcast entry and the tag all describe different things,
+      # and the mismatch is only visible much later as an update that never
+      # arrives.
+      - name: The tag matches MARKETING_VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(awk '/MARKETING_VERSION:/ {gsub(/"/,"",$2); print $2; exit}' apps/project.yml)
+          if [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match MARKETING_VERSION $version in apps/project.yml"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} matches MARKETING_VERSION $version"
+
+      # A dedicated keychain, thrown away with the runner. Importing into the
+      # login keychain would work too, but this makes the blast radius obvious
+      # and lets the cleanup step be unconditional.
+      - name: Import the Developer ID certificate
+        env:
+          CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$CERT_P12" ] || { echo "::error::DEVELOPER_ID_CERT_P12 is not set"; exit 1; }
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # -lut without -l: no auto-lock timeout partway through a 40-minute
+          # notarization wait, which would fail the DMG signing at the end.
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productsign
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # Without this, codesign gets a UI prompt nobody can answer and the
+          # build hangs until the job times out.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          # Put it in the search list so `security find-identity` — which
+          # release.sh uses in preflight — and codesign can both see it.
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security default-keychain -s "$KEYCHAIN"
+
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Write the API and Sparkle keys
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$ASC_KEY_P8" ] || { echo "::error::ASC_KEY_P8 is not set"; exit 1; }
+          [ -n "$SPARKLE_ED_PRIVATE_KEY" ] || { echo "::error::SPARKLE_ED_PRIVATE_KEY is not set"; exit 1; }
+
+          umask 077
+          printf '%s' "$ASC_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc.p8"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_ed_key"
+
+          # A .p8 that did not survive base64 round-tripping fails much later,
+          # inside notarytool, as an authentication error that reads like a
+          # revoked key.
+          head -1 "$RUNNER_TEMP/asc.p8" | grep -q 'BEGIN PRIVATE KEY' \
+            || { echo "::error::ASC_KEY_P8 did not decode to a PEM private key"; exit 1; }
+
+      # The one step that does anything. Everything above is environment.
+      - name: Build, notarize, publish
+        env:
+          ASC_KEY_PATH: ${{ runner.temp }}/asc.p8
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          SPARKLE_ED_KEY_FILE: ${{ runner.temp }}/sparkle_ed_key
+          GH_TOKEN: ${{ github.token }}
+          # Through the environment rather than interpolated into the script, so
+          # nothing from the event can ever be read as shell.
+          EVENT_NAME: ${{ github.event_name }}
+          WANT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ] || [ "$WANT_PUBLISH" = "true" ]; then
+            scripts/release.sh --publish
+          else
+            echo "dry run: building and notarizing, publishing nothing"
+            scripts/release.sh
+          fi
+
+      # Separate from the build so a failure here is unambiguous: the release is
+      # already published and verified at this point, and only the feed is
+      # missing. Re-running just this part by hand is safe.
+      - name: Commit the appcast to main
+        if: github.event_name == 'push' || inputs.publish
+        run: |
+          set -euo pipefail
+          . build/release-metadata.env
+
+          # This runs from a detached checkout of the tag, with appcast.xml (and
+          # possibly Package.resolved) modified by the build. -f discards all of
+          # that: build/ is gitignored, so the metadata sourced above survives.
+          #
+          # The feed is re-applied to main rather than committed from the tag's
+          # tree, because SUFeedURL points at main and main may have moved since
+          # the tag was cut. Copying the tag's appcast over would silently revert
+          # anything that landed in between.
+          git fetch origin main
+          git checkout -f -B publish-appcast origin/main
+
+          scripts/update-appcast.py \
+            --version "$VERSION" --build "$BUILD_NUMBER" \
+            --signature "$ED_SIGNATURE" --length "$ED_LENGTH" \
+            --url "$ASSET_URL" --min-system "$MIN_SYSTEM"
+
+          if git diff --quiet -- appcast.xml; then
+            echo "appcast already carries this release; nothing to commit"
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add appcast.xml
+            git commit -m "Release $VERSION" -m "$ASSET_URL" \
+              -m "Published by .github/workflows/release.yml."
+            git push origin HEAD:main
+          fi
+          echo "APPCAST_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # The feed is the contract with every installed copy of the app: it
+      # promises that a specific number of bytes, with a specific signature,
+      # is at a specific URL. Check the promise against reality.
+      #
+      # Read at the commit SHA, not at .../main/appcast.xml. Both are served by
+      # the same CDN, but a branch path has a cached entry to invalidate and a
+      # commit path does not — so the branch URL can serve the previous release
+      # for minutes after the push, and a check against it fails a release that
+      # is in fact perfectly good. The branch URL catches up on its own; what
+      # actually needs verifying is that the content committed is correct.
+      - name: The feed promises a file that exists
+        if: github.event_name == 'push' || inputs.publish
+        run: |
+          set -euo pipefail
+          . build/release-metadata.env
+          raw="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${APPCAST_SHA}/appcast.xml"
+          echo "reading $raw"
+
+          url=""
+          for attempt in 1 2 3 4 5 6; do
+            url=$(curl -fsSL "$raw" | scripts/appcast-newest-url.py -) && break
+            echo "  not readable yet (attempt $attempt)"; sleep 10
+          done
+
+          if [ "$url" != "$ASSET_URL" ]; then
+            echo "::error::the feed's newest enclosure is '${url:-nothing}', expected $ASSET_URL"
+            exit 1
+          fi
+          served=$(curl -sIL "$url" | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {gsub(/\r/,""); v=$2} END{print v}')
+          if [ "$served" != "$ED_LENGTH" ]; then
+            echo "::error::$url serves ${served:-nothing} bytes, the feed claims $ED_LENGTH"
+            exit 1
+          fi
+          echo "ok: users will get $served bytes from $url"
+
+      - name: Keep the DMG even when something later failed
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg
+          path: build/*.dmg
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Shred the credentials
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/asc.p8" "$RUNNER_TEMP/sparkle_ed_key" "$RUNNER_TEMP/cert.p12"
+          security delete-keychain "${KEYCHAIN:-$RUNNER_TEMP/release.keychain-db}" 2>/dev/null || true

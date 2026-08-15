@@ -12,3 +12,6 @@ apps/*.xcodeproj/xcuserdata/
 build/
 *.dmg
 *.xcarchive
+
+# py_compile leaves these behind
+__pycache__/

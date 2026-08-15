@@ -74,6 +74,45 @@ def main() -> int:
         print("appcast has no <channel>", file=sys.stderr)
         return 1
 
+    # Sparkle orders and compares releases by sparkle:version — the build number
+    # — and ignores the marketing string entirely. Two mistakes follow from that,
+    # both of which produce a feed that looks fine and updates nobody:
+    #
+    #   * Shipping a new marketing version without bumping CURRENT_PROJECT_VERSION.
+    #     The replace below would then delete the previous release's <item> and
+    #     put the new one in its place, so the feed loses a release and every
+    #     installed copy at that build number sees nothing newer than itself.
+    #   * Going backwards. An item below the top of the feed is never offered.
+    #
+    # Neither is recoverable by looking at the output, so refuse both here.
+    try:
+        new_build = int(args.build)
+    except ValueError:
+        print(f"--build must be an integer, got {args.build!r}", file=sys.stderr)
+        return 1
+
+    builds = {}
+    for item in channel.findall("item"):
+        el = item.find(sparkle("version"))
+        short = item.find(sparkle("shortVersionString"))
+        if el is not None and el.text and el.text.strip().isdigit():
+            builds[int(el.text)] = (short.text if short is not None else "?")
+
+    if new_build in builds and builds[new_build] != args.version:
+        print(f"build {args.build} is already in the feed as version "
+              f"{builds[new_build]}, and this release calls itself {args.version}. "
+              f"Bump CURRENT_PROJECT_VERSION in apps/project.yml — Sparkle compares "
+              f"builds, not marketing versions, so reusing one would drop "
+              f"{builds[new_build]} from the feed and offer nothing to anyone "
+              f"already running it.", file=sys.stderr)
+        return 1
+
+    if builds and new_build < max(builds):
+        print(f"build {args.build} is lower than {max(builds)}, already in the feed. "
+              f"Sparkle only ever offers the highest build, so this entry would be "
+              f"published and never seen.", file=sys.stderr)
+        return 1
+
     # Replace rather than append: re-cutting a release that was never published
     # is normal, and two <item>s for one build would leave Sparkle picking
     # whichever it saw first.

@@ -125,13 +125,31 @@ The app builds against the macOS 26 SDK. Its one macOS 27 API,
 
 ## Releasing
 
+Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `apps/project.yml`,
+then push a tag:
+
 ```sh
-scripts/release.sh                  # notarized, stapled DMG + signed appcast entry
+git tag v0.3.3 && git push origin v0.3.3
+```
+
+`.github/workflows/release.yml` archives, exports a Developer ID build,
+notarizes and staples both the app and the DMG, signs it for Sparkle, creates
+the GitHub release, and only then commits the appcast entry — because a feed
+that names a file before the file exists is a failed download for every user who
+checks in between. It ends by fetching the published feed and confirming the URL
+it advertises really serves the bytes the signature covers.
+
+The workflow holds no build logic of its own; it runs `scripts/release.sh`, the
+same script that runs on a Mac:
+
+```sh
+scripts/release.sh --publish        # build, notarize, publish, write the feed
+scripts/release.sh                  # stop before publishing
 scripts/release.sh --skip-notarize  # for iterating on the script itself, nothing else
 ```
 
-The script archives, exports a Developer ID build, and then ensures that things
-that may fail silently are detected.
+`docs/releasing.md` covers the six repository secrets, how to produce each, and
+what to do when a release fails halfway.
 
 ## Testing
 

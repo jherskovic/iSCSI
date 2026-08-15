@@ -2,6 +2,7 @@
 # Build a notarized, stapled DMG of iSCSI Initiator.
 #
 #   scripts/release.sh                 full pipeline (needs notary credentials)
+#   scripts/release.sh --publish       …and create the GitHub release from it
 #   scripts/release.sh --skip-notarize signed DMG only — for iterating on THIS
 #                                      SCRIPT and nothing else.
 #
@@ -11,8 +12,21 @@
 # far more than the ten minutes the notary takes. Its output is named
 # ...-UNNOTARIZED.dmg so it cannot be mistaken for or overwrite a real release.
 #
-# Environment:
-#   NOTARY_PROFILE   notarytool keychain profile name (default: iSCSINotary)
+# Environment — interactive Mac (the default):
+#   NOTARY_PROFILE     notarytool keychain profile name (default: iSCSINotary)
+#                      and the Sparkle key is read from the login keychain.
+#
+# Environment — a CI runner, which has no keychain profile and nobody to unlock
+# anything. Setting ASC_KEY_PATH switches every credential over at once:
+#   ASC_KEY_PATH       App Store Connect API key (.p8). Used for notarytool AND
+#                      for xcodebuild's -allowProvisioningUpdates, which is what
+#                      mints the FSKit-entitled profiles on a machine that has
+#                      never been signed in to an Apple ID.
+#   ASC_KEY_ID         its key ID
+#   ASC_ISSUER_ID      its issuer UUID
+#   SPARKLE_ED_KEY_FILE  Sparkle's EdDSA private key, exported with
+#                        `generate_keys -x`. Without it, sign_update looks in
+#                        the keychain and finds nothing.
 #
 # Two-pass notarization is deliberate: we notarize and staple the .app first,
 # then build, notarize and staple the DMG. Stapling only the DMG would leave a
@@ -26,7 +40,19 @@ REPO=$PWD
 
 NOTARY_PROFILE="${NOTARY_PROFILE:-iSCSINotary}"
 SKIP_NOTARIZE=0
-[ "${1:-}" = "--skip-notarize" ] && SKIP_NOTARIZE=1
+PUBLISH=0
+for arg in "$@"; do
+    case "$arg" in
+        --skip-notarize) SKIP_NOTARIZE=1 ;;
+        --publish)       PUBLISH=1 ;;
+        *) printf 'unknown option: %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
+[ "$SKIP_NOTARIZE" -eq 1 ] && [ "$PUBLISH" -eq 1 ] && {
+    echo "--publish and --skip-notarize are mutually exclusive: publishing an" >&2
+    echo "unnotarized build would ship Gatekeeper failures to every downloader." >&2
+    exit 2
+}
 
 APP_NAME="iSCSI Initiator"
 SCHEME="iSCSI Initiator"
@@ -59,18 +85,54 @@ for t in xcodegen create-dmg; do
     command -v "$t" >/dev/null || die "$t not installed (brew install $t)"
 done
 
-if [ "$SKIP_NOTARIZE" -eq 0 ]; then
-    xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 || die \
-"no notarytool credentials under profile '$NOTARY_PROFILE'.
+if [ "$PUBLISH" -eq 1 ]; then
+    command -v gh >/dev/null || die "gh not installed (brew install gh), needed by --publish"
+    gh auth status >/dev/null 2>&1 || die "gh is not authenticated; run 'gh auth login'"
+    gh release view "v$VERSION" >/dev/null 2>&1 && die \
+"a release v$VERSION already exists. Bump MARKETING_VERSION in apps/project.yml,
+or delete the release first if you are re-cutting it deliberately. Overwriting a
+published asset would break Sparkle for anyone who has already downloaded it:
+the appcast signature covers the bytes, and the bytes would change."
+    echo "  publish                v$VERSION (does not exist yet)"
+fi
 
-Create them once with an App Store Connect API key (Developer role or above):
+# One App Store Connect key covers both credentials a runner is missing: the
+# notary submission, and xcodebuild's ability to mint provisioning profiles
+# without an Apple ID signed into Xcode. Automatic signing plus
+# -allowProvisioningUpdates is what puts com.apple.developer.fskit.fsmodule into
+# the app and the appex; without profile authentication on a fresh runner the
+# export fails at profile resolution and the DMG can never work.
+#
+# `${ARRAY[@]+"${ARRAY[@]}"}` rather than `"${ARRAY[@]}"`: macOS ships bash 3.2,
+# where expanding an empty array under `set -u` is an unbound-variable error.
+XCODE_AUTH=()
+NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
+if [ -n "${ASC_KEY_PATH:-}" ]; then
+    [ -f "$ASC_KEY_PATH" ] || die "ASC_KEY_PATH is set but $ASC_KEY_PATH does not exist"
+    [ -n "${ASC_KEY_ID:-}" ] && [ -n "${ASC_ISSUER_ID:-}" ] \
+        || die "ASC_KEY_PATH is set, so ASC_KEY_ID and ASC_ISSUER_ID must be too"
+    XCODE_AUTH=(-authenticationKeyPath "$ASC_KEY_PATH"
+                -authenticationKeyID "$ASC_KEY_ID"
+                -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+    NOTARY_AUTH=(--key "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
+    echo "  credentials            App Store Connect API key $ASC_KEY_ID"
+fi
+
+if [ "$SKIP_NOTARIZE" -eq 0 ]; then
+    xcrun notarytool history "${NOTARY_AUTH[@]}" >/dev/null 2>&1 || die \
+"no usable notary credentials.
+
+On a Mac, store them once with an App Store Connect API key (Developer role or
+above):
     xcrun notarytool store-credentials \"$NOTARY_PROFILE\" \\
         --key ~/.appstoreconnect/private_keys/AuthKey_XXXXXXXX.p8 \\
         --key-id XXXXXXXX --issuer <issuer-uuid>
 
+In CI, set ASC_KEY_PATH, ASC_KEY_ID and ASC_ISSUER_ID instead.
+
 Keep the .p8 outside this repo. Or re-run with --skip-notarize to build an
 unnotarized DMG for pipeline testing only."
-    echo "  notary profile         $NOTARY_PROFILE"
+    [ -n "${ASC_KEY_PATH:-}" ] || echo "  notary profile         $NOTARY_PROFILE"
 else
     printf '\033[33m  NOTARIZATION SKIPPED — output is for pipeline testing only\033[0m\n'
 fi
@@ -132,7 +194,8 @@ mkdir -p "$BUILD"
 xcodebuild -project apps/iSCSIInitiator.xcodeproj \
     -scheme "$SCHEME" -configuration Release \
     -archivePath "$ARCHIVE" -destination 'generic/platform=macOS' \
-    -allowProvisioningUpdates archive >"$BUILD/archive.log" 2>&1 \
+    -allowProvisioningUpdates ${XCODE_AUTH[@]+"${XCODE_AUTH[@]}"} \
+    archive >"$BUILD/archive.log" 2>&1 \
     || { tail -40 "$BUILD/archive.log"; die "archive failed (full log: $BUILD/archive.log)"; }
 
 # An archive containing more than one installed product gets no
@@ -152,7 +215,8 @@ fi
 say "exporting Developer ID build"
 xcodebuild -exportArchive -archivePath "$ARCHIVE" \
     -exportOptionsPlist packaging/ExportOptions-DeveloperID.plist \
-    -exportPath "$EXPORT" -allowProvisioningUpdates >"$BUILD/export.log" 2>&1 \
+    -exportPath "$EXPORT" -allowProvisioningUpdates \
+    ${XCODE_AUTH[@]+"${XCODE_AUTH[@]}"} >"$BUILD/export.log" 2>&1 \
     || { tail -40 "$BUILD/export.log"; die "export failed (full log: $BUILD/export.log)"; }
 
 APP="$EXPORT/$APP_NAME.app"
@@ -263,8 +327,9 @@ if [ "$SKIP_NOTARIZE" -eq 0 ]; then
     ZIP="$BUILD/$APP_NAME-app.zip"
     rm -f "$ZIP"
     ditto -c -k --keepParent "$APP" "$ZIP"
-    xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait \
-        || die "app notarization failed; inspect with: xcrun notarytool log <id> --keychain-profile $NOTARY_PROFILE"
+    xcrun notarytool submit "$ZIP" "${NOTARY_AUTH[@]}" --wait \
+        || die "app notarization failed; inspect the rejection with:
+    xcrun notarytool log <submission-id> <the same credentials>"
     xcrun stapler staple "$APP"
     rm -f "$ZIP"
 fi
@@ -279,30 +344,52 @@ cp -R "$APP" "$STAGE/"
 # later reporting "Record not found" — the file no longer hashed to anything
 # Apple had seen. Everything downstream had spent an hour treating it as
 # notarized, including an experiment whose entire point was that it was.
+#
+# The filename has no space in it, and that is not cosmetic. GitHub rewrites
+# spaces in release asset names to periods, so "iSCSI Initiator-0.3.2.dmg"
+# uploads and is then served as "iSCSI.Initiator-0.3.2.dmg" — while the appcast
+# points at the %20 spelling and gets a 404. Sparkle surfaces that as a failed
+# download with no indication of why, and it survives every check that looks at
+# the file rather than the URL. Not encoding GitHub's sanitisation rule here:
+# just never giving it anything to sanitise. The volume name below, and the app
+# inside, keep the space.
+DMG_BASE="iSCSI-Initiator-$VERSION"
 if [ "$SKIP_NOTARIZE" -eq 1 ]; then
-    DMG="$BUILD/$APP_NAME-$VERSION-UNNOTARIZED.dmg"
+    DMG="$BUILD/$DMG_BASE-UNNOTARIZED.dmg"
 else
-    DMG="$BUILD/$APP_NAME-$VERSION.dmg"
+    DMG="$BUILD/$DMG_BASE.dmg"
 fi
 rm -f "$DMG"
 
-create-dmg \
-    --volname "$APP_NAME" \
-    --window-size 660 400 \
-    --icon "$APP_NAME.app" 170 190 \
-    --app-drop-link 480 190 \
-    --hide-extension "$APP_NAME.app" \
-    --no-internet-enable \
-    "$DMG" "$STAGE" >"$BUILD/dmg.log" 2>&1 \
-    || { tail -20 "$BUILD/dmg.log"; die "create-dmg failed (log: $BUILD/dmg.log)"; }
+# create-dmg drives Finder over AppleScript to place the icons, which fails
+# intermittently on a machine nobody is sitting at — the runner's window server
+# is there, but slow to answer, and the failure is "Could not access the disk
+# image" rather than anything about windows. Retry before giving up.
+dmg_attempt=0
+until create-dmg \
+        --volname "$APP_NAME" \
+        --window-size 660 400 \
+        --icon "$APP_NAME.app" 170 190 \
+        --app-drop-link 480 190 \
+        --hide-extension "$APP_NAME.app" \
+        --no-internet-enable \
+        "$DMG" "$STAGE" >"$BUILD/dmg.log" 2>&1
+do
+    dmg_attempt=$((dmg_attempt + 1))
+    rm -f "$DMG"
+    [ "$dmg_attempt" -ge 3 ] && { tail -20 "$BUILD/dmg.log"; die "create-dmg failed 3 times (log: $BUILD/dmg.log)"; }
+    printf '\033[33m  create-dmg failed, retrying (%d/3)\033[0m\n' "$dmg_attempt"
+    sleep 5
+done
 
 codesign --sign "Developer ID Application: Jorge Herskovic ($TEAM_ID)" \
     --timestamp "$DMG"
 
 if [ "$SKIP_NOTARIZE" -eq 0 ]; then
     say "notarizing the DMG (pass 2 of 2)"
-    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait \
-        || die "DMG notarization failed; inspect with: xcrun notarytool log <id> --keychain-profile $NOTARY_PROFILE"
+    xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait \
+        || die "DMG notarization failed; inspect the rejection with:
+    xcrun notarytool log <submission-id> <the same credentials>"
     xcrun stapler staple "$DMG"
 fi
 
@@ -346,27 +433,99 @@ fi
 
 # ------------------------------------------------------- 9. sign for Sparkle
 if [ "$SKIP_NOTARIZE" -eq 0 ]; then
-    say "signing for Sparkle and updating the appcast"
+    say "signing for Sparkle"
 
-    SIGN_UPDATE=$(find ~/Library/Developer/Xcode/DerivedData \
-        -path "*/artifacts/sparkle/Sparkle/bin/sign_update" -type f 2>/dev/null | head -1)
+    SIGN_UPDATE="${SPARKLE_SIGN_UPDATE:-}"
+    if [ -z "$SIGN_UPDATE" ]; then
+        SIGN_UPDATE=$(find ~/Library/Developer/Xcode/DerivedData \
+            -path "*/artifacts/sparkle/Sparkle/bin/sign_update" -type f 2>/dev/null | head -1)
+    fi
     [ -n "$SIGN_UPDATE" ] || die "sign_update not found. It ships in Sparkle's package
-artifacts, which appear once the app has been built at least once."
+artifacts, which appear once the app has been built at least once. Override the
+search with SPARKLE_SIGN_UPDATE=/path/to/sign_update."
+
+    # With no key file, sign_update reads the private key from the login
+    # keychain — right on a Mac, impossible on a runner, where the key arrives
+    # as a file instead.
+    SIGN_KEY=()
+    if [ -n "${SPARKLE_ED_KEY_FILE:-}" ]; then
+        [ -f "$SPARKLE_ED_KEY_FILE" ] \
+            || die "SPARKLE_ED_KEY_FILE is set but $SPARKLE_ED_KEY_FILE does not exist"
+        SIGN_KEY=(--ed-key-file "$SPARKLE_ED_KEY_FILE")
+    fi
 
     # Signed AFTER notarization and stapling, never before. Stapling rewrites the
     # DMG, so a signature taken earlier describes a file that no longer exists —
     # and Sparkle would reject the very build we just shipped.
-    SIGNED=$("$SIGN_UPDATE" "$DMG")
+    SIGNED=$("$SIGN_UPDATE" ${SIGN_KEY[@]+"${SIGN_KEY[@]}"} "$DMG")
     # sign_update prints  sparkle:edSignature="..." length="..."  — note that
     # only the signature carries the namespace prefix. Matching both spellings
     # of length, because that asymmetry is not something to rely on.
     ED_SIG=$(sed -n 's/.*edSignature="\([^"]*\)".*/\1/p' <<<"$SIGNED")
     ED_LEN=$(sed -n 's/.*[ :]length="\([0-9]*\)".*/\1/p' <<<"$SIGNED")
     [ -n "$ED_SIG" ] && [ -n "$ED_LEN" ] || die "could not read a signature out of: $SIGNED"
+    echo "  ok  signed, $ED_LEN bytes"
 
     BUILD_NUMBER=$(plutil -extract CFBundleVersion raw "$APP/Contents/Info.plist")
-    ASSET_URL="https://github.com/$GH_REPO/releases/download/v$VERSION/$(basename "$DMG" | sed 's/ /%20/g')"
+    ASSET_URL="https://github.com/$GH_REPO/releases/download/v$VERSION/$(basename "$DMG")"
 
+    # ------------------------------------------------- 10. publish, then verify
+    #
+    # Publishing comes BEFORE the appcast is written, and the order is the whole
+    # point. The feed is a promise that a file exists at a URL; making the
+    # promise first is how this repo ended up advertising three downloads that
+    # GitHub had never heard of. Anything that goes wrong below leaves a
+    # published release and no feed entry, which is invisible to users — the
+    # reverse is a failed download for everyone.
+    if [ "$PUBLISH" -eq 1 ]; then
+        say "publishing v$VERSION"
+        NOTES=$(mktemp)
+        if [ -f "docs/release-notes/$VERSION.md" ]; then
+            cat "docs/release-notes/$VERSION.md" >"$NOTES"
+            gh release create "v$VERSION" --title "$VERSION" \
+                --notes-file "$NOTES" "$DMG" >/dev/null
+        else
+            # No hand-written notes: let GitHub assemble them from the commits.
+            gh release create "v$VERSION" --title "$VERSION" \
+                --generate-notes "$DMG" >/dev/null
+        fi
+        rm -f "$NOTES"
+        echo "  https://github.com/$GH_REPO/releases/tag/v$VERSION"
+
+        # The gate that would have caught the %20 bug. A signature is over bytes;
+        # an appcast entry is over a URL. Check that the URL actually serves
+        # those bytes before promising it does. GitHub's CDN can take a moment
+        # to make a fresh asset addressable, hence the retries.
+        say "verifying the URL the appcast is about to promise"
+        SERVED=""
+        for attempt in 1 2 3 4 5; do
+            SERVED=$(curl -sIL "$ASSET_URL" \
+                | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {gsub(/\r/,""); v=$2} END{print v}')
+            [ "$SERVED" = "$ED_LEN" ] && break
+            sleep 5
+        done
+        [ "$SERVED" = "$ED_LEN" ] || die "$ASSET_URL serves ${SERVED:-nothing} bytes, but the
+signature in the appcast covers $ED_LEN. Sparkle would download that file and
+reject it — or fail outright on a 404 — and would say nothing useful about why.
+The release is published; the feed has NOT been updated, so no user sees this."
+        echo "  ok  $ASSET_URL serves $SERVED bytes"
+    fi
+
+    # Everything needed to write the feed entry, as data. CI builds from a tag
+    # but the feed lives on main, so it cannot just commit the appcast.xml this
+    # script edited — it has to re-apply the same entry to main's copy. Writing
+    # the values down is also how a failed run can be finished by hand without
+    # rebuilding, since the signature is over bytes that already exist.
+    cat >"$BUILD/release-metadata.env" <<EOF
+VERSION='$VERSION'
+BUILD_NUMBER='$BUILD_NUMBER'
+ED_SIGNATURE='$ED_SIG'
+ED_LENGTH='$ED_LEN'
+ASSET_URL='$ASSET_URL'
+MIN_SYSTEM='$MIN_SYSTEM'
+EOF
+
+    say "updating the appcast"
     scripts/update-appcast.py \
         --version "$VERSION" --build "$BUILD_NUMBER" \
         --signature "$ED_SIG" --length "$ED_LEN" --url "$ASSET_URL" \
@@ -377,6 +536,14 @@ say "done"
 echo "  $DMG"
 ls -lh "$DMG" | awk '{print "  " $5}'
 echo
+if [ "$SKIP_NOTARIZE" -eq 0 ] && [ "$PUBLISH" -eq 0 ]; then
+    echo "The appcast now points at a URL that does not exist yet. Publish before"
+    echo "committing it, or re-run with --publish to do both in the right order:"
+    echo
+    echo "    gh release create v$VERSION --title $VERSION --generate-notes \"$DMG\""
+    echo "    git commit -m 'Release $VERSION' appcast.xml"
+    echo
+fi
 echo "Install it the way a user would — mount the DMG and DRAG the app to"
 echo "/Applications. Copying with cp -R does not reproduce the quarantine and"
 echo "translocation state that a real download produces."
