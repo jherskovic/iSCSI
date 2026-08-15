@@ -65,6 +65,16 @@ final class ModuleRegistration: SetupStep {
             attempted.append("lsregister not present at the expected path")
         }
 
+        // Remove any other bundle claiming to provide this module. More than
+        // one and `mount -F` cannot resolve the short name, which surfaces as
+        // "File system named iSCSI not found" — indistinguishable from not
+        // being installed, and reported as healthy by every presence check.
+        // They accumulate from old builds and from disk images left mounted.
+        let pruned = await Task.detached { FSKitRegistrationAudit.pruneDuplicates() }.value
+        if !pruned.isEmpty {
+            attempted.append("removed \(pruned.count) duplicate registration(s)")
+        }
+
         // Registration propagates asynchronously; checking immediately reports
         // the previous answer and makes the button look inert.
         try? await Task.sleep(for: .seconds(2))

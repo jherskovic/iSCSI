@@ -106,6 +106,9 @@ private struct TargetRow: View {
     /// its size if connected, and otherwise where it lives.
     private var subtitle: String {
         if let path = row.volumePath { return path }
+        if let device = row.attachment?.device {
+            return "connected as \(device) — not formatted yet"
+        }
         if let bytes = row.session?.byteCount {
             return "\(row.target.host) — "
                  + ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)

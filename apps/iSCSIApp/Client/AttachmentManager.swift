@@ -40,29 +40,39 @@ struct Attachment: Identifiable, Equatable, Sendable {
 }
 
 enum AttachmentError: LocalizedError {
-    case fskitMountFailed(String)
+    case fskitMountFailed(String, duplicates: [String])
     case noImageServed(String)
     case imageAttachFailed(String)
     case blankLUN(device: String)
 
     var errorDescription: String? {
         switch self {
-        case .fskitMountFailed(let detail):
-            return "Could not serve the LUN as a file: \(detail)"
+        case .fskitMountFailed(let detail, let duplicates):
+            if duplicates.isEmpty {
+                return "Could not serve the LUN as a file: \(detail)"
+            }
+            return "macOS has \(duplicates.count + 1) copies of this app's filesystem "
+                 + "extension registered, so it cannot tell which one to use. "
+                 + "Details: \(detail)"
         case .noImageServed(let path):
             return "The filesystem extension mounted but produced no LUN file at \(path)."
         case .imageAttachFailed(let detail):
             return "Could not attach the LUN as a disk: \(detail)"
         case .blankLUN(let device):
-            return "The LUN attached as \(device) but carries no filesystem macOS can mount."
+            return "The LUN attached as \(device) but has not been formatted yet."
         }
     }
 
     var recoverySuggestion: String? {
         switch self {
-        case .fskitMountFailed:
-            return "Check that the background service is running and the filesystem "
-                 + "extension is enabled, on the Setup screen."
+        case .fskitMountFailed(_, let duplicates):
+            if duplicates.isEmpty {
+                return "Check that the background service is running and the filesystem "
+                     + "extension is enabled, on the Setup screen."
+            }
+            return "Press Register on the Setup screen to remove the extra copies. "
+                 + "They usually come from an old build, or from leaving the disk "
+                 + "image mounted after installing."
         case .noImageServed:
             return "The connection to the target may have dropped. Try again."
         case .imageAttachFailed:
@@ -139,7 +149,13 @@ final class AttachmentManager: ObservableObject {
             let result = try Self.run("/sbin/mount",
                                       ["-F", "-t", "iSCSI", url, hidden.path])
             guard result.status == 0 else {
-                throw AttachmentError.fskitMountFailed(result.combined)
+                // "File system named iSCSI not found" reads as "not installed"
+                // and is just as often "installed more than once" — which every
+                // presence check reports as healthy. Only worth the 2.3s scan
+                // once something has already failed.
+                let duplicates = FSKitRegistrationAudit.duplicates()
+                throw AttachmentError.fskitMountFailed(result.combined,
+                                                       duplicates: duplicates)
             }
         }
 
@@ -158,24 +174,33 @@ final class AttachmentManager: ObservableObject {
             // -noverify: there is no checksum on a raw LUN, and verification
             // would read the whole device across the network before anything
             // could be mounted.
-            let result = try Self.run("/usr/bin/hdiutil",
-                                      ["attach", "-imagekey", "diskimage-class=CRawDiskImage",
-                                       "-noverify", "-plist", image.path])
-            guard result.status == 0 else {
-                throw AttachmentError.imageAttachFailed(result.combined)
+            let common = ["attach", "-imagekey", "diskimage-class=CRawDiskImage",
+                          "-noverify", "-plist", image.path]
+            var result = try Self.run("/usr/bin/hdiutil", common)
+
+            if result.status != 0 {
+                // A LUN with no filesystem on it makes hdiutil fail outright
+                // with "no mountable file systems". That is not a broken
+                // attach — it is a *new* LUN, which is the state every LUN
+                // starts in. Attach it again without mounting, so the device
+                // exists and Disk Utility has something to format.
+                let bare = try Self.run("/usr/bin/hdiutil", common + ["-nomount"])
+                guard bare.status == 0 else {
+                    throw AttachmentError.imageAttachFailed(result.combined)
+                }
+                result = bare
             }
             let (device, volumes) = Self.parseAttachPlist(result.stdout)
             attachment.device = device
             attachment.volumePaths = volumes
         }
 
-        // A blank LUN attaches fine and mounts nothing. That is a real state a
-        // user reaches by adding a brand-new LUN, and it needs to say so rather
-        // than look like a failure or, worse, like success.
-        if attachment.volumePaths.isEmpty, let device = attachment.device {
-            throw AttachmentError.blankLUN(device: device)
-        }
-
+        // Recorded before anything else can go wrong with it. An earlier
+        // version threw here when the LUN carried no filesystem — after the
+        // FSKit volume was mounted and the image attached — so both layers were
+        // left up and invisible to the app: not listed, not detachable, and the
+        // advice to "use Disk Utility" pointed at a device the same dialog had
+        // just called a failure.
         attachments.removeAll { $0.tag == tag }
         attachments.append(attachment)
         return attachment

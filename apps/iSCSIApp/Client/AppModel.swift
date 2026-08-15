@@ -144,8 +144,21 @@ final class AppModel: ObservableObject {
                 host: target.host, port: target.port, targetIQN: target.targetIQN,
                 lun: target.lun, chapUser: target.chapUser)
 
-            _ = try await attachments.attach(target)
+            let attachment = try await attachments.attach(target)
             sessions = try await DaemonConnection.sessions()
+
+            // Attached, but with nothing on it. A brand-new LUN always looks
+            // like this, so it is a normal outcome rather than a failure — and
+            // saying so beats an error dialog about a disk that is, in fact,
+            // right there and ready to format.
+            if !attachment.isFullyAttached, let device = attachment.device {
+                lastError = PresentableError(
+                    title: "“\(target.displayName)” is connected but not formatted",
+                    message: "The LUN is attached as \(device) and has no filesystem "
+                           + "on it yet, which is normal for a new LUN.",
+                    suggestion: "Open Disk Utility, select it, and erase it as APFS "
+                              + "or ExFAT. It will mount by itself afterwards.")
+            }
         } catch {
             present(error, doing: "Attaching “\(target.displayName)”")
         }

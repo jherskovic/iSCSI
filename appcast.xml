@@ -6,11 +6,11 @@
     <language>en</language>
     <item>
       <title>Version 0.3.1</title>
-      <pubDate>Sat, 15 Aug 2026 14:58:35 +0000</pubDate>
+      <pubDate>Sat, 15 Aug 2026 17:10:58 +0000</pubDate>
       <sparkle:version>8</sparkle:version>
       <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/jherskovic/iSCSI/releases/download/v0.3.1/iSCSI%20Initiator-0.3.1.dmg" length="6564661" type="application/octet-stream" sparkle:edSignature="zUnfBwBsgBRuUaI2KHDNZPpCDyj95Vap/NzgnkQpi8ZoDrGjouj3NcbMEuwvznfEjXWEum7Gjn0QfnX+vex7DA==" />
+      <enclosure url="https://github.com/jherskovic/iSCSI/releases/download/v0.3.1/iSCSI%20Initiator-0.3.1.dmg" length="6564676" type="application/octet-stream" sparkle:edSignature="YZKsCYmDwvnHjQa/hNVZWJkksRCQMR0MbJYJ4NPB0NNGXswkl6RUlYg9IxciPkFv6bv4XJwnUpP1avcSBAKvDA==" />
     </item>
     <item>
       <title>Version 0.3.0</title>

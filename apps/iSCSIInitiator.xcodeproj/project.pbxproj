@@ -23,6 +23,7 @@
 		4E0D9AEC2C32868C1A6D1BB6 /* iSCSIUserClient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E988EFDBF4855884F248B81E /* iSCSIUserClient.cpp */; };
 		55788E1D687E363D11E508DE /* TargetsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A78E2D4EB65C66F2C89DCBF1 /* TargetsView.swift */; };
 		63DF83BB8A3C38F8726719F4 /* DaemonController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D391D2F85F1E895FFA385D9 /* DaemonController.swift */; };
+		6F063F974119BF682CF7091B /* FSKitRegistrationAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D348D6F794376FF5B84124D /* FSKitRegistrationAudit.swift */; };
 		7DF0B704FFA3482AABAFE5F3 /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1930AC270A5C69BFDB1258AA /* iSCSIKit */; };
 		806A6B4A377EDE0322099A45 /* Uninstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05248BE0BC00DDCB8993C611 /* Uninstaller.swift */; };
 		834DE1E9C3D343D8B7027A79 /* iSCSIDaemonKit in Frameworks */ = {isa = PBXBuildFile; productRef = 31DCE2C37A7F2B58783C7457 /* iSCSIDaemonKit */; };
@@ -106,6 +107,7 @@
 		0710492659A0FA46BDD2108A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = iSCSIBootstrap.cpp; sourceTree = "<group>"; };
 		0CC1D231F0FFC5DB1C566C42 /* InstallLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallLocation.swift; sourceTree = "<group>"; };
+		0D348D6F794376FF5B84124D /* FSKitRegistrationAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FSKitRegistrationAudit.swift; sourceTree = "<group>"; };
 		0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = iSCSIFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		0FC18B26402E15EC48C74856 /* iSCSIApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iSCSIApp.swift; sourceTree = "<group>"; };
 		1E7A00F869F8056AEACDFFAA /* iSCSIDext.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = iSCSIDext.cpp; sourceTree = "<group>"; };
@@ -234,6 +236,7 @@
 			children = (
 				6D391D2F85F1E895FFA385D9 /* DaemonController.swift */,
 				205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */,
+				0D348D6F794376FF5B84124D /* FSKitRegistrationAudit.swift */,
 				2F548C397A6CAF9CAF9061B5 /* FSKitSettingsLink.swift */,
 				576E38B77C9C8D46244A84E2 /* FSKitSettingsLinkCheck.swift */,
 				AF1BC41F137227EA4CAFCF0D /* FSKitSteps.swift */,
@@ -534,6 +537,7 @@
 				83E3A3242A55B4C0F8AA573B /* ExtensionController.swift in Sources */,
 				B77CB9C6828A0BC03BDBDF53 /* FSKitEnablement.swift in Sources */,
 				ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */,
+				6F063F974119BF682CF7091B /* FSKitRegistrationAudit.swift in Sources */,
 				1673E5B748C232A8D518AA47 /* FSKitSettingsLink.swift in Sources */,
 				BF960E140AA6D05153B72C27 /* FSKitSettingsLinkCheck.swift in Sources */,
 				A62AA91BCC64D9EF76D8FB54 /* FSKitSteps.swift in Sources */,

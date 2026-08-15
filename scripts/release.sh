@@ -322,6 +322,14 @@ if [ "$SKIP_NOTARIZE" -eq 0 ]; then
     # step that lost the ticket.
     MNT=$(mktemp -d)
     hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MNT" >/dev/null
+    # LaunchServices registers the app inside a mounted image, and detaching
+    # does NOT unregister it. Left alone, every release run adds another bundle
+    # claiming FSShortName "iSCSI", until `mount -F` cannot resolve the name at
+    # all and reports it as "not found". Fourteen accumulated on the author's
+    # Mac before anyone noticed.
+    LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+    [ -x "$LSREG" ] && "$LSREG" -u "$MNT/$APP_NAME.app" >/dev/null 2>&1 || true
+
     if xcrun stapler validate "$MNT/$APP_NAME.app" >/dev/null 2>&1; then
         echo "  ok  the app inside the DMG is stapled too"
         hdiutil detach "$MNT" >/dev/null
