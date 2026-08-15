@@ -114,26 +114,39 @@ version, not the one in the update.** A fix to this path can never be exercised
 by shipping it; it takes the release *after*. So test it against a local feed.
 
 1. Install the build under test on the acceptance VM, notarized as always.
-2. Serve a doctored feed. Reuse a real, already-signed DMG — the enclosure has
-   to survive signature checking, and the version comparison is read from the
-   feed, so an existing DMG advertised under a higher build number gets Sparkle
-   all the way to "Install and Relaunch":
+2. Serve a doctored feed **on the VM itself, over loopback**. The app's
+   Info.plist declares no App Transport Security exceptions, so plaintext HTTP
+   to another machine on the LAN is refused inside the app with a network error
+   that says nothing about ATS. `localhost` is exempt from that; a second Mac is
+   not.
+
+   Reuse a real, already-signed DMG — the enclosure has to survive signature
+   checking, and the version comparison is read from the feed, so an existing
+   DMG advertised under a higher build number gets Sparkle all the way to
+   "Install and Relaunch":
 
    ```sh
-   mkdir -p /tmp/feed && cp "build/iSCSI-Initiator-0.3.2.dmg" /tmp/feed/
-   cp appcast.xml /tmp/feed/
-   # edit /tmp/feed/appcast.xml: bump sparkle:version well past the installed
-   # build, point the enclosure url at http://<this-mac>:8000/iSCSI-Initiator-0.3.2.dmg,
+   # on the VM, after scp'ing the DMG and appcast.xml over
+   mkdir -p ~/feed && cp iSCSI-Initiator-0.3.2.dmg appcast.xml ~/feed/
+   # edit ~/feed/appcast.xml: bump sparkle:version well past the installed
+   # build, point the enclosure url at
+   # http://localhost:8000/iSCSI-Initiator-0.3.2.dmg,
    # leave length and edSignature exactly as they are
-   (cd /tmp/feed && python3 -m http.server 8000)
+   (cd ~/feed && python3 -m http.server 8000)
    ```
 
-3. On the VM, redirect the feed without rebuilding — Sparkle reads this key from
-   user defaults ahead of the Info.plist:
+3. Redirect the feed without rebuilding — Sparkle reads this key from user
+   defaults ahead of the Info.plist:
 
    ```sh
-   defaults write me.herko.iSCSIInitiator SUFeedURL "http://<this-mac>:8000/appcast.xml"
+   defaults write me.herko.iSCSIInitiator SUFeedURL "http://localhost:8000/appcast.xml"
    ```
+
+   Confirm it took effect before concluding anything: Sparkle 2 deprecated
+   app-set feed URLs and has tightened where a feed may come from more than
+   once, and this has not been checked against 2.9.5. If Check for Updates goes
+   to GitHub anyway, edit `SUFeedURL` in `apps/iSCSIApp/Info.plist` and cut a
+   throwaway build instead — slower, but it cannot be ignored.
 
 4. Attach a LUN. Then Check for Updates → Install and Relaunch.
 

@@ -38,8 +38,8 @@ settings:
     # entitlement request to Apple — see docs/entitlements.md.
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.3.2"
-    CURRENT_PROJECT_VERSION: "9"
+    MARKETING_VERSION: "0.3.3"
+    CURRENT_PROJECT_VERSION: "10"
 
 targets:
   # ---- Container app ----
@@ -141,7 +141,7 @@ targets:
   # DriverKit isn't a first-class XcodeGen platform; express it as a macOS
   # target whose SDK/product-type are overridden to DriverKit.
   iSCSIDext:
-    type: driver-extension            # com.apple.product-type.driver-extension
+    type: driver-extension # com.apple.product-type.driver-extension
     platform: macOS
     sources:
       - iSCSIDext
