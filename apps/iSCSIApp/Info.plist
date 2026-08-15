@@ -20,7 +20,7 @@
          whoever cuts releases; scripts/release.sh refuses to build if the two
          do not exist. Replace with the output of Sparkle's generate_keys. -->
     <key>SUPublicEDKey</key>
-    <string>REPLACE_WITH_SPARKLE_PUBLIC_KEY</string>
+    <string>uXyWZVcSiXV7mioZMJ/GJWQb2iroZFO6XsI/DM4xeYY=</string>
     <!-- Checking in the background is fine. Installing without being asked is
          not: replacing the bundle swaps the FSKit extension out from under a
          mounted volume, which is data loss rather than an inconvenience. -->

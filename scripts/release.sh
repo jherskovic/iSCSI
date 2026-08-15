@@ -31,6 +31,8 @@ SKIP_NOTARIZE=0
 APP_NAME="iSCSI Initiator"
 SCHEME="iSCSI Initiator"
 TEAM_ID="4A27X5PJP3"
+GH_REPO="jherskovic/iSCSI"
+MIN_SYSTEM="26.0"
 PBXPROJ="apps/iSCSIInitiator.xcodeproj/project.pbxproj"
 
 BUILD="$REPO/build"
@@ -332,6 +334,32 @@ told it cannot be verified. Check how the DMG staging copy is made."
     rmdir "$MNT" 2>/dev/null || true
 else
     printf '\033[33m  skipped: an unnotarized DMG cannot pass spctl or stapler\033[0m\n'
+fi
+
+# ------------------------------------------------------- 9. sign for Sparkle
+if [ "$SKIP_NOTARIZE" -eq 0 ]; then
+    say "signing for Sparkle and updating the appcast"
+
+    SIGN_UPDATE=$(find ~/Library/Developer/Xcode/DerivedData \
+        -path "*/artifacts/sparkle/Sparkle/bin/sign_update" -type f 2>/dev/null | head -1)
+    [ -n "$SIGN_UPDATE" ] || die "sign_update not found. It ships in Sparkle's package
+artifacts, which appear once the app has been built at least once."
+
+    # Signed AFTER notarization and stapling, never before. Stapling rewrites the
+    # DMG, so a signature taken earlier describes a file that no longer exists —
+    # and Sparkle would reject the very build we just shipped.
+    SIGNED=$("$SIGN_UPDATE" "$DMG")
+    ED_SIG=$(sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' <<<"$SIGNED")
+    ED_LEN=$(sed -n 's/.*sparkle:length="\([^"]*\)".*/\1/p' <<<"$SIGNED")
+    [ -n "$ED_SIG" ] && [ -n "$ED_LEN" ] || die "could not read a signature out of: $SIGNED"
+
+    BUILD_NUMBER=$(plutil -extract CFBundleVersion raw "$APP/Contents/Info.plist")
+    ASSET_URL="https://github.com/$GH_REPO/releases/download/v$VERSION/$(basename "$DMG" | sed 's/ /%20/g')"
+
+    scripts/update-appcast.py \
+        --version "$VERSION" --build "$BUILD_NUMBER" \
+        --signature "$ED_SIG" --length "$ED_LEN" --url "$ASSET_URL" \
+        --min-system "$MIN_SYSTEM"
 fi
 
 say "done"
