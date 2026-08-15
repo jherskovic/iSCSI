@@ -89,9 +89,10 @@ final class FSKitProbe: ObservableObject {
     /// and up; older systems get the URL scheme, which is undocumented and may
     /// dead-end — so fall back to System Settings' root rather than nothing.
     func openSettings() {
-        if #available(macOS 27, *), FSClient.shared.openFileSystemExtensionsSettings() {
-            return
-        }
+        // Reached by selector so this builds against the macOS 26 SDK; see
+        // FSKitSettingsLink. Returns false on macOS 26, where the API does not
+        // exist, and the URL fallback below runs instead.
+        if FSKitSettingsLink.open() { return }
         let candidates = [
             "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
             "x-apple.systempreferences:com.apple.ExtensionsPreferences",

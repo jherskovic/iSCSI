@@ -114,7 +114,10 @@ struct MainWindow: View {
                 .navigationTitle("Setup")
             }
         }
-        .task { await model.refresh() }
+        .task {
+            FSKitSettingsLinkCheck.verify()
+            await model.refresh()
+        }
         // Everything shown here can change without the app being told: the user
         // can eject in Finder, deny the daemon in System Settings, or power off
         // the storage. Refreshing when the app comes forward is both cheaper and

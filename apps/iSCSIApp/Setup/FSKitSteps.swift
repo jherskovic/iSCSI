@@ -200,9 +200,10 @@ final class ModuleEnablement: SetupStep {
     }
 
     private func openSettings() {
-        if #available(macOS 27, *), FSClient.shared.openFileSystemExtensionsSettings() {
-            return
-        }
+        // Reached by selector so this builds against the macOS 26 SDK; see
+        // FSKitSettingsLink. Returns false on macOS 26, where the API does not
+        // exist, and the URL fallback below runs instead.
+        if FSKitSettingsLink.open() { return }
         // Only reached on 26.x, where this is known not to navigate — kept so
         // the button does *something* rather than appearing dead. R7.
         for raw in ["x-apple.systempreferences:com.apple.LoginItems-Settings.extension",

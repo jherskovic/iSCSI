@@ -99,23 +99,34 @@ jobs:
           }
           echo "Label and BundleProgram are correct"
 
-# Deliberately absent: building the app target.
-#
-# `FSClient.openFileSystemExtensionsSettings()` is a macOS 27 API. It is guarded
-# at runtime with #available — the shipping deployment target is 26.0 — but it
-# still has to exist in the SDK to compile, so the app needs Xcode 27, which the
-# hosted runners do not have. Adding an xcodebuild step that is allowed to fail
-# would be worse than leaving it out: a check nobody trusts is one nobody reads.
-#
-# Add it when a runner image ships Xcode 27:
-#
-#   - run: cd apps && xcodebuild -project iSCSIInitiator.xcodeproj \
-#            -scheme 'iSCSI Initiator' -configuration Release \
-#            -destination 'generic/platform=macOS' \
-#            CODE_SIGNING_ALLOWED=NO build
-#
-# Until then the app is built on a developer machine by scripts/release.sh,
-# which asserts considerably more than a bare build would: signatures and
-# hardened runtime on every Mach-O, the appex present, the version consistent
-# across bundles, no DEBUG authorization bypass, and a stapled ticket on the app
-# *inside* the DMG.
+  app:
+    name: App build
+    # Needs the macOS 26 SDK, not merely a macOS 26 runner: the deployment
+    # target is 26.0 and the extension uses FSGenericURLResource, which is a
+    # macOS 26 API. Verified locally against the 26.5 SDK. If this image label
+    # does not exist yet the job fails to start, which is visible — unlike
+    # building against an older SDK, which would fail confusingly deep in the
+    # extension.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # The app is built against the macOS 26 SDK on purpose. Its one macOS 27
+      # API — FSClient.openFileSystemExtensionsSettings() — is reached by
+      # selector in FSKitSettingsLink precisely so this job can exist. Before
+      # that, the entire GUI, setup machine and attach path were compiled by
+      # nothing but the author's machine.
+      #
+      # No signing: this is a compile check. scripts/release.sh is what asserts
+      # the things that matter about a shipping artifact.
+      - name: Build
+        run: |
+          cd apps
+          xcodegen generate
+          xcodebuild -project iSCSIInitiator.xcodeproj \
+            -scheme 'iSCSI Initiator' -configuration Release \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO build
