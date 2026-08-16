@@ -182,3 +182,33 @@ No amount of pipelining recovers it, because buffering writes to get depth is
 exactly the durability hole FUA exists to close. Writes get faster when FSKit
 provides a barrier, or when the target's cache is battery-backed and the user
 says so — not before.
+
+## The soak
+
+`scripts/readahead-soak.py`, 30 minutes against the 10GbE target, page cache
+bypassed with `F_NOCACHE` so every read reaches the extension:
+
+    sequential runs 9532, writes 4321, seeks 3389
+    blocks read 362981, written 45261
+    no mismatches
+
+Every read verified, not just the last one. The writes are each read straight
+back, which is the tightest window a stale slot has to survive in; the seeks
+land at random offsets, so slots fetched for the previous position must not
+satisfy them.
+
+This is what moves the invalidation and seek paths from argued-correct to
+measured-correct. The checksum tests before it only ever exercised a pure
+sequential read, which is the case readahead is built for and therefore the
+case least likely to expose it.
+
+Two ways this test lied before it worked, both worth remembering because both
+looked like passes:
+
+Its first run reported 104 GB read at 2438 MB/s with zero mismatches — twice
+what the link can carry. The page cache was answering every read and the
+extension was never consulted. That is the third time in this investigation a
+cache produced a confident wrong number; the others are recorded above.
+
+And it had never failed, which is not the same as being able to. A deliberately
+planted stale block is detected and named: "STALE, generation 3 instead of 5".
