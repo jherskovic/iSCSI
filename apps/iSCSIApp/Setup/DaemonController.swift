@@ -212,7 +212,13 @@ final class DaemonController: ObservableObject {
         state = .checking
         var lastError: NSError?
 
-        for attempt in 1 ... 5 {
+        // Eight attempts, not the five first shipped. Measured on a healthy
+        // machine, launchd took ~1.4s to let go of the old job and the third
+        // attempt was the one that worked — leaving only two spare. Since a
+        // register that was recorded-but-unapproved returns immediately via the
+        // status check below, extra attempts cost nothing except in the case
+        // where registration is permanently failing, which is already broken.
+        for attempt in 1 ... 8 {
             do {
                 Self.log.log("register() calling (attempt \(attempt, privacy: .public))")
                 try service.register()
@@ -240,8 +246,10 @@ final class DaemonController: ObservableObject {
                     return
                 }
 
-                if attempt < 5 {
-                    try? await Task.sleep(for: .milliseconds(400 * attempt))
+                if attempt < 8 {
+                    // Backoff capped so eight attempts stay inside ~6s rather
+                    // than growing to half a minute.
+                    try? await Task.sleep(for: .milliseconds(min(400 * attempt, 1000)))
                 }
             }
         }
