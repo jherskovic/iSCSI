@@ -88,6 +88,15 @@ It moves if either:
   UPS-protected — and accept the consequence. That is a UI and a stored setting,
   not a protocol change, and it is the only half available from here.
 
+**The second half is built** (post-0.3.8): `TargetRecord.flushIntervalSeconds`
+drops FUA in favour of a periodic SYNCHRONIZE CACHE (1–60 s), or none at all
+for a declared-non-volatile cache; both flush on detach, and the UI warns —
+honestly, about corruption rather than staleness — every time a target is
+moved off write-through. Tests cover the wire behaviour against MockTarget's
+volatile cache (`FlushPolicyTests`). What remains open here is measuring the
+recovered throughput against real hardware, and it inherits item 3's caveat:
+one target, currently a tired one.
+
 ## 6. `unregister()` finishing is not launchd finishing
 
 `SMAppService.unregister`'s completion means the daemon process is dead. It does

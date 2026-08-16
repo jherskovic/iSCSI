@@ -44,6 +44,15 @@ Real-world tests on the entire stack are, for me, at best 300 MB/sec, which is w
 10-year-old NAS can deliver. True optimization for other conditions will need more users,
 more time, and detailed reports.
 
+Writes default to Force Unit Access on every command, because FSKit delivers no
+barrier signal and an acknowledged write sitting in a volatile target cache is a
+lie APFS will act on. That costs real throughput (measured 4.5x on my hardware).
+Each target can instead be set to commit its cache on a timer (1–60 s) or never,
+for targets whose cache is genuinely non-volatile — battery-backed, on a UPS, or
+write-through on the target side. The app warns loudly when you pick this: the
+interval bounds how *stale* the disk can be after a target power cut, not whether
+the volume survives it intact.
+
 I have no way of testing against stacks other than TrueNAS on Intel hardware. The
 implementation _should_ respect the standard so it _should_ work. I'm currently
 using it to store VMs for some of my experiments, and it has worked for me so far.

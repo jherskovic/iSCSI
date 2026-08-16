@@ -136,6 +136,18 @@ struct TargetEditor: View {
     @State private var hasStoredSecret = false
     @State private var hasStoredMutualSecret = false
 
+    /// nil = FUA on every write, N > 0 = flush every N seconds, 0 = never.
+    /// Mirrors `TargetRecord.flushIntervalSeconds` exactly.
+    @State private var flushInterval: Int?
+    /// The selection waiting on the disclaimer. The picker itself is reverted
+    /// while the dialog is up, so cancelling costs nothing and confirming
+    /// re-applies this.
+    @State private var pendingFlushInterval: Int?
+    @State private var showingFlushDisclaimer = false
+    /// Set around programmatic picker changes (the revert and the confirm) so
+    /// `onChange` only prompts for changes the user made.
+    @State private var suppressFlushPrompt = false
+
     init(model: AppModel, target: TargetRecord?) {
         self.model = model
         self.existing = target
@@ -151,6 +163,7 @@ struct TargetEditor: View {
         _mutualChapUser = State(initialValue: target?.mutualChapUser ?? "")
         _chapSecret = State(initialValue: "")
         _mutualChapSecret = State(initialValue: "")
+        _flushInterval = State(initialValue: target?.flushIntervalSeconds)
     }
 
     var body: some View {
@@ -197,8 +210,46 @@ struct TargetEditor: View {
                         .foregroundStyle(mutualHalfConfigured ? AnyShapeStyle(.red)
                                                               : AnyShapeStyle(.secondary))
                 }
+
+                Section("Write safety") {
+                    Picker("Commit writes", selection: $flushInterval) {
+                        Text("On every write — safest").tag(Int?.none)
+                        ForEach([1, 5, 10, 30, 60], id: \.self) { seconds in
+                            Text("Every \(seconds) second\(seconds == 1 ? "" : "s")")
+                                .tag(Int?.some(seconds))
+                        }
+                        Text("Never — target cache is non-volatile").tag(Int?.some(0))
+                    }
+                    Text(flushInterval == nil
+                         ? "Each write is on stable media before it is acknowledged."
+                         : "⚠ If the target loses power, this volume can be corrupted. "
+                           + "Takes effect the next time this target is attached.")
+                        .font(.caption)
+                        .foregroundStyle(flushInterval == nil ? AnyShapeStyle(.secondary)
+                                                              : AnyShapeStyle(.red))
+                }
             }
             .formStyle(.grouped)
+            .onChange(of: flushInterval) { old, new in
+                if suppressFlushPrompt { suppressFlushPrompt = false; return }
+                // Tightening to FUA never needs a warning; every loosening
+                // does, even from one relaxed setting to another.
+                guard new != nil else { return }
+                pendingFlushInterval = new
+                suppressFlushPrompt = true
+                flushInterval = old
+                showingFlushDisclaimer = true
+            }
+            .alert("Give up per-write durability?", isPresented: $showingFlushDisclaimer) {
+                Button("Cancel", role: .cancel) { pendingFlushInterval = nil }
+                Button("Accept the Risk", role: .destructive) {
+                    suppressFlushPrompt = true
+                    flushInterval = pendingFlushInterval
+                    pendingFlushInterval = nil
+                }
+            } message: {
+                Text(flushDisclaimer)
+            }
 
             Divider()
             HStack {
@@ -218,6 +269,29 @@ struct TargetEditor: View {
                     (try? await DaemonConnection.hasMutualCHAPSecret(targetID: id)) ?? false
             }
         }
+    }
+
+    /// The words are chosen against the comfortable misreading. "You may lose
+    /// the last N seconds" is what people expect this to mean, and it is
+    /// wrong: without FUA the target commits cached writes in whatever order
+    /// it likes, so a power cut can corrupt the volume's structure — the
+    /// interval bounds how *stale* the disk can be, not how broken.
+    private var flushDisclaimer: String {
+        let cadence = switch pendingFlushInterval {
+        case .some(0):
+            "No flushes will be sent while attached — only when the volume is detached."
+        case .some(let seconds):
+            "Cached writes will be committed every \(seconds) second\(seconds == 1 ? "" : "s") "
+            + "and when the volume is detached."
+        default:
+            ""
+        }
+        return "Writes will be acknowledged while they are still in the target's "
+            + "volatile cache. " + cadence
+            + "\n\nIf the target loses power, uncommitted writes are lost out of "
+            + "order — which can corrupt the volume's structure, not just recent "
+            + "files. Choose this only if the target's cache is protected: "
+            + "battery-backed, on a UPS, or with its write cache disabled."
     }
 
     /// A secret was typed and is too short. Only checks what was typed: an
@@ -264,7 +338,8 @@ struct TargetEditor: View {
             lun: UInt64(lun) ?? 0,
             chapUser: chapUser.isEmpty ? nil : chapUser,
             mutualChapUser: mutualChapUser.isEmpty ? nil : mutualChapUser,
-            autoAttach: existing?.autoAttach ?? false)
+            autoAttach: existing?.autoAttach ?? false,
+            flushIntervalSeconds: flushInterval)
 
         LastPortal.remember(host: record.host, port: record.port)
         Task {
