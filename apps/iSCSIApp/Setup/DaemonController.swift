@@ -95,6 +95,23 @@ final class DaemonController: ObservableObject {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
     }
 
+    private var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+    }
+
+    /// How the running daemon identifies itself, for comparison against the app.
+    ///
+    /// Both halves, not just the marketing version. `DaemonInfo.build` exists
+    /// precisely "to tell two builds of the same marketing version apart" — its
+    /// own words — and the check ignored it, so shipping a changed `iscsid`
+    /// under an unchanged version number left the old daemon running and
+    /// nothing reported a problem. Apple's guidance is to re-register whenever
+    /// the executable changes, which is a statement about the binary, not about
+    /// what the release was called.
+    private func versionLabel(_ version: String, _ build: String) -> String {
+        "\(version) (\(build))"
+    }
+
     // MARK: - Checking
 
     func refresh() async {
@@ -132,9 +149,10 @@ final class DaemonController: ObservableObject {
             let info = try await DaemonConnection.info()
             detail = "daemonInfo: version=\(info.version) build=\(info.build) "
                    + "pid=\(info.pid) relaxedAuth=\(info.authorizationRelaxed)"
-            state = info.version == appVersion
+            state = (info.version == appVersion && info.build == appBuild)
                 ? .running(info)
-                : .versionMismatch(daemon: info.version, app: appVersion)
+                : .versionMismatch(daemon: versionLabel(info.version, info.build),
+                                   app: versionLabel(appVersion, appBuild))
         } catch {
             state = .registeredNotResponding
             detail = "daemonInfo failed: \(Self.describe(error))"
