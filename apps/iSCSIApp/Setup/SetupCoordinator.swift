@@ -45,6 +45,19 @@ final class SetupCoordinator: ObservableObject {
 
     @Published private(set) var reports: [Report] = []
     @Published private(set) var isChecking = false
+    /// The step whose action is running, so the screen can say so.
+    ///
+    /// Tracked here rather than read off the step's own `.checking` state
+    /// because `perform` does not republish until it returns: a step can set
+    /// itself to `.checking` and the screen will not know for as long as the
+    /// work takes. Registering the daemon can take seconds — it waits for
+    /// launchd to record the job and for the daemon to answer — and for all of
+    /// that the button sat there lit and unchanged, which reads as a button
+    /// that does nothing.
+    @Published private(set) var busyStepID: String?
+    /// What the button said when it was pressed. `actionLabel` goes nil while
+    /// a step is checking, so it cannot be used to label the work in progress.
+    @Published private(set) var busyLabel: String?
 
     /// Every prerequisite holds. The GUI gates its Connect affordances on this.
     var isReady: Bool {
@@ -77,6 +90,9 @@ final class SetupCoordinator: ObservableObject {
 
     func perform(_ id: String) async {
         guard let step = steps.first(where: { $0.id == id }) else { return }
+        busyStepID = id
+        busyLabel = step.actionLabel
+        defer { busyStepID = nil; busyLabel = nil }
         await step.perform()
         // Re-check everything, not just this step: satisfying one commonly
         // unblocks another, and the screen should show that immediately rather

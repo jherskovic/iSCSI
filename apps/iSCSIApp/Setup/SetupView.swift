@@ -90,7 +90,21 @@ struct SetupView: View {
             // Only the first unsatisfied step gets its button. Offering "Enable"
             // while the daemon it depends on is still missing produces a failure
             // that tells the user nothing about what to do next.
-            if report.isNext, let label = report.actionLabel {
+            if setup.busyStepID == report.id {
+                // Kept in the button's place, same shape, so the row does not
+                // reflow and the eye stays where it was. Disabled rather than
+                // hidden: a control that vanishes reads as a crash, and one
+                // that stays live invites a second press that would start the
+                // whole thing again.
+                Button {} label: {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(setup.busyLabel ?? "Working")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(true)
+            } else if report.isNext, let label = report.actionLabel {
                 Button(label) {
                     if report.consentPrompt != nil {
                         consentFor = report
