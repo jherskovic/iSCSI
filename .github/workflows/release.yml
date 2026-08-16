@@ -274,6 +274,42 @@ jobs:
             exit 1
           fi
 
+      # An App Store Connect API key cannot create a Developer ID provisioning
+      # profile — the portal refuses that type for API keys outright, with
+      # "Team ... does not have permission". So the profiles ship in the repo and
+      # the export resolves from them with profile creation forbidden.
+      #
+      # They are not secrets. A .provisionprofile is a CMS-signed plist of
+      # entitlements plus the *public* signing certificates, and these exact
+      # bytes already ship inside every DMG on the Releases page as
+      # Contents/embedded.provisionprofile. Verified byte-identical.
+      #
+      # They expire in 2044, so there is no scheduled rotation. The one thing
+      # that invalidates them is an entitlement change: Xcode re-mints on the
+      # next local build, and the new embedded.provisionprofile must be copied
+      # back over these.
+      - name: Install the Developer ID provisioning profiles
+        run: |
+          set -euo pipefail
+          dest="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          mkdir -p "$dest"
+          count=0
+          for f in packaging/profiles/*.provisionprofile; do
+            [ -e "$f" ] || continue
+            # Xcode resolves profiles by UUID, and expects the filename to match.
+            uuid=$(security cms -D -i "$f" | plutil -extract UUID raw -)
+            name=$(security cms -D -i "$f" | plutil -extract Name raw -)
+            cp "$f" "$dest/$uuid.provisionprofile"
+            echo "  $name"
+            count=$((count + 1))
+          done
+          if [ "$count" -lt 2 ]; then
+            echo "::error::expected the app and fsext profiles in packaging/profiles/, found $count."
+            echo "Without them the export cannot resolve com.apple.developer.fskit.fsmodule"
+            echo "and would produce an app whose filesystem module macOS refuses to load."
+            exit 1
+          fi
+
       - name: Write the API and Sparkle keys
         env:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}

@@ -95,11 +95,32 @@ base64 < AuthKey_XXXXXXXX.p8 | pbcopy   # paste as ASC_KEY_P8
 `ASC_KEY_ID` is the `XXXXXXXX` in the filename. `ASC_ISSUER_ID` is the UUID shown
 above the key list.
 
-This one key does two jobs. It authenticates the notary submissions, and it
-authenticates `xcodebuild -allowProvisioningUpdates`, which is what lets a
-runner that has never seen an Apple ID mint the profile carrying
-`com.apple.developer.fskit.fsmodule`. Without that entitlement the app builds,
-signs, notarizes and ships with a filesystem extension macOS will not load.
+This key authenticates the notary submissions. It does **not** get the app its
+provisioning profiles, though this document used to claim it did: an App Store
+Connect key cannot create a Developer ID profile, and asking it to is a hard
+failure —
+
+    error: exportArchive Team "..." does not have permission to create
+           "Developer ID" provisioning profiles.
+
+The profiles are committed in `packaging/profiles/` instead, and the workflow
+installs them before building. They are not secret: a `.provisionprofile` holds
+entitlements and *public* certificates, and the same bytes already ship inside
+every DMG on the Releases page. They expire in 2044, so nothing needs rotating
+on a schedule.
+
+What does invalidate them is changing entitlements. Xcode re-mints on the next
+local build; copy the fresh ones back out of the built app and commit them:
+
+```sh
+cp "build/export/iSCSI Initiator.app/Contents/embedded.provisionprofile" \
+   packaging/profiles/me.herko.iSCSIInitiator.provisionprofile
+cp "build/export/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex/Contents/embedded.provisionprofile" \
+   packaging/profiles/me.herko.iSCSIInitiator.fsext.provisionprofile
+```
+
+Get this wrong and the app builds, signs, notarizes and ships with a filesystem
+extension macOS will not load.
 
 If this leaks: revoke the key in App Store Connect and generate another.
 

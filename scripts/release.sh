@@ -18,10 +18,11 @@
 #
 # Environment — a CI runner, which has no keychain profile and nobody to unlock
 # anything. Setting ASC_KEY_PATH switches every credential over at once:
-#   ASC_KEY_PATH       App Store Connect API key (.p8). Used for notarytool AND
-#                      for xcodebuild's -allowProvisioningUpdates, which is what
-#                      mints the FSKit-entitled profiles on a machine that has
-#                      never been signed in to an Apple ID.
+#   ASC_KEY_PATH       App Store Connect API key (.p8), for notarytool. Setting
+#                      it also switches the export to resolve provisioning
+#                      profiles from disk rather than the portal — see the long
+#                      note at the credential switch below. The FSKit-entitled
+#                      profiles come from packaging/profiles/, not from Apple.
 #   ASC_KEY_ID         its key ID
 #   ASC_ISSUER_ID      its issuer UUID
 #   SPARKLE_ED_KEY_FILE  Sparkle's EdDSA private key, exported with
@@ -96,12 +97,27 @@ the appcast signature covers the bytes, and the bytes would change."
     echo "  publish                v$VERSION (does not exist yet)"
 fi
 
-# One App Store Connect key covers both credentials a runner is missing: the
-# notary submission, and xcodebuild's ability to mint provisioning profiles
-# without an Apple ID signed into Xcode. Automatic signing plus
-# -allowProvisioningUpdates is what puts com.apple.developer.fskit.fsmodule into
-# the app and the appex; without profile authentication on a fresh runner the
-# export fails at profile resolution and the DMG can never work.
+# An App Store Connect API key authenticates the notary submission and lets
+# xcodebuild talk to the portal without an Apple ID signed into Xcode.
+#
+# What it cannot do is create a Developer ID provisioning profile. Measured on a
+# runner, 2026-08-16:
+#
+#     error: exportArchive Team "Jorge Herskovic" does not have permission to
+#            create "Developer ID" provisioning profiles.
+#     error: exportArchive No profiles for 'me.herko.iSCSIInitiator.fsext' were found
+#
+# Nothing about the key is wrong; the portal will not mint that profile type for
+# an API key at all. So on CI the export is run with profile creation FORBIDDEN
+# and resolves from the profiles in packaging/profiles/ instead, which the
+# workflow installs before this runs. Verified locally: the same export with
+# -allowProvisioningUpdates removed succeeds against on-disk profiles alone.
+#
+# Manual signing is not the alternative — the profiles are Xcode-managed, and
+# `signingStyle: manual` refuses those outright:
+#
+#     error: ... is Xcode managed, but signing settings require a manually
+#            managed profile.
 #
 # `${ARRAY[@]+"${ARRAY[@]}"}` rather than `"${ARRAY[@]}"`: macOS ships bash 3.2,
 # where expanding an empty array under `set -u` is an unbound-variable error.
@@ -116,6 +132,17 @@ if [ -n "${ASC_KEY_PATH:-}" ]; then
                 -authenticationKeyIssuerID "$ASC_ISSUER_ID")
     NOTARY_AUTH=(--key "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
     echo "  credentials            App Store Connect API key $ASC_KEY_ID"
+fi
+
+# On a Mac, let the export refresh profiles as needed — that is what regenerates
+# them when entitlements change. On CI, pass nothing: both the flag and the auth
+# keys exist only to power a mint attempt that is guaranteed to fail, and their
+# absence is what makes Xcode use what is already on disk.
+if [ -n "${ASC_KEY_PATH:-}" ]; then
+    EXPORT_AUTH=()
+    echo "  export signing         from installed profiles (no portal calls)"
+else
+    EXPORT_AUTH=(-allowProvisioningUpdates ${XCODE_AUTH[@]+"${XCODE_AUTH[@]}"})
 fi
 
 if [ "$SKIP_NOTARIZE" -eq 0 ]; then
@@ -215,8 +242,8 @@ fi
 say "exporting Developer ID build"
 xcodebuild -exportArchive -archivePath "$ARCHIVE" \
     -exportOptionsPlist packaging/ExportOptions-DeveloperID.plist \
-    -exportPath "$EXPORT" -allowProvisioningUpdates \
-    ${XCODE_AUTH[@]+"${XCODE_AUTH[@]}"} >"$BUILD/export.log" 2>&1 \
+    -exportPath "$EXPORT" \
+    ${EXPORT_AUTH[@]+"${EXPORT_AUTH[@]}"} >"$BUILD/export.log" 2>&1 \
     || { tail -40 "$BUILD/export.log"; die "export failed (full log: $BUILD/export.log)"; }
 
 APP="$EXPORT/$APP_NAME.app"

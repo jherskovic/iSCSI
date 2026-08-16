@@ -3,11 +3,21 @@
 <!--
   Export options for the notarized Developer ID build.
 
-  signingStyle=automatic lets Xcode mint and refresh the Developer ID profiles for
-  both bundle ids (the app and the FSKit extension), which is why release.sh passes
-  -allowProvisioningUpdates. If Apple ever stops minting one of them automatically,
-  switch to manual and add a provisioningProfiles dict mapping each bundle id to a
-  profile name — everything else here stays the same.
+  signingStyle=automatic, and it must stay automatic.
+
+  On a Mac, release.sh passes -allowProvisioningUpdates so Xcode can mint and
+  refresh the Developer ID profiles for both bundle ids. On CI it passes neither
+  that flag nor the API key: an App Store Connect key cannot create a Developer
+  ID profile at all, and the attempt is a hard failure. Automatic signing with
+  creation forbidden resolves from the profiles in packaging/profiles/, which is
+  measured to work.
+
+  Switching to manual is NOT the fallback, though an earlier version of this
+  comment said so. Both profiles are Xcode-managed, and manual signing rejects
+  those outright:
+
+      error: ... is Xcode managed, but signing settings require a manually
+             managed profile.
 -->
 <plist version="1.0">
 <dict>
