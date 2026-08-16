@@ -246,3 +246,35 @@ a command the cliff applies to.
 Reading a number beats deriving one. This whole section exists because the
 extension was not asked what it was doing until after every conclusion had been
 drawn.
+
+## Correction to the correction: the request size is the caller's
+
+"FSKit asks for 1 MiB" was measured while a Python loop read in 1 MiB pieces.
+The soak, whose reads are 256 KiB, produced `avgReq=260735B` on the same
+extension; a second volume in the same window averaged 978 KB. FSKit passes the
+caller's request size down rather than imposing one of its own.
+
+So both the original 256 KiB claim and its 1 MiB correction were the same
+mistake made twice: reading one workload's number as a property of the layer.
+There is no fixed request size to design against, which is exactly why the
+readahead window is budgeted in bytes. A window counted in requests would be
+right for whichever workload it was tuned on and wrong for the next.
+
+## What the soak measured, and what it did not
+
+30 minutes against build 16, page cache bypassed, every read verified:
+
+    sequential runs 2632, writes 1205, seeks 999
+    blocks read 99694, written 18600
+    no mismatches
+
+with the extension reporting `readahead=92% (88242 hit, 6658 miss, 0
+unanswered)` over 24.7 GB. The invalidation-on-write and seek paths are
+measured under real load, not argued.
+
+It did **not** exercise concurrent chunk splitting. The soak reads in 256 KiB
+blocks and `maxTransferBytes` is 256 KiB, so every request is exactly one SCSI
+command and `read()` never takes its multi-chunk path. That path remains
+verified only against MockTarget, where completions may well arrive in order —
+which is precisely the condition the reassembly-by-index logic exists to
+survive. Re-running the soak with a 1 MiB block size would cover it.

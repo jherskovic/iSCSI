@@ -598,11 +598,17 @@ final class DaemonStore: LUNStore {
         lock.lock(); defer { lock.unlock() }
         let claimed = prefetchHits + prefetchMisses
         let rate = claimed > 0 ? (prefetchHits * 100 / claimed) : 0
-        let depth = Self.readaheadDepth(forRequestOf: lastRequestBytes)
+        // Averaged, not the last one. `lastRequestBytes` was reported first and
+        // was actively misleading: a volume whose reads averaged 978 KB showed
+        // `req=4096B depth=32` because one small trailing request happened to be
+        // last, and the depth printed alongside it was therefore the depth for a
+        // request size the stream never used. The average describes the run.
+        let avgRequest = readCount > 0 ? Int(readBytes / UInt64(readCount)) : 0
+        let depth = Self.readaheadDepth(forRequestOf: avgRequest)
         return "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B "
-             + "flushes=\(flushCount) req=\(lastRequestBytes)B depth=\(depth) "
-             + "readahead=\(rate)% (\(prefetchHits) hit, \(prefetchMisses) miss, "
-             + "\(prefetchUnanswered) unanswered)"
+             + "flushes=\(flushCount) avgReq=\(avgRequest)B lastReq=\(lastRequestBytes)B "
+             + "depth=\(depth) readahead=\(rate)% (\(prefetchHits) hit, "
+             + "\(prefetchMisses) miss, \(prefetchUnanswered) unanswered)"
     }
 
     /// Connects to iscsid, logs in to `target`/`lun` at `host:port`, and learns
