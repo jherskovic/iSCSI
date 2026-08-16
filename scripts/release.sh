@@ -574,10 +574,21 @@ fi
 # to collide with the copy in /Applications.
 LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [ -x "$LSREG" ]; then
+    # Ask LaunchServices what it has registered, rather than asking the
+    # filesystem what exists. They disagree: this script deletes the archive at
+    # the start of every run, so by the next one the record points at a path
+    # that is gone — and a `find` cannot see a directory that is not there
+    # while `mount -F` still trips over its registration. Unregistering a
+    # missing path works fine and is what clears it.
+    pruned=0
     while IFS= read -r stale; do
+        [ -n "$stale" ] || continue
         "$LSREG" -u "$stale" >/dev/null 2>&1 || true
-    done < <(find ~/Library/Developer/Xcode/DerivedData \
-                  -maxdepth 6 -name "$APP_NAME.app" -type d 2>/dev/null)
+        pruned=$((pruned + 1))
+    done < <("$LSREG" -dump 2>/dev/null \
+             | grep -o "/[^\"]*DerivedData/[^\"]*\.app\(/Contents/Extensions/\)" \
+             | sed 's|/Contents/Extensions/$||' | sort -u)
+    [ "$pruned" -gt 0 ] && echo "  unregistered $pruned build product(s)"
     "$LSREG" -u "$APP" >/dev/null 2>&1 || true
 fi
 
