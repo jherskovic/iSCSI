@@ -84,3 +84,27 @@ a user.
 header of `iSCSIFSExtension.swift`), so a write that returns has not necessarily
 reached the target, and with 128 GB of RAM a 24 GiB file is still comfortably a
 cache measurement.
+
+## Measured: the shipping path is serial
+
+Reading the extension-served `lun0.img` directly — no APFS, no DiskImages, and
+from a freshly mounted volume so the page cache is empty:
+
+    FSKit path: 1074 MB in 5.21s = 206 MB/s
+
+with the interface counters agreeing (196–253 MB/s inbound throughout). So the
+answer to the open question above is that FSKit does **not** issue concurrent
+reads. The whole product runs at queue depth 1.
+
+206 MB/s is worse than the 385 MB/s that `iscsictl` gets at queue depth 1,
+because the extension adds an XPC round trip per read on top of the SCSI one.
+Against the 1160 MB/s the link demonstrably supports, that is a 5.6x gap, and
+none of it needs a second connection to close.
+
+The extension does not cause the serialisation: `DaemonStore.read` takes no
+lock, and its `ioLock` is held only by `write`, for read-modify-write. Requests
+arrive one at a time from above.
+
+Which makes readahead the fix. FSKit hands down one sequential read at a time
+and waits for each, so the only way to get commands in flight is for the
+extension to ask for data before it is asked for it.
