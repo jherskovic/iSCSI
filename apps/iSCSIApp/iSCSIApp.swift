@@ -25,6 +25,13 @@ struct ISCSIInitiatorApp: App {
                 Button("Refresh") { Task { await model.refresh() } }
                     .keyboardShortcut("r")
             }
+            // Directly under "About iSCSI Initiator", which is where every Mac
+            // app puts this and therefore the first place anyone looks. It used
+            // to exist only in the menu bar popover, so a user with the window
+            // open had to go hunting in the status bar for it.
+            CommandGroup(after: .appInfo) {
+                AppMenuUpdatesItem(updates: model.updates)
+            }
         }
 
         MenuBarExtra {

@@ -151,13 +151,32 @@ private extension UpdateController {
 
 // MARK: - Menu item
 
+/// The menu bar popover's row.
+///
+/// Styled as a row rather than as a `Button`, because the popover is a menu and
+/// everything else in it is a row. A bordered button in the middle of a list of
+/// plain labels reads as a different kind of thing, and it was also sitting
+/// between "Detach All" and the window item, which put a rarely-used command
+/// above two frequently-used ones.
+///
+/// A separate view rather than an inlined `menuButton` call so that
+/// `@ObservedObject` sits on something that actually redraws: `canCheckForUpdates`
+/// and `pendingUpdateVersion` live on `UpdateController`, and observing
+/// `AppModel` does not propagate its changes.
 struct CheckForUpdatesButton: View {
     @ObservedObject var updates: UpdateController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Button("Check for Updates…") { updates.checkForUpdates() }
-                .disabled(!updates.canCheckForUpdates)
+            Button { updates.checkForUpdates() } label: {
+                Label("Check for Updates…", systemImage: "arrow.down.circle")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+            .disabled(!updates.canCheckForUpdates)
+
             if let version = updates.pendingUpdateVersion {
                 // The standing reminder, for after the dialog has been
                 // dismissed. It names the relaunch because that is the part
@@ -167,7 +186,22 @@ struct CheckForUpdatesButton: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
             }
         }
+    }
+}
+
+/// The same command in the application menu, under "About iSCSI Initiator".
+///
+/// Plain `Button`, unlike the popover's row: this one *is* a menu item, and
+/// AppKit draws it. Styling it would make it the odd one out here for exactly
+/// the reason the popover version needed restyling.
+struct AppMenuUpdatesItem: View {
+    @ObservedObject var updates: UpdateController
+
+    var body: some View {
+        Button("Check for Updates…") { updates.checkForUpdates() }
+            .disabled(!updates.canCheckForUpdates)
     }
 }

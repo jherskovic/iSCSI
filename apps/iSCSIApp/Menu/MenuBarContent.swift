@@ -40,13 +40,14 @@ struct MenuBarContent: View {
                     }
                 }
             }
-            CheckForUpdatesButton(updates: model.updates)
-                .padding(.horizontal, 12).padding(.vertical, 3)
-
             menuButton("iSCSI Initiator…", systemImage: "macwindow") {
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
             }
+            // Second from last, above Quit. It used to sit between "Detach All"
+            // and the window item, which put the least-used command in the
+            // popover ahead of the two most-used ones.
+            CheckForUpdatesButton(updates: model.updates)
             menuButton("Quit", systemImage: "power") { NSApp.terminate(nil) }
         }
         .padding(.vertical, 6)

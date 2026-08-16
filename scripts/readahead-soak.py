@@ -32,9 +32,16 @@ import random
 import sys
 import time
 
-BLOCK = 256 * 1024          # what FSKit was measured to request
+# FSKit passes the caller's request size straight down, so this is also the
+# size of each FSKit request — which decides the readahead depth (the window is
+# budgeted in bytes) and, when it exceeds maxTransferBytes, whether a request is
+# split into several concurrent SCSI commands. 256 KiB is one command each;
+# 1 MiB is four, which is the only way to exercise reassembly-by-index against a
+# real target that completes out of order.
+BLOCK = 256 * 1024
 REGION_OFFSET = 12 << 30    # clear of the checksummed region used elsewhere
-REGION_BLOCKS = 8192        # 2 GiB
+REGION_BYTES = 2 << 30      # 2 GiB
+REGION_BLOCKS = REGION_BYTES // BLOCK
 
 
 def content(block: int, generation: int) -> bytes:
@@ -48,7 +55,13 @@ def main() -> int:
     p.add_argument("image")
     p.add_argument("--seconds", type=int, default=600)
     p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--block-kib", type=int, default=256,
+                   help="request size; >256 forces multi-command splitting")
     args = p.parse_args()
+
+    global BLOCK, REGION_BLOCKS
+    BLOCK = args.block_kib * 1024
+    REGION_BLOCKS = REGION_BYTES // BLOCK
 
     rnd = random.Random(args.seed)
     generation = [0] * REGION_BLOCKS
@@ -121,8 +134,10 @@ def main() -> int:
         if time.monotonic() - last_report >= 30:
             elapsed = args.seconds - (deadline - time.monotonic())
             mb = stats["blocks_read"] * BLOCK / 1e6
+            # flush: Python block-buffers stdout when it is not a terminal, so a
+            # background run shows nothing at all until it exits.
             print(f"    {elapsed:5.0f}s  {stats['seq']} runs, {stats['write']} writes, "
-                  f"{stats['rand']} seeks, {mb:.0f} MB read, 0 failures")
+                  f"{stats['rand']} seeks, {mb:.0f} MB read, 0 failures", flush=True)
             last_report = time.monotonic()
 
     os.close(fd)

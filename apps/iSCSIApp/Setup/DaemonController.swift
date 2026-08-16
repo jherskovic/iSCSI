@@ -166,7 +166,7 @@ final class DaemonController: ObservableObject {
                 // So ask the system what actually happened, and fall back to
                 // interpreting the error only when nothing registered at all.
                 let thrown = Self.describe(error)
-                await refresh()
+                await settle()
                 if case .notRegistered = state {
                     state = Self.mapRegisterError(error)
                 }
@@ -174,7 +174,36 @@ final class DaemonController: ObservableObject {
                 return
             }
         }
-        await refresh()
+        await settle()
+    }
+
+    /// Refresh until the answer stops changing, or a deadline passes.
+    ///
+    /// `SMAppService.register()` returns before launchd has finished recording
+    /// the job, and the daemon it starts needs a moment more before it answers
+    /// XPC. Asking once, immediately, catches that gap and reports
+    /// `notRegistered` — so the button relabelled itself from "Reinstall" to
+    /// "Install" and the user had to press it a second time to see the state
+    /// that was already on its way. Every update did this.
+    ///
+    /// `notRegistered` and `registeredNotResponding` are the two answers that
+    /// mean "not yet" as often as they mean "no", so those are the ones worth
+    /// waiting on. Everything else is a real answer, including
+    /// `requiresApproval`: the user has somewhere to go and should be told
+    /// immediately rather than after five seconds of nothing.
+    private func settle(within deadline: Duration = .seconds(6)) async {
+        let clock = ContinuousClock()
+        let started = clock.now
+        while true {
+            await refresh()
+            switch state {
+            case .notRegistered, .registeredNotResponding:
+                guard clock.now - started < deadline else { return }
+                try? await Task.sleep(for: .milliseconds(250))
+            default:
+                return
+            }
+        }
     }
 
     /// Apple's header: "If an app updates either the plist or the executable
