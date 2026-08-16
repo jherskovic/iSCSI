@@ -162,6 +162,8 @@ jobs:
         env:
           CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          # Same team release.sh asserts on every Mach-O it signs.
+          TEAM_ID: "4A27X5PJP3"
         run: |
           set -euo pipefail
           [ -n "$CERT_P12" ] || { echo "::error::DEVELOPER_ID_CERT_P12 is not set"; exit 1; }
@@ -175,9 +177,77 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
-          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productsign
+          # Not folded into the redirect below: under `set -e` a failing decode
+          # aborts the step with no output at all, which is the least helpful
+          # possible response to a malformed secret.
+          if ! printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12" 2>/dev/null; then
+            echo "::error::DEVELOPER_ID_CERT_P12 is not valid base64."
+            echo "Re-set it with:  base64 < DeveloperID.p12 | gh secret set DEVELOPER_ID_CERT_P12"
+            exit 1
+          fi
+
+          # `security import` answers all three of its failure modes with the
+          # same sentence — "MAC verification failed during PKCS12 import (wrong
+          # password?)". Measured: a wrong password, a password carrying a
+          # trailing newline from transport, and a .p12 written by OpenSSL 3
+          # rather than Keychain Access are indistinguishable in that output, and
+          # only one of them is about the password. Separate them here.
+
+          # The MAC algorithm sits in the PKCS#12 MacData and reads without a
+          # password. Keychain Access writes SHA-1; OpenSSL 3 defaults to
+          # SHA-256, which macOS's importer cannot verify at all — so it reports
+          # a password problem for a file that no password would open.
+          #
+          # Finding no MAC at all is the "this is not a .p12" case, and it is
+          # this probe rather than anything cheaper that catches it: macOS
+          # `base64 --decode` accepts arbitrary garbage with exit 0, and
+          # `openssl asn1parse` will parse the six bytes that fall out of it
+          # without complaint. Both measured.
+          # `|| true` is load-bearing. asn1parse exits non-zero on a file that is
+          # not DER, and under `set -e` + `pipefail` that aborts the step at the
+          # assignment — printing nothing, which is the one outcome this whole
+          # block exists to prevent. The empty result IS the signal; let it
+          # reach the test below.
+          macalg=$(/usr/bin/openssl asn1parse -inform der -in "$RUNNER_TEMP/cert.p12" 2>/dev/null \
+                   | awk '/OBJECT/ && /:sha/ {print $NF}' | tail -1 || true)
+          if [ -z "$macalg" ]; then
+            echo "::error::DEVELOPER_ID_CERT_P12 did not decode to a PKCS#12 file"
+            echo "($(wc -c < "$RUNNER_TEMP/cert.p12" | tr -d ' ') bytes, no MAC found)."
+            echo "Re-set it with:  base64 < DeveloperID.p12 | gh secret set DEVELOPER_ID_CERT_P12"
+            exit 1
+          fi
+          if [ "$macalg" != ":sha1" ] && [ "$macalg" != "sha1" ]; then
+            echo "::error::this .p12 uses a $macalg MAC. macOS can only import SHA-1 PKCS#12."
+            echo "It was almost certainly written by OpenSSL 3 rather than exported from"
+            echo "Keychain Access. Either re-export from Keychain Access, or convert it:"
+            echo "  openssl pkcs12 -legacy -export -in modern.p12 -out legacy.p12 ..."
+            exit 1
+          fi
+
+          import_p12() {
+            security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$1" \
+              -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productsign \
+              >/dev/null 2>&1
+          }
+
+          if import_p12 "$CERT_PASSWORD"; then
+            echo "  certificate imported"
+          else
+            # A release should not die over whitespace a secret picked up in
+            # transit, but it should say that is what happened — otherwise the
+            # secret stays wrong and the next person debugs it again.
+            TRIMMED=$(printf '%s' "$CERT_PASSWORD" | tr -d '\r\n')
+            if [ "$TRIMMED" != "$CERT_PASSWORD" ] && import_p12 "$TRIMMED"; then
+              echo "::warning::DEVELOPER_ID_CERT_PASSWORD has a trailing newline. It worked"
+              echo "once trimmed, but re-set it to be rid of this: gh secret set DEVELOPER_ID_CERT_PASSWORD"
+            else
+              echo "::error::the .p12 is well-formed and SHA-1 MACed, so DEVELOPER_ID_CERT_PASSWORD"
+              echo "does not match the password the .p12 was exported with. This is the export"
+              echo "password you chose in Keychain Access, not your login password and not the"
+              echo "certificate's name."
+              exit 1
+            fi
+          fi
           rm -f "$RUNNER_TEMP/cert.p12"
 
           # Without this, codesign gets a UI prompt nobody can answer and the
@@ -191,6 +261,18 @@ jobs:
           security default-keychain -s "$KEYCHAIN"
 
           security find-identity -v -p codesigning "$KEYCHAIN"
+
+          # Importing the wrong .p12 succeeds. `security find-identity` then
+          # exits 0 while reporting "0 valid identities found", and the run gets
+          # all the way to the archive before signing fails for a reason that
+          # has nothing to do with the archive. Assert what we actually need.
+          if ! security find-identity -v -p codesigning "$KEYCHAIN" \
+               | grep -q "Developer ID Application: .*($TEAM_ID)"; then
+            echo "::error::the .p12 imported, but holds no 'Developer ID Application'"
+            echo "identity for team $TEAM_ID. Check which certificate was exported —"
+            echo "an Apple Development certificate cannot sign a Developer ID release."
+            exit 1
+          fi
 
       - name: Write the API and Sparkle keys
         env:
