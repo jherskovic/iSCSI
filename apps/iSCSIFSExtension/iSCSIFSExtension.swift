@@ -306,6 +306,181 @@ final class DaemonStore: LUNStore {
         return isDead
     }
 
+    /// How many reads to keep running ahead of the one being served.
+    ///
+    /// FSKit issues one read at a time and waits for each, so without this the
+    /// link is idle for a full round trip between requests — measured at 206
+    /// MB/s through the extension against 1160 MB/s that the same target and
+    /// link sustain with commands in flight. Reading ahead is the only way to
+    /// get depth, because the depth cannot come from a caller that will not
+    /// issue a second request until the first returns.
+    ///
+    /// Four, because four is where the measured curve flattens: queue depth 2
+    /// reaches ~1135 MB/s and 4 reaches ~1160, after which more depth buys
+    /// nothing and each slot costs a buffered chunk of memory. See
+    /// docs/queue-depth.md.
+    private static let readaheadDepth = 4
+
+    /// One speculative read that has been asked for but not yet wanted.
+    private final class PrefetchSlot {
+        let semaphore = DispatchSemaphore(value: 0)
+        /// Written by the XPC reply, read after the semaphore is signalled,
+        /// which is what orders the two.
+        var data: Data?
+        var failed = false
+    }
+
+    private let prefetchLock = NSLock()
+    private var prefetchSlots: [UInt64: PrefetchSlot] = [:]
+    /// The request size the outstanding slots were issued for. A stream that
+    /// changes its request size is a different stream.
+    private var prefetchLength = 0
+    /// Where the previous read finished, which is the only evidence available
+    /// that the next one will continue it.
+    private var lastServedEnd: UInt64?
+
+    /// Records where a read ended, and reports whether it continued the last
+    /// one.
+    ///
+    /// This is what keeps readahead from making random access worse. Reading
+    /// ahead on a request that turns out to be isolated issues four speculative
+    /// reads that are never claimed, then throws them away on the next request
+    /// — five times the traffic and five times the work at the target, queued
+    /// in front of the reads that are real. On an array that is not seek-free
+    /// that is a regression, not an optimisation. So nothing is read ahead
+    /// until two consecutive requests have actually been consecutive.
+    private func noteServed(offset: UInt64, length: Int) -> Bool {
+        prefetchLock.lock()
+        defer { prefetchLock.unlock() }
+        let continuesPrevious = (lastServedEnd == offset)
+        lastServedEnd = offset &+ UInt64(length)
+        return continuesPrevious
+    }
+
+    /// Forget every outstanding speculative read.
+    ///
+    /// Replies still in flight are harmless once their slot is out of the map:
+    /// the reply block owns the slot, so it fills an object nobody will consult
+    /// and then releases it.
+    private func discardPrefetches() {
+        prefetchLock.lock()
+        prefetchSlots.removeAll()
+        prefetchLock.unlock()
+    }
+
+    private enum PrefetchOutcome {
+        /// Usable data, already paid for.
+        case hit(Data)
+        /// Nothing suitable was waiting. Do the read properly.
+        case miss
+        /// Something was waiting and the daemon never answered it. The session
+        /// is in trouble, and re-issuing the same read would just spend a
+        /// second full timeout finding that out again.
+        case unanswered
+    }
+
+    /// Take the speculative read for exactly this range, if there is one.
+    ///
+    /// Anything unexpected — wrong size, failed reply, short data — is a miss,
+    /// and the caller then does the read for real. Readahead is only ever an
+    /// optimisation; nothing is allowed to depend on it having worked.
+    private func claimPrefetch(offset: UInt64, length: Int) -> PrefetchOutcome {
+        prefetchLock.lock()
+        guard prefetchLength == length,
+              let slot = prefetchSlots.removeValue(forKey: offset) else {
+            prefetchLock.unlock()
+            return .miss
+        }
+        prefetchLock.unlock()
+
+        guard slot.semaphore.wait(timeout: .now() + Self.timeout) == .success else {
+            return .unanswered
+        }
+        guard !slot.failed, let data = slot.data, data.count == length else {
+            return .miss
+        }
+        return .hit(data)
+    }
+
+    /// Keep `readaheadDepth` chunks in flight beyond the one just served.
+    private func scheduleReadahead(after offset: UInt64, length: Int) {
+        guard length > 0 else { return }
+
+        var toIssue: [(UInt64, PrefetchSlot)] = []
+        prefetchLock.lock()
+        // A different request size means the previous slots describe a stream
+        // that is no longer running.
+        if prefetchLength != length {
+            prefetchSlots.removeAll()
+            prefetchLength = length
+        }
+        var wanted: Set<UInt64> = []
+        for step in 1 ... Self.readaheadDepth {
+            let next = offset &+ UInt64(step * length)
+            guard next &+ UInt64(length) <= byteCount else { break }
+            wanted.insert(next)
+            if prefetchSlots[next] == nil {
+                let slot = PrefetchSlot()
+                prefetchSlots[next] = slot
+                toIssue.append((next, slot))
+            }
+        }
+        // Anything the stream has moved past is never going to be claimed.
+        for key in prefetchSlots.keys where !wanted.contains(key) {
+            prefetchSlots.removeValue(forKey: key)
+        }
+        prefetchLock.unlock()
+
+        guard !toIssue.isEmpty, let proxy = try? Self.proxy(connection) else { return }
+        for (start, slot) in toIssue {
+            proxy.read(session: session,
+                       offset: NSNumber(value: start),
+                       length: NSNumber(value: length)) { data, error in
+                slot.data = data
+                slot.failed = (data == nil || error != nil)
+                slot.semaphore.signal()
+            }
+        }
+    }
+
+    /// A block-aligned read, served from readahead when it can be.
+    private func readAligned(offset: UInt64, length: Int) throws -> Data {
+        try checkAlive()
+        switch claimPrefetch(offset: offset, length: length) {
+        case .hit(let data):
+            // A claimed slot is proof the stream is sequential: the read landed
+            // exactly where the previous one predicted.
+            recordSuccess()
+            _ = noteServed(offset: offset, length: length)
+            scheduleReadahead(after: offset, length: length)
+            return data
+
+        case .miss:
+            // Nothing was waiting for this, so the stream either just started
+            // or just jumped. Either way the outstanding slots are for the
+            // wrong places; drop them rather than hold memory for reads nobody
+            // wants.
+            discardPrefetches()
+            let data = try rawRead(offset: offset, length: length)
+            // Only start reading ahead once a second request has continued the
+            // first. One read tells you nothing about what comes next.
+            if noteServed(offset: offset, length: length) {
+                scheduleReadahead(after: offset, length: length)
+            }
+            return data
+
+        case .unanswered:
+            // Deliberately not retried here. Re-issuing would spend a second
+            // full timeout on a session that just failed to answer the first,
+            // so a dead volume would cost 60 seconds per read instead of 30 —
+            // twice as long in the uninterruptible-wait state the death latch
+            // exists to get out of. Count it and fail now; the latch trips
+            // after three and everything afterwards fails immediately.
+            discardPrefetches()
+            throw recordTimeout()
+        }
+    }
+
     /// Runs a daemon call, and stops running them once the volume is dead.
     ///
     /// **This is what stands between a lost reply and a Mac that has to be
@@ -324,30 +499,50 @@ final class DaemonStore: LUNStore {
     ///
     /// Only unanswered calls count. A SCSI error is an answer — a bad block
     /// must not be able to condemn a healthy volume.
-    private func daemonCall(_ body: (@escaping () -> Void) -> Void) throws {
+    /// Throws once the volume has been declared dead, so no call is even tried.
+    private func checkAlive() throws {
         healthLock.lock()
         let dead = isDead
         healthLock.unlock()
         if dead { throw POSIXError(.EIO) }
+    }
 
+    /// An answer arrived, so whatever came before was not a pattern.
+    private func recordSuccess() {
+        healthLock.lock()
+        consecutiveTimeouts = 0
+        healthLock.unlock()
+    }
+
+    /// Count one unanswered call and return the error the caller should throw:
+    /// ETIMEDOUT while there is still hope, EIO once there is not.
+    ///
+    /// Returns the error rather than throwing it so both the direct path and
+    /// the readahead path can account for a timeout the same way.
+    private func recordTimeout() -> any Error {
+        healthLock.lock()
+        consecutiveTimeouts += 1
+        let count = consecutiveTimeouts
+        if count >= Self.timeoutsBeforeDead { isDead = true }
+        let nowDead = isDead
+        healthLock.unlock()
+        if nowDead {
+            fsLog.error("""
+                volume declared dead after \(count, privacy: .public) unanswered \
+                daemon calls; all further I/O fails immediately
+                """)
+            return POSIXError(.EIO)
+        }
+        return POSIXError(.ETIMEDOUT)
+    }
+
+    private func daemonCall(_ body: (@escaping () -> Void) -> Void) throws {
+        try checkAlive()
         do {
             try Self.blocking(body)
-            healthLock.lock(); consecutiveTimeouts = 0; healthLock.unlock()
+            recordSuccess()
         } catch let error as POSIXError where error.code == .ETIMEDOUT {
-            healthLock.lock()
-            consecutiveTimeouts += 1
-            let count = consecutiveTimeouts
-            if count >= Self.timeoutsBeforeDead { isDead = true }
-            let nowDead = isDead
-            healthLock.unlock()
-            if nowDead {
-                fsLog.error("""
-                    volume declared dead after \(count, privacy: .public) unanswered \
-                    daemon calls; all further I/O fails immediately
-                    """)
-                throw POSIXError(.EIO)
-            }
-            throw error
+            throw recordTimeout()
         }
     }
 
@@ -456,7 +651,7 @@ final class DaemonStore: LUNStore {
     func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int {
         guard let plan = aligner.plan(offset: offset, length: min(length, buffer.count)) else { return 0 }
 
-        let data = try rawRead(offset: plan.alignedOffset, length: plan.alignedLength)
+        let data = try readAligned(offset: plan.alignedOffset, length: plan.alignedLength)
         let n = min(plan.count, data.count - plan.skip)
         data.withUnsafeBytes { src in
             buffer.baseAddress?.copyMemory(from: src.baseAddress! + plan.skip, byteCount: n)
@@ -469,6 +664,16 @@ final class DaemonStore: LUNStore {
         guard offset < byteCount else { throw POSIXError(.ENOSPC) }
         guard let plan = aligner.plan(offset: offset, length: data.count) else { return 0 }
         let payload = plan.count == data.count ? data : Data(data.prefix(plan.count))
+
+        // Anything read ahead was read before this write, so any of it that
+        // overlaps is now wrong. Rather than work out which, drop all of it: a
+        // write means the stream was not the pure sequential read that
+        // readahead is for, and serving one stale block is data corruption
+        // while re-reading a few is a few milliseconds.
+        //
+        // The read-modify-write branch below reads through `rawRead`, never the
+        // readahead path, so it cannot pick up a stale edge block either.
+        discardPrefetches()
 
         if plan.isExact {
             try rawWrite(offset: plan.alignedOffset, data: payload)
