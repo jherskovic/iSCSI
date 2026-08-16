@@ -319,8 +319,18 @@ struct ReadBench: AsyncParsableCommand {
     @Option(help: "Starting offset in megabytes (skip cached regions).")
     var offsetMB: Int = 0
 
+    @Option(help: """
+        Commands to keep outstanding at once. 1 issues one read, waits for it, \
+        then issues the next — which leaves the link idle for a whole round \
+        trip every time.
+        """)
+    var queueDepth: Int = 1
+
     func run() async throws {
         #if canImport(Network)
+        guard queueDepth >= 1 else {
+            throw ValidationError("--queue-depth must be at least 1")
+        }
         let transport = try await options.openTransport()
         var config = LoginConfig(
             initiatorName: options.initiator,
@@ -334,20 +344,60 @@ struct ReadBench: AsyncParsableCommand {
         let device = ISCSIBlockDevice(session: session, lun: lun, maxTransferBytes: chunk)
         let (blockSize, blockCount) = try await device.readCapacity()
         let capacity = UInt64(blockSize) * blockCount
-        print("capacity \(capacity / 1_048_576) MiB, blockSize \(blockSize), chunk \(chunk)")
+        print("capacity \(capacity / 1_048_576) MiB, blockSize \(blockSize), "
+              + "chunk \(chunk), queueDepth \(queueDepth)")
 
         var offset = UInt64(offsetMB) * 1_048_576
         // Align to a block boundary; the device rejects unaligned requests.
         offset -= offset % UInt64(blockSize)
+
+        // Plan the whole run first, so the timed section contains nothing but
+        // I/O and the two queue depths are compared over identical work.
+        var plan: [(offset: UInt64, length: Int)] = []
         var remaining = megabytes * 1_048_576
-        let start = Date()
-        var moved = 0
         while remaining > 0, offset < capacity {
             let n = min(chunk, remaining, Int(capacity - offset))
-            _ = try await device.read(offset: offset, length: n - (n % blockSize))
+            plan.append((offset, n - (n % blockSize)))
             offset += UInt64(n)
             remaining -= n
-            moved += n
+        }
+
+        let start = Date()
+        var moved = 0
+        if queueDepth == 1 {
+            for request in plan {
+                _ = try await device.read(offset: request.offset, length: request.length)
+                moved += request.length
+            }
+        } else {
+            // A sliding window: start `queueDepth` reads, and each time one
+            // finishes start another. The session multiplexes them over the one
+            // connection by ITT, and the CmdSN window bounds how many the target
+            // has agreed to accept — so this measures pipelining, not a second
+            // socket.
+            moved = try await withThrowingTaskGroup(of: Int.self) { group in
+                var issued = 0
+                var total = 0
+                for _ in 0 ..< min(queueDepth, plan.count) {
+                    let request = plan[issued]
+                    issued += 1
+                    group.addTask {
+                        _ = try await device.read(offset: request.offset, length: request.length)
+                        return request.length
+                    }
+                }
+                while let done = try await group.next() {
+                    total += done
+                    guard issued < plan.count else { continue }
+                    let request = plan[issued]
+                    issued += 1
+                    group.addTask {
+                        _ = try await device.read(offset: request.offset, length: request.length)
+                        return request.length
+                    }
+                }
+                return total
+            }
         }
         let el = Date().timeIntervalSince(start)
         let mbps = Double(moved) / el / 1_000_000

@@ -559,6 +559,28 @@ EOF
         --min-system "$MIN_SYSTEM"
 fi
 
+# ------------------------------------------------ 11. unregister what we built
+#
+# Every xcodebuild leaves the app it produced registered with LaunchServices,
+# and a registered bundle claims the FSKit short name `iSCSI`. Two builds and an
+# archive are three claimants, at which point `mount -F` cannot resolve the name
+# and reports "File system named iSCSI not found" — which reads as "not
+# installed" while every presence check says healthy.
+#
+# This bit the author's own machine mid-test: a release build and an archive
+# registered two extra copies behind a working install, and attaching stopped
+# working until they were pruned by hand. The build products are not something
+# anyone should be launching, so unregister them here rather than leaving them
+# to collide with the copy in /Applications.
+LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREG" ]; then
+    while IFS= read -r stale; do
+        "$LSREG" -u "$stale" >/dev/null 2>&1 || true
+    done < <(find ~/Library/Developer/Xcode/DerivedData \
+                  -maxdepth 6 -name "$APP_NAME.app" -type d 2>/dev/null)
+    "$LSREG" -u "$APP" >/dev/null 2>&1 || true
+fi
+
 say "done"
 echo "  $DMG"
 ls -lh "$DMG" | awk '{print "  " $5}'
