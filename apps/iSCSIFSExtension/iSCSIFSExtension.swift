@@ -287,6 +287,70 @@ final class DaemonStore: LUNStore {
     /// Seconds to wait for any single daemon call.
     private static let timeout: TimeInterval = 30
 
+    /// Consecutive unanswered daemon calls before the volume is declared dead.
+    ///
+    /// Three, not one: a single timeout can be a target pausing under load, and
+    /// failing a healthy volume for that would be its own bug. Three in a row,
+    /// with nothing in between, is a session that is not coming back.
+    private static let timeoutsBeforeDead = 3
+
+    /// Guards the two fields below, which the death latch reads and writes from
+    /// whatever thread FSKit happens to call in on.
+    private let healthLock = NSLock()
+    private var consecutiveTimeouts = 0
+    private var isDead = false
+
+    /// Whether this volume has given up. Latched: it never goes back.
+    var hasFailed: Bool {
+        healthLock.lock(); defer { healthLock.unlock() }
+        return isDead
+    }
+
+    /// Runs a daemon call, and stops running them once the volume is dead.
+    ///
+    /// **This is what stands between a lost reply and a Mac that has to be
+    /// rebooted.** Without it, every I/O to a session that no longer answers
+    /// costs a full 30-second timeout, fails with something the layers above
+    /// read as retryable, and is retried — for ever. An 82GB soak ended with
+    /// eight hours of that: `diskimages-helper` in uninterruptible wait, and
+    /// behind it `diskarbitrationd`, Finder, Time Machine and everything else
+    /// that touches the mount table, none of them killable.
+    ///
+    /// A timeout is not by itself fatal, so it is counted rather than acted on,
+    /// and any successful call clears the count. Once the count is reached the
+    /// volume is dead and every later call fails *immediately* with EIO. The
+    /// speed is the point: DiskImages retries, and a retry that returns at once
+    /// lets APFS reach its own conclusion in seconds instead of never.
+    ///
+    /// Only unanswered calls count. A SCSI error is an answer — a bad block
+    /// must not be able to condemn a healthy volume.
+    private func daemonCall(_ body: (@escaping () -> Void) -> Void) throws {
+        healthLock.lock()
+        let dead = isDead
+        healthLock.unlock()
+        if dead { throw POSIXError(.EIO) }
+
+        do {
+            try Self.blocking(body)
+            healthLock.lock(); consecutiveTimeouts = 0; healthLock.unlock()
+        } catch let error as POSIXError where error.code == .ETIMEDOUT {
+            healthLock.lock()
+            consecutiveTimeouts += 1
+            let count = consecutiveTimeouts
+            if count >= Self.timeoutsBeforeDead { isDead = true }
+            let nowDead = isDead
+            healthLock.unlock()
+            if nowDead {
+                fsLog.error("""
+                    volume declared dead after \(count, privacy: .public) unanswered \
+                    daemon calls; all further I/O fails immediately
+                    """)
+                throw POSIXError(.EIO)
+            }
+            throw error
+        }
+    }
+
     var summary: String {
         lock.lock(); defer { lock.unlock() }
         return "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B flushes=\(flushCount)"
@@ -367,7 +431,7 @@ final class DaemonStore: LUNStore {
         let proxy = try Self.proxy(connection)
         var data: Data?
         var err: Error?
-        try Self.blocking { done in
+        try daemonCall { done in
             proxy.read(session: session, offset: NSNumber(value: offset),
                        length: NSNumber(value: length)) { d, e in
                 data = d; err = e; done()
@@ -381,7 +445,7 @@ final class DaemonStore: LUNStore {
     private func rawWrite(offset: UInt64, data: Data) throws {
         let proxy = try Self.proxy(connection)
         var err: Error?
-        try Self.blocking { done in
+        try daemonCall { done in
             proxy.write(session: session, offset: NSNumber(value: offset), data: data) { e in
                 err = e; done()
             }
@@ -431,7 +495,7 @@ final class DaemonStore: LUNStore {
     func flush() throws {
         let proxy = try Self.proxy(connection)
         var err: Error?
-        try Self.blocking { done in
+        try daemonCall { done in
             proxy.flush(session: session) { e in err = e; done() }
         }
         if let err { throw err }
