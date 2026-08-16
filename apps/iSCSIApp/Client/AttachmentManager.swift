@@ -51,8 +51,12 @@ enum AttachmentError: LocalizedError {
             if duplicates.isEmpty {
                 return "Could not serve the LUN as a file: \(detail)"
             }
-            return "macOS has \(duplicates.count + 1) copies of this app's filesystem "
-                 + "extension registered, so it cannot tell which one to use. "
+            // Reached only when the automatic repair did not help, so say that
+            // rather than describing a problem that has already been dealt
+            // with. Claiming "macOS has N copies registered" after removing
+            // them sends the user to fix something that is no longer true.
+            return "Could not serve the LUN as a file, even after removing "
+                 + "\(duplicates.count) stale copy(s) of the filesystem extension. "
                  + "Details: \(detail)"
         case .noImageServed(let path):
             return "The filesystem extension mounted but produced no LUN file at \(path)."
@@ -70,9 +74,13 @@ enum AttachmentError: LocalizedError {
                 return "Check that the background service is running and the filesystem "
                      + "extension is enabled, on the Setup screen."
             }
-            return "Press Register on the Setup screen to remove the extra copies. "
-                 + "They usually come from an old build, or from leaving the disk "
-                 + "image mounted after installing."
+            // The extra copies are already gone by the time this is shown.
+            // What is left is the possibility that something is still holding
+            // the old registration, which a relaunch settles.
+            return "The extra copies were removed. Quit and reopen the app, then "
+                 + "try again. If a disk image of an older version is still "
+                 + "mounted in Finder, eject it first — that is usually where "
+                 + "the extra copies come from."
         case .noImageServed:
             return "The connection to the target may have dropped. Try again."
         case .imageAttachFailed:
@@ -148,14 +156,29 @@ final class AttachmentManager: ObservableObject {
             let url = "iscsi://\(portal)/\(target.targetIQN)/\(target.lun)"
             let result = try Self.run("/sbin/mount",
                                       ["-F", "-t", "iSCSI", url, hidden.path])
-            guard result.status == 0 else {
+            if result.status != 0 {
                 // "File system named iSCSI not found" reads as "not installed"
                 // and is just as often "installed more than once" — which every
                 // presence check reports as healthy. Only worth the 2.3s scan
                 // once something has already failed.
-                let duplicates = FSKitRegistrationAudit.duplicates()
-                throw AttachmentError.fskitMountFailed(result.combined,
-                                                       duplicates: duplicates)
+                //
+                // Repaired here rather than reported. Telling the user to press
+                // Register on another screen is asking them to run a fix this
+                // code could have run itself, and it does not reliably work:
+                // the duplicates come back the moment anything rebuilds or
+                // remounts the app, so the instruction lands on a moving
+                // target. Prune and try once more; only explain if that fails.
+                let pruned = FSKitRegistrationAudit.pruneDuplicates()
+                var retried: ProcessResult?
+                if !pruned.isEmpty {
+                    retried = try? Self.run("/sbin/mount",
+                                            ["-F", "-t", "iSCSI", url, hidden.path])
+                }
+                if retried?.status != 0 {
+                    throw AttachmentError.fskitMountFailed(
+                        (retried ?? result).combined,
+                        duplicates: pruned)
+                }
             }
         }
 

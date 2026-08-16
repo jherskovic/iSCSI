@@ -108,3 +108,60 @@ arrive one at a time from above.
 Which makes readahead the fix. FSKit hands down one sequential read at a time
 and waits for each, so the only way to get commands in flight is for the
 extension to ask for data before it is asked for it.
+
+## What readahead actually bought
+
+Measured through the FSKit path, reading `lun0.img` from a freshly mounted
+volume, checksum verified identical every time:
+
+| build | readahead | throughput |
+|---|---|---:|
+| 0.3.6 | none | 219.7 MB/s |
+| 0.3.7 b13 | fixed 4 slots | 391.5 MB/s |
+| 0.3.7 b14 | 4 MiB budget (16 slots) | 636.2 MB/s |
+
+The fixed-4 number is what confirmed the request size: 391.5 MB/s through the
+extension against 393.4 MB/s for the raw path at queue depth 4 with 256 KiB
+commands — near enough identical, and the raw path was told what size to use.
+So FSKit asks in 256 KiB pieces, and counting requests rather than bytes was
+filling the pipe to a quarter of what it wanted.
+
+## The collapse is about command size, not depth
+
+The bimodal cliff turned out to be reproducible once the target was given time
+to settle between runs, and it does not track queue depth or bytes outstanding:
+
+| commands | outstanding | throughput |
+|---|---|---:|
+| 16 x 1 MiB | 16 MiB | 340 MB/s |
+| 64 x 256 KiB | 16 MiB | 1169 MB/s |
+
+Same bytes in flight, opposite result. Nothing degrades at 256 KiB out to 64
+outstanding; 1 MiB commands fall off a cliff somewhere between 8 and 16. 1 MiB
+is exactly the negotiated `MaxBurstLength`, which is suggestive and not yet
+explained.
+
+Two consequences. The `updateWindow` thundering-herd theory above is probably
+wrong — that would scale with the number of waiters, not the size of each
+command. And **1 MiB is the wrong default command size for this initiator**:
+`ISCSIBlockDevice` uses `maxTransferBytes: 1 << 20` and `iscsictl` defaults to
+it, where 256 KiB reaches the same 1165 MB/s with no cliff at any depth tested.
+
+## Writes are not a queue-depth problem
+
+| | throughput |
+|---|---:|
+| raw, no FUA | 336.5 MB/s |
+| raw, FUA | 74.8 MB/s |
+| through FSKit | ~87 MB/s |
+
+Every write carries FUA, deliberately: FSKit sends no barrier, so the daemon
+cannot know when the filesystem above wanted a flush, and an acknowledged write
+that is still in a volatile target cache is a lie APFS will act on. The comment
+at `DaemonCore.login` says so. The cost is now measured rather than assumed:
+4.5x.
+
+No amount of pipelining recovers it, because buffering writes to get depth is
+exactly the durability hole FUA exists to close. Writes get faster when FSKit
+provides a barrier, or when the target's cache is battery-backed and the user
+says so — not before.

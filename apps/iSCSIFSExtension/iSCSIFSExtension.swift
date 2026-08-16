@@ -324,13 +324,25 @@ final class DaemonStore: LUNStore {
     /// to roughly 266 KB per request, so FSKit is asking in ~256 KiB pieces and
     /// four of them is 1 MiB in flight, a quarter of what the link wants.
     ///
-    /// So the budget is 4 MiB and the depth follows from the request size.
-    private static let readaheadBytes = 4 * 1024 * 1024
+    /// So the budget is in bytes and the depth follows from the request size.
+    ///
+    /// 8 MiB rather than the 4 MiB that saturates the raw path, because this
+    /// path is slower per request and therefore needs more of them in flight to
+    /// cover the same time. Measured: at a 4 MiB budget the extension reached
+    /// 636 MB/s, which is ~2430 requests a second with 16 outstanding — 6.6 ms
+    /// each, against 3.6 ms for the same request straight from iscsictl. The
+    /// XPC round trip is that 3 ms, and depth is what hides it.
+    private static let readaheadBytes = 8 * 1024 * 1024
 
     /// Never more slots than this, however small the requests get. Each slot is
     /// an outstanding XPC call and a buffer; a pathological 4 KiB stream should
     /// not open a thousand of them.
-    private static let readaheadMaxSlots = 24
+    ///
+    /// 32 is safe at the sizes this path actually uses: 256 KiB commands showed
+    /// no degradation out to 64 outstanding. It is *not* safe at 1 MiB, where
+    /// 16 outstanding collapsed to a third of line rate — but the byte budget
+    /// keeps 1 MiB requests at 8 slots, below that cliff. See docs/queue-depth.md.
+    private static let readaheadMaxSlots = 32
 
     /// Slots to keep in flight for a given request size.
     private static func readaheadDepth(forRequestOf length: Int) -> Int {
