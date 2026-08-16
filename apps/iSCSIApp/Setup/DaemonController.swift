@@ -81,6 +81,24 @@ final class DaemonController: ObservableObject {
 
     private var service: SMAppService { .daemon(plistName: Self.plistName) }
 
+    /// Every state change, with the detail that produced it.
+    ///
+    /// Added after a reinstall that needed two clicks could not be diagnosed
+    /// from outside: Apple's own SMAppService logging reports a status integer
+    /// and nothing about what this class concluded from it, so working out
+    /// which of six states the screen was showing meant guessing. The same
+    /// lesson as the filesystem extension — instrument rather than infer.
+    private static let log = Logger(subsystem: "me.herko.iSCSIInitiator.app",
+                                    category: "daemon")
+
+    private func transition(to next: DaemonState, _ why: String) {
+        if next != state {
+            Self.log.log("state \(String(describing: self.state), privacy: .public) -> \(String(describing: next), privacy: .public): \(why, privacy: .public)")
+        }
+        state = next
+        detail = why
+    }
+
     /// Whether the plist SMAppService is being asked about is actually in the
     /// bundle. The reason to check rather than infer: `.notFound` was assumed to
     /// mean "the plist is missing" and told the user their app was incomplete,
@@ -118,11 +136,9 @@ final class DaemonController: ObservableObject {
         let status = service.status
         switch status {
         case .notRegistered:
-            state = .notRegistered
-            detail = "SMAppService.status = notRegistered"
+            transition(to: .notRegistered, "SMAppService.status = notRegistered")
         case .requiresApproval:
-            state = .requiresApproval
-            detail = "SMAppService.status = requiresApproval"
+            transition(to: .requiresApproval, "SMAppService.status = requiresApproval")
         case .notFound:
             // Measured on a clean machine: a service that has never been
             // registered reports .notFound and has no Background Task
@@ -130,16 +146,16 @@ final class DaemonController: ObservableObject {
             // after registering and then unregistering. So .notFound is the
             // ordinary starting state, not a defect — unless the plist really
             // is absent, which is the one case worth alarming about.
-            state = Self.bundledPlistExists ? .notRegistered : .notFound
-            detail = "SMAppService.status = notFound; bundled plist "
-                   + (Self.bundledPlistExists ? "present (never registered yet)"
-                                              : "MISSING from the bundle")
+            transition(to: Self.bundledPlistExists ? .notRegistered : .notFound,
+                       "SMAppService.status = notFound; bundled plist "
+                       + (Self.bundledPlistExists ? "present (never registered yet)"
+                                                  : "MISSING from the bundle"))
         case .enabled:
             detail = "SMAppService.status = enabled; probing XPC"
             await probe()
         @unknown default:
-            state = .failed("unknown SMAppService.status (\(status.rawValue))")
-            detail = ""
+            transition(to: .failed("unknown SMAppService.status (\(status.rawValue))"),
+                       "unknown SMAppService.status \(status.rawValue)")
         }
     }
 
@@ -147,15 +163,17 @@ final class DaemonController: ObservableObject {
     private func probe() async {
         do {
             let info = try await DaemonConnection.info()
-            detail = "daemonInfo: version=\(info.version) build=\(info.build) "
-                   + "pid=\(info.pid) relaxedAuth=\(info.authorizationRelaxed)"
-            state = (info.version == appVersion && info.build == appBuild)
-                ? .running(info)
-                : .versionMismatch(daemon: versionLabel(info.version, info.build),
-                                   app: versionLabel(appVersion, appBuild))
+            let matches = info.version == appVersion && info.build == appBuild
+            transition(to: matches
+                       ? .running(info)
+                       : .versionMismatch(daemon: versionLabel(info.version, info.build),
+                                          app: versionLabel(appVersion, appBuild)),
+                       "daemonInfo: version=\(info.version) build=\(info.build) "
+                       + "pid=\(info.pid) app=\(versionLabel(appVersion, appBuild)) "
+                       + "relaxedAuth=\(info.authorizationRelaxed)")
         } catch {
-            state = .registeredNotResponding
-            detail = "daemonInfo failed: \(Self.describe(error))"
+            transition(to: .registeredNotResponding,
+                       "daemonInfo failed: \(Self.describe(error))")
         }
     }
 
@@ -163,9 +181,11 @@ final class DaemonController: ObservableObject {
 
     func register() async {
         state = .checking
+        Self.log.log("register() calling")
         do {
             try service.register()
             detail = "register() succeeded"
+            Self.log.log("register() returned without throwing")
         } catch let error as NSError {
             // Already registered is not a failure — it is the state we wanted,
             // reached earlier. Fall through to the status check rather than
@@ -212,13 +232,19 @@ final class DaemonController: ObservableObject {
     private func settle(within deadline: Duration = .seconds(6)) async {
         let clock = ContinuousClock()
         let started = clock.now
+        var rounds = 0
         while true {
             await refresh()
+            rounds += 1
             switch state {
             case .notRegistered, .registeredNotResponding:
-                guard clock.now - started < deadline else { return }
+                guard clock.now - started < deadline else {
+                    Self.log.error("settle gave up after \(rounds, privacy: .public) rounds in \(String(describing: self.state), privacy: .public)")
+                    return
+                }
                 try? await Task.sleep(for: .milliseconds(250))
             default:
+                Self.log.log("settle done after \(rounds, privacy: .public) rounds: \(String(describing: self.state), privacy: .public)")
                 return
             }
         }
