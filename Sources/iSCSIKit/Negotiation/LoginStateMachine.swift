@@ -7,7 +7,23 @@ public struct LoginConfig: Sendable {
     /// Required for normal sessions; ignored for discovery.
     public var targetName: String?
     /// nil → offer AuthMethod=None only.
+    ///
+    /// Note what that means, because it is not obvious at the call site and it
+    /// was the shape of a real bug: a nil here is not "no preference", it is an
+    /// instruction to log in unauthenticated. Anything that resolves credentials
+    /// and can *fail* to find them must not pass the failure through as nil —
+    /// see `requiresAuthentication`.
     public var chap: CHAP.Credentials?
+    /// Refuse to log in without CHAP.
+    ///
+    /// Set by callers who know the target is configured for authentication, so
+    /// that a credential lookup which silently returned nothing becomes a
+    /// connection error instead of an unauthenticated session. The daemon
+    /// already fails closed before it gets here; this is the backstop for any
+    /// other caller, present because the failure mode is invisible — an
+    /// unauthenticated session looks exactly like an authenticated one from
+    /// every layer above.
+    public var requiresAuthentication = false
     public var desired = DesiredParameters()
     public var isid: ISID
     public var tsih: UInt16 = 0
@@ -203,7 +219,19 @@ public struct LoginStateMachine: Sendable {
         }
 
         // Incoming continuation: buffer and ask for the rest.
+        //
+        // Bounded, because this runs *before* authentication and the peer picks
+        // when it stops. `loginTextLimit` was already the right number — RFC 7143
+        // §6.3 caps login-phase text until MRDSL is negotiated — but it was only
+        // ever applied to what we send (`emit`, below). A target that sets the C
+        // bit and never clears it grew this buffer until the daemon died, and
+        // the daemon is root and holds every other volume on the machine.
         incomingText.append(response.dataSegment)
+        guard incomingText.count <= Self.loginTextLimit else {
+            throw NegotiationError.protocolViolation(
+                "login text exceeded \(Self.loginTextLimit) bytes "
+                + "(\(incomingText.count) buffered); target is not terminating the sequence")
+        }
         if response.continued {
             var pdu = baseRequest()
             pdu.currentStage = response.currentStage

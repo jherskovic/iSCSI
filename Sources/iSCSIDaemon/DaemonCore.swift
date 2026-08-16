@@ -57,6 +57,12 @@ public actor DaemonCore {
             targetName: targetIQN,
             chap: chap
         )
+        // Once credentials have been resolved, using them is not optional. A nil
+        // `chap` further down means "offer AuthMethod=None", so anything that
+        // dropped them between here and the login would downgrade the session
+        // silently rather than fail. Cheap to assert, and the failure it guards
+        // against is invisible from every layer above.
+        config.requiresAuthentication = chap != nil
         config.desired.offerDigests = true
         let factory = transportFactory
         let session = ISCSISession(login: config, policy: policy) {

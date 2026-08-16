@@ -26,7 +26,13 @@ struct HandleScopingTests {
     /// app and the extension each get their own.
     /// Same harness shape as DaemonCoreTests: a MemoryPipe per connection with
     /// a MockTarget on the far end, all sharing one RAMDisk.
-    private func makeCore() -> (DaemonCore, HarnessBox) {
+    private static let targetIQN = "iqn.2026-08.test.example:disk0"
+
+    /// The daemon now resolves credentials from its own saved records and
+    /// refuses portals it has none for, so every service in these tests needs a
+    /// store that knows about the mock target. A temp file, not the default
+    /// `/Library/Application Support` path.
+    private func makeCore() async throws -> (DaemonCore, HarnessBox, TargetStore) {
         let disk = RAMDisk()
         let harnesses = HarnessBox()
         let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _ in
@@ -36,13 +42,20 @@ struct HandleScopingTests {
             harnesses.add(Task { await target.run() })
             return initiatorSide
         }
-        return (core, harnesses)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("targets.json")
+        let store = TargetStore(url: url)
+        try await store.save(TargetRecord(id: UUID().uuidString, displayName: "Mock",
+                                          host: "mock", port: 3260,
+                                          targetIQN: Self.targetIQN, lun: 0))
+        return (core, harnesses, store)
     }
 
     private func login(_ service: ISCSIXPCService) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
-            service.login(host: "mock", port: 3260, targetIQN: "iqn.2026-08.test.example:disk0",
-                          lun: 0, chapUser: nil) { handle, error in
+            service.login(host: "mock", port: 3260, targetIQN: Self.targetIQN,
+                          lun: 0) { handle, error in
                 if let error { continuation.resume(throwing: error) }
                 else { continuation.resume(returning: handle!) }
             }
@@ -51,9 +64,9 @@ struct HandleScopingTests {
 
     @Test("a session opened on one connection cannot be logged out from another")
     func logoutIsScoped() async throws {
-        let (core, _harness) = makeCore()
-        let owner = ISCSIXPCService(core: core)
-        let stranger = ISCSIXPCService(core: core)
+        let (core, _harness, store) = try await makeCore()
+        let owner = ISCSIXPCService(core: core, targets: store)
+        let stranger = ISCSIXPCService(core: core, targets: store)
 
         let handle = try await login(owner)
 
@@ -70,9 +83,9 @@ struct HandleScopingTests {
 
     @Test("a stranger cannot read from a session it did not open")
     func readIsScoped() async throws {
-        let (core, _harness) = makeCore()
-        let owner = ISCSIXPCService(core: core)
-        let stranger = ISCSIXPCService(core: core)
+        let (core, _harness, store) = try await makeCore()
+        let owner = ISCSIXPCService(core: core, targets: store)
+        let stranger = ISCSIXPCService(core: core, targets: store)
         let handle = try await login(owner)
 
         let result: (Data?, Error?) = await withCheckedContinuation { continuation in
@@ -88,9 +101,9 @@ struct HandleScopingTests {
     /// worth fixing rather than noting.
     @Test("a stranger cannot write to a session it did not open")
     func writeIsScoped() async throws {
-        let (core, _harness) = makeCore()
-        let owner = ISCSIXPCService(core: core)
-        let stranger = ISCSIXPCService(core: core)
+        let (core, _harness, store) = try await makeCore()
+        let owner = ISCSIXPCService(core: core, targets: store)
+        let stranger = ISCSIXPCService(core: core, targets: store)
         let handle = try await login(owner)
 
         let denied: Error? = await withCheckedContinuation { continuation in
@@ -104,8 +117,8 @@ struct HandleScopingTests {
 
     @Test("the owner can still use its own session")
     func ownerIsUnaffected() async throws {
-        let (core, _harness) = makeCore()
-        let owner = ISCSIXPCService(core: core)
+        let (core, _harness, store) = try await makeCore()
+        let owner = ISCSIXPCService(core: core, targets: store)
         let handle = try await login(owner)
 
         let result: (Data?, Error?) = await withCheckedContinuation { continuation in
@@ -121,8 +134,8 @@ struct HandleScopingTests {
     /// session behind it is gone — including by the connection that owned it.
     @Test("ownership does not survive logout")
     func ownershipEndsWithTheSession() async throws {
-        let (core, _harness) = makeCore()
-        let owner = ISCSIXPCService(core: core)
+        let (core, _harness, store) = try await makeCore()
+        let owner = ISCSIXPCService(core: core, targets: store)
         let handle = try await login(owner)
 
         _ = await withCheckedContinuation { continuation in
@@ -139,9 +152,9 @@ struct HandleScopingTests {
     /// actually carrying the volume — and reading a list grants no control.
     @Test("listing sessions is deliberately not scoped")
     func listingShowsEverySession() async throws {
-        let (core, _harness) = makeCore()
-        let owner = ISCSIXPCService(core: core)
-        let observer = ISCSIXPCService(core: core)
+        let (core, _harness, store) = try await makeCore()
+        let owner = ISCSIXPCService(core: core, targets: store)
+        let observer = ISCSIXPCService(core: core, targets: store)
         let handle = try await login(owner)
 
         let data: Data? = await withCheckedContinuation { continuation in
@@ -160,6 +173,8 @@ struct HandleScopingTests {
 @Suite("Probing without holding a session")
 struct TestConnectionTests {
 
+    private static let probeIQN = "iqn.2026-08.test.example:disk0"
+
     private func makeCore() -> (DaemonCore, HarnessBox) {
         let disk = RAMDisk()
         let harnesses = HarnessBox()
@@ -173,15 +188,35 @@ struct TestConnectionTests {
         return (core, harnesses)
     }
 
+    /// A store in a temp directory holding one target, because login and
+    /// testConnection now resolve credentials from the daemon's own records and
+    /// refuse a portal they have never been told about. Also keeps the tests off
+    /// `/Library/Application Support`, which the default initialiser would use.
+    private func makeStore(containing record: TargetRecord?) async throws -> (TargetStore, URL) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("targets.json")
+        let store = TargetStore(url: url)
+        if let record { try await store.save(record) }
+        return (store, url.deletingLastPathComponent())
+    }
+
+    private func probeRecord() -> TargetRecord {
+        TargetRecord(id: UUID().uuidString, displayName: "Probe", host: "mock",
+                     port: 3260, targetIQN: Self.probeIQN, lun: 0)
+    }
+
     @Test("testConnection reports geometry and leaves no session behind")
     func probeLeavesNothing() async throws {
         let (core, _harness) = makeCore()
-        let service = ISCSIXPCService(core: core)
+        let (store, dir) = try await makeStore(containing: probeRecord())
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let service = ISCSIXPCService(core: core, targets: store)
 
         let data: Data? = await withCheckedContinuation { continuation in
             service.testConnection(host: "mock", port: 3260,
-                                   targetIQN: "iqn.2026-08.test.example:disk0",
-                                   lun: 0, chapUser: nil) { data, _ in
+                                   targetIQN: Self.probeIQN,
+                                   lun: 0) { data, _ in
                 continuation.resume(returning: data)
             }
         }
@@ -199,15 +234,66 @@ struct TestConnectionTests {
     @Test("a probe against a target that does not exist leaves nothing either")
     func failedProbeLeavesNothing() async throws {
         let (core, _harness) = makeCore()
-        let service = ISCSIXPCService(core: core)
+        var missing = probeRecord()
+        missing.targetIQN = "iqn.nope:missing"
+        let (store, dir) = try await makeStore(containing: missing)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let service = ISCSIXPCService(core: core, targets: store)
 
         let error: Error? = await withCheckedContinuation { continuation in
             service.testConnection(host: "mock", port: 3260, targetIQN: "iqn.nope:missing",
-                                   lun: 0, chapUser: nil) { _, error in
+                                   lun: 0) { _, error in
                 continuation.resume(returning: error)
             }
         }
         #expect(error != nil)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await core.sessionHandles().isEmpty)
+    }
+
+    // MARK: - The authorization the probe and login now share
+
+    @Test("a portal with no saved target is refused before any connection is made")
+    func unconfiguredPortalIsRefused() async throws {
+        let (core, _harness) = makeCore()
+        // A store that knows about one target, asked about a different portal —
+        // the shape of `mount iscsi://somewhere-else/...` from a local user.
+        let (store, dir) = try await makeStore(containing: probeRecord())
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let service = ISCSIXPCService(core: core, targets: store)
+
+        let error: Error? = await withCheckedContinuation { continuation in
+            service.login(host: "attacker.example", port: 3260,
+                          targetIQN: Self.probeIQN, lun: 0) { _, error in
+                continuation.resume(returning: error)
+            }
+        }
+        #expect(error != nil, "login to an unconfigured portal must fail")
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await core.sessionHandles().isEmpty,
+                "and must not have opened a session on the way to failing")
+    }
+
+    @Test("a configured target whose CHAP secret is missing fails instead of logging in unauthenticated")
+    func missingSecretFailsClosed() async throws {
+        let (core, _harness) = makeCore()
+        // A CHAP username with no keychain item behind it. This used to resolve
+        // to nil credentials, which is not "no preference" but an instruction to
+        // offer AuthMethod=None — so the session came up unauthenticated and
+        // everything above it reported success.
+        var authenticated = probeRecord()
+        authenticated.chapUser = "backup"
+        let (store, dir) = try await makeStore(containing: authenticated)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let service = ISCSIXPCService(core: core, targets: store)
+
+        let error: Error? = await withCheckedContinuation { continuation in
+            service.login(host: "mock", port: 3260,
+                          targetIQN: Self.probeIQN, lun: 0) { _, error in
+                continuation.resume(returning: error)
+            }
+        }
+        #expect(error != nil, "a missing secret must fail the login, not downgrade it")
         try await Task.sleep(for: .milliseconds(200))
         #expect(await core.sessionHandles().isEmpty)
     }

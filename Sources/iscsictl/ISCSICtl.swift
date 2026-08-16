@@ -1,7 +1,30 @@
 import ArgumentParser
+
 import Foundation
 import iSCSIDaemon
 import iSCSIKit
+
+/// A secret from a file or the environment, in that order.
+///
+/// Never from `argv`: on macOS `ps -axww` shows any local user the full command
+/// line of every process, so a secret passed as an option is published to the
+/// whole machine for the lifetime of the command and then left in shell history.
+///
+/// Trailing whitespace is stripped so `echo secret > file` does the obvious
+/// thing rather than silently appending a newline to the secret.
+func readSecret(file: String?, env: String, label: String) throws -> String {
+    if let file {
+        guard let contents = try? String(contentsOfFile: file, encoding: .utf8) else {
+            throw ValidationError("cannot read the \(label) from \(file)")
+        }
+        return contents.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    if let value = ProcessInfo.processInfo.environment[env], !value.isEmpty {
+        return value
+    }
+    let flag = label.contains("mutual") ? "--mutual-secret-file" : "--chap-secret-file"
+    throw ValidationError("no \(label): pass \(flag) or set $\(env)")
+}
 
 // iscsictl — control CLI. In Phase 4 the read-only protocol operations
 // (discover, verify) run directly against a target over TCP. The login/attach
@@ -47,26 +70,44 @@ struct GlobalOptions: ParsableArguments {
     @Option(help: "CHAP username.")
     var chapUser: String?
 
-    @Option(help: "CHAP secret (prefer $ISCSI_CHAP_SECRET env var).")
-    var chapSecret: String?
+    @Option(help: ArgumentHelp("File containing the CHAP secret.",
+                               discussion: "Or set $ISCSI_CHAP_SECRET."))
+    var chapSecretFile: String?
 
     @Option(help: "Mutual CHAP username (target authenticates to us).")
     var mutualUser: String?
 
-    @Option(help: "Mutual CHAP secret.")
-    var mutualSecret: String?
+    @Option(help: ArgumentHelp("File containing the mutual CHAP secret.",
+                               discussion: "Or set $ISCSI_MUTUAL_SECRET."))
+    var mutualSecretFile: String?
 
     @Flag(help: "Trace every PDU on the wire to stderr.")
     var debug = false
 
-    func credentials() -> CHAP.Credentials? {
+    /// Credentials, or nil when no CHAP user was given.
+    ///
+    /// Throws rather than substituting an empty secret. It used to end in
+    /// `?? ""`, so forgetting the secret — or running under `sudo`/launchd,
+    /// which strips the environment — produced a complete CHAP exchange over
+    /// `MD5(id ‖ "" ‖ challenge)`. That is not a failed login; it is a
+    /// successful one that tells the peer the secret is empty.
+    ///
+    /// There is deliberately no `--chap-secret`. `argv` is world-readable on
+    /// macOS: `ps -axww` shows any user the full command line of every process,
+    /// so a secret passed that way is published to the whole machine for the
+    /// lifetime of the command, and left in shell history afterwards.
+    func credentials() throws -> CHAP.Credentials? {
         guard let user = chapUser else { return nil }
-        let secret = chapSecret ?? ProcessInfo.processInfo.environment["ISCSI_CHAP_SECRET"] ?? ""
-        return CHAP.Credentials(
-            name: user, secret: secret,
-            mutualName: mutualUser,
-            mutualSecret: mutualSecret ?? ProcessInfo.processInfo.environment["ISCSI_MUTUAL_SECRET"]
-        )
+        let secret = try readSecret(file: chapSecretFile,
+                                    env: "ISCSI_CHAP_SECRET",
+                                    label: "CHAP secret")
+        let mutual = mutualUser == nil ? nil
+            : try readSecret(file: mutualSecretFile,
+                             env: "ISCSI_MUTUAL_SECRET",
+                             label: "mutual CHAP secret")
+        return try CHAP.Credentials.validated(name: user, secret: secret,
+                                              mutualName: mutualUser,
+                                              mutualSecret: mutual)
     }
 
     func openTransport() async throws -> any ConnectionTransport {
@@ -94,7 +135,7 @@ struct Discover: AsyncParsableCommand {
         let targets = try await Discovery.sendTargets(
             transport: transport,
             initiatorName: options.initiator,
-            chap: options.credentials()
+            chap: try options.credentials()
         )
         if targets.isEmpty {
             print("No targets advertised by \(options.host):\(options.port)")
@@ -142,7 +183,7 @@ struct Verify: AsyncParsableCommand {
             initiatorName: options.initiator,
             sessionType: .normal,
             targetName: target,
-            chap: options.credentials()
+            chap: try options.credentials()
         )
         config.desired.offerDigests = true
         let connection = ISCSIConnection(transport: transport, login: config)
@@ -253,7 +294,7 @@ struct WriteBench: AsyncParsableCommand {
             initiatorName: options.initiator,
             sessionType: .normal,
             targetName: target,
-            chap: options.credentials()
+            chap: try options.credentials()
         )
         config.desired.offerDigests = true
         let session = ISCSISession(login: config) { try await transport }
@@ -345,7 +386,7 @@ struct ReadBench: AsyncParsableCommand {
             initiatorName: options.initiator,
             sessionType: .normal,
             targetName: target,
-            chap: options.credentials()
+            chap: try options.credentials()
         )
         config.desired.offerDigests = true
         let session = ISCSISession(login: config) { try await transport }
@@ -444,7 +485,7 @@ struct Wipe: AsyncParsableCommand {
             initiatorName: options.initiator,
             sessionType: .normal,
             targetName: target,
-            chap: options.credentials()
+            chap: try options.credentials()
         )
         let connection = ISCSIConnection(transport: transport, login: config)
         _ = try await connection.login()
@@ -467,12 +508,13 @@ struct Wipe: AsyncParsableCommand {
         let capacity = try await checked(SCSITask(
             lun: lunAddress, cdb: CDB.readCapacity16(), direction: .read(expectedLength: 32)
         ))
-        guard capacity.data.count >= 12 else {
-            throw ValidationError("READ CAPACITY returned \(capacity.data.count) bytes")
-        }
-        let lastLBA = capacity.data.beU64(0)
-        let blockSize = Int(capacity.data.beU32(8))
-        let blockCount = lastLBA + 1
+        // Same validated parse as the daemon, rather than a second hand-rolled
+        // copy. The copy that used to be here had both of the bugs the shared
+        // one now prevents: a trapping `lastLBA + 1`, and an unchecked block
+        // size that reached the `(256 * 1024) / blockSize` below — a division by
+        // zero, since this path never goes through `ISCSIBlockDevice.validate`.
+        let (blockSize, blockCount) = try ISCSIBlockDevice
+            .geometry(fromReadCapacity16: capacity.data)
         print("LUN: \(blockCount) x \(blockSize)-byte blocks")
 
         // 256 KiB per WRITE(16) keeps each burst well inside any negotiated
@@ -606,26 +648,44 @@ struct DextAttach: AsyncParsableCommand {
     @Option(help: "CHAP username.")
     var chapUser: String?
 
-    @Option(help: "CHAP secret (prefer $ISCSI_CHAP_SECRET env var).")
-    var chapSecret: String?
+    @Option(help: ArgumentHelp("File containing the CHAP secret.",
+                               discussion: "Or set $ISCSI_CHAP_SECRET."))
+    var chapSecretFile: String?
 
     @Option(help: "Mutual CHAP username (target authenticates to us).")
     var mutualUser: String?
 
-    @Option(help: "Mutual CHAP secret.")
-    var mutualSecret: String?
+    @Option(help: ArgumentHelp("File containing the mutual CHAP secret.",
+                               discussion: "Or set $ISCSI_MUTUAL_SECRET."))
+    var mutualSecretFile: String?
 
     @Flag(help: "Trace every PDU on the wire to stderr.")
     var debug = false
 
-    func credentials() -> CHAP.Credentials? {
+    /// Credentials, or nil when no CHAP user was given.
+    ///
+    /// Throws rather than substituting an empty secret. It used to end in
+    /// `?? ""`, so forgetting the secret — or running under `sudo`/launchd,
+    /// which strips the environment — produced a complete CHAP exchange over
+    /// `MD5(id ‖ "" ‖ challenge)`. That is not a failed login; it is a
+    /// successful one that tells the peer the secret is empty.
+    ///
+    /// There is deliberately no `--chap-secret`. `argv` is world-readable on
+    /// macOS: `ps -axww` shows any user the full command line of every process,
+    /// so a secret passed that way is published to the whole machine for the
+    /// lifetime of the command, and left in shell history afterwards.
+    func credentials() throws -> CHAP.Credentials? {
         guard let user = chapUser else { return nil }
-        let secret = chapSecret ?? ProcessInfo.processInfo.environment["ISCSI_CHAP_SECRET"] ?? ""
-        return CHAP.Credentials(
-            name: user, secret: secret,
-            mutualName: mutualUser,
-            mutualSecret: mutualSecret ?? ProcessInfo.processInfo.environment["ISCSI_MUTUAL_SECRET"]
-        )
+        let secret = try readSecret(file: chapSecretFile,
+                                    env: "ISCSI_CHAP_SECRET",
+                                    label: "CHAP secret")
+        let mutual = mutualUser == nil ? nil
+            : try readSecret(file: mutualSecretFile,
+                             env: "ISCSI_MUTUAL_SECRET",
+                             label: "mutual CHAP secret")
+        return try CHAP.Credentials.validated(name: user, secret: secret,
+                                              mutualName: mutualUser,
+                                              mutualSecret: mutual)
     }
 
     func run() async throws {
@@ -638,7 +698,7 @@ struct DextAttach: AsyncParsableCommand {
         }
 
         let handle = try await core.login(
-            host: portal, port: port, targetIQN: target, lun: lun, chap: credentials()
+            host: portal, port: port, targetIQN: target, lun: lun, chap: try credentials()
         )
         print("Logged in to \(target) LUN \(lun). Session=\(handle)")
 

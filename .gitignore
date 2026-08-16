@@ -4,7 +4,13 @@
 *.xcworkspace/xcuserdata/
 DerivedData/
 .DS_Store
-Fuzz/corpus-findings/
+# Fuzzing leftovers. The first of these used to read `Fuzz/corpus-findings/`,
+# which matched nothing: the directory is `Tests/Fuzz/corpus-findings/`, and a
+# pattern containing a slash is anchored to the repo root. `fuzz-failures/` is
+# where scripts/fuzz-campaign.sh writes, and was never ignored at all — so a
+# failing campaign left untracked logs sitting in the working tree.
+Tests/Fuzz/corpus-findings/
+fuzz-failures/
 apps/build/
 apps/*.xcodeproj/project.xcworkspace/
 apps/*.xcodeproj/xcuserdata/

@@ -68,19 +68,63 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
+    /// Resolve a portal to the target the user configured, and to the credentials
+    /// that belong to *that* target.
+    ///
+    /// This is the whole of the authorization model for login, so it is worth
+    /// being explicit about what each step prevents.
+    ///
+    /// - Refusing an unknown portal means the daemon will only ever authenticate
+    ///   to targets the user set up. Previously any caller could name any host,
+    ///   which mattered because `mount(8)` needs no root: an unprivileged user
+    ///   could mount `iscsi://any-host/any-iqn/0` and borrow the machine's
+    ///   initiator identity for a LUN that was ACL'd to this host.
+    /// - Taking the CHAP identity from the record, keyed by the record's id,
+    ///   means a client cannot choose which stored secret is spent, nor where it
+    ///   is sent.
+    /// - Throwing when a configured username has no secret is the fail-closed
+    ///   half. A nil credential is not a neutral value here: it makes
+    ///   `LoginStateMachine.start()` offer `AuthMethod=None`, so "we could not
+    ///   find the secret" used to mean "log in with no authentication at all".
+    private func credentials(host: String, port: UInt16, targetIQN: String, lun: UInt64)
+        async throws -> (record: TargetRecord, chap: CHAP.Credentials?) {
+        guard let record = await targets.record(host: host, port: port,
+                                                targetIQN: targetIQN, lun: lun) else {
+            throw DaemonAuthError.notConfigured(host: host, port: port,
+                                                targetIQN: targetIQN, lun: lun)
+        }
+        guard let user = record.chapUser, !user.isEmpty else {
+            return (record, nil)   // deliberately unauthenticated: the user configured no CHAP
+        }
+        guard let secret = KeychainStore.chapSecret(for: record.id) else {
+            throw DaemonAuthError.secretMissing(user: user, target: record.displayName)
+        }
+        var chap = CHAP.Credentials(name: user, secret: secret)
+        // Mutual CHAP if — and only if — the user configured both halves. A
+        // mutual username with no stored secret is a half-finished setup, and
+        // silently continuing one-way would leave the target unauthenticated
+        // while the UI implied otherwise.
+        if let mutualUser = record.mutualChapUser, !mutualUser.isEmpty {
+            guard let mutualSecret = KeychainStore.chapSecret(for: record.id, kind: .mutual) else {
+                throw DaemonAuthError.mutualSecretMissing(user: mutualUser,
+                                                          target: record.displayName)
+            }
+            chap.mutualName = mutualUser
+            chap.mutualSecret = mutualSecret
+        }
+        return (record, chap)
+    }
+
     public func login(
         host: String, port: NSNumber, targetIQN: String, lun: NSNumber,
-        chapUser: String?, reply: @escaping (String?, Error?) -> Void
+        reply: @escaping (String?, Error?) -> Void
     ) {
         let box = SendableBox(reply)
         Task {
             do {
-                // CHAP secret is fetched from the keychain by user name, if any.
-                let chap = chapUser.flatMap { user in
-                    KeychainStore.chapSecret(for: user).map {
-                        CHAP.Credentials(name: user, secret: $0)
-                    }
-                }
+                let (_, chap) = try await self.credentials(
+                    host: host, port: port.uint16Value,
+                    targetIQN: targetIQN, lun: lun.uint64Value)
                 let handle = try await core.login(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value, chap: chap
@@ -237,10 +281,11 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         Task {
             do {
                 try await targets.delete(id: id)
-                // Remove the secret with the target it belonged to. Leaving an
-                // orphaned keychain item behind means a later target that reuses
-                // the id silently inherits someone else's credentials.
-                KeychainStore.deleteCHAPSecret(for: id)
+                // Remove the secrets with the target they belonged to — both
+                // halves. Leaving an orphaned keychain item behind means a later
+                // target that reuses the id silently inherits someone else's
+                // credentials.
+                KeychainStore.deleteAllSecrets(for: id)
                 box.value(nil)
             } catch {
                 box.value(ISCSIError.nsError(from: error, context: "Deleting the target"))
@@ -267,6 +312,24 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         reply(KeychainStore.chapSecret(for: targetID) != nil)
     }
 
+    public func setMutualCHAPSecret(targetID: String, secret: String,
+                                    reply: @escaping (Error?) -> Void) {
+        KeychainStore.setCHAPSecret(secret, for: targetID, kind: .mutual)
+        reply(KeychainStore.chapSecret(for: targetID, kind: .mutual) == nil
+              ? ISCSIError.nsError(from: KeychainStore.StoreFailure.notPersisted,
+                                   context: "Saving the mutual CHAP secret")
+              : nil)
+    }
+
+    public func deleteMutualCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void) {
+        KeychainStore.deleteCHAPSecret(for: targetID, kind: .mutual)
+        reply(nil)
+    }
+
+    public func hasMutualCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void) {
+        reply(KeychainStore.chapSecret(for: targetID, kind: .mutual) != nil)
+    }
+
     // MARK: - Discovery and inspection
 
     public func discoverTargets(host: String, port: NSNumber, chapUser: String?,
@@ -277,9 +340,16 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 // The credentials actually reach DaemonCore here. The older
                 // discover() accepted a chapUser and dropped it on the floor,
                 // which made an authenticated portal undiscoverable from the app.
-                let chap: CHAP.Credentials? = {
+                //
+                // Unlike login, this legitimately takes a secret from the caller:
+                // discovery happens before a target is saved, so there is no
+                // record to resolve against and nothing to look up. It is
+                // validated on the way through, so a too-short secret is refused
+                // here rather than turning into an "authentication failure" from
+                // the portal that says nothing about why.
+                let chap: CHAP.Credentials? = try {
                     guard let chapUser, let chapSecret else { return nil }
-                    return CHAP.Credentials(name: chapUser, secret: chapSecret)
+                    return try CHAP.Credentials.validated(name: chapUser, secret: chapSecret)
                 }()
                 let found = try await core.discover(host: host, port: port.uint16Value, chap: chap)
                 let info = found.map {
@@ -303,16 +373,20 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     }
 
     public func testConnection(host: String, port: NSNumber, targetIQN: String,
-                               lun: NSNumber, chapUser: String?,
+                               lun: NSNumber,
                                reply: @escaping (Data?, Error?) -> Void) {
         let box = SendableBox(reply)
         Task {
             do {
-                let chap = chapUser.flatMap { user in
-                    KeychainStore.chapSecret(for: user).map {
-                        CHAP.Credentials(name: user, secret: $0)
-                    }
-                }
+                // Same resolution as login, deliberately. This is the call the
+                // UI makes to answer "are these credentials right?", so if it
+                // resolved credentials any differently from the real thing it
+                // would be validating something the user never runs. It used to:
+                // both used a lookup that always missed, so this reported
+                // success for a session that had authenticated with nothing.
+                let (_, chap) = try await self.credentials(
+                    host: host, port: port.uint16Value,
+                    targetIQN: targetIQN, lun: lun.uint64Value)
                 let handle = try await core.login(
                     host: host, port: port.uint16Value, targetIQN: targetIQN,
                     lun: lun.uint64Value, chap: chap)
@@ -340,7 +414,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
             // so doing it the other way round leaves keychain items nothing
             // knows the names of.
             for target in await targets.all() {
-                KeychainStore.deleteCHAPSecret(for: target.id)
+                KeychainStore.deleteAllSecrets(for: target.id)
             }
             do {
                 let directory = TargetStore.defaultURL.deletingLastPathComponent()

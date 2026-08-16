@@ -25,6 +25,59 @@ struct TargetStoreTests {
                      chapUser: "initiator", autoAttach: true)
     }
 
+    /// The file lists every target's id, portal, IQN and CHAP username. It was
+    /// 0644 in a 0755 directory, which was argued to be fine because the ids
+    /// were inert — and then login started using a client-supplied string as a
+    /// keychain account name, which made a world-readable list of ids a list of
+    /// valid credential selectors. Login no longer works that way, and this is
+    /// no longer world-readable either.
+    @Test("the targets file and its directory are readable only by root")
+    func permissionsAreRestrictive() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let store = TargetStore(url: url)
+        try await store.save(sample())
+
+        let fm = FileManager.default
+        let fileMode = try #require(
+            fm.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)
+        let dirMode = try #require(
+            fm.attributesOfItem(atPath: url.deletingLastPathComponent().path)[.posixPermissions]
+                as? NSNumber)
+
+        #expect(fileMode.intValue & 0o077 == 0,
+                "targets.json is group/other-accessible: \(String(fileMode.intValue, radix: 8))")
+        #expect(dirMode.intValue & 0o077 == 0,
+                "the directory is group/other-accessible: \(String(dirMode.intValue, radix: 8))")
+    }
+
+    @Test("a portal can be resolved back to its record, which is how login finds credentials")
+    func portalLookup() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let store = TargetStore(url: url)
+        let saved = try await store.save(sample())
+
+        let found = await store.record(host: saved.host, port: saved.port,
+                                       targetIQN: saved.targetIQN, lun: saved.lun)
+        #expect(found?.id == saved.id)
+
+        // Case-insensitive on the host, matching `save`'s notion of identity —
+        // otherwise "NAS.local" and "nas.local" would be different targets to
+        // login and the same target to the store.
+        let mixedCase = await store.record(host: saved.host.uppercased(), port: saved.port,
+                                           targetIQN: saved.targetIQN, lun: saved.lun)
+        #expect(mixedCase?.id == saved.id)
+
+        // And a portal nobody configured resolves to nothing, which is what makes
+        // `login` refuse it.
+        let absent = await store.record(host: "attacker.example", port: saved.port,
+                                        targetIQN: saved.targetIQN, lun: saved.lun)
+        #expect(absent == nil)
+    }
+
     @Test("saving and reading back round-trips")
     func roundTrips() async throws {
         let url = temporaryURL()

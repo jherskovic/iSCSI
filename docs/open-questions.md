@@ -107,7 +107,18 @@ Management notification can be waited on properly.
 
 ## 7. Never exercised at all
 
-- **Mutual CHAP.** Implemented, unit-tested, never run against hardware.
+- **Mutual CHAP.** Implemented, unit-tested, never run against hardware — and
+  now known *why*: it could not run. The daemon had no API to store a mutual
+  secret, so `CHAP.Credentials.mutualSecret` was nil on every path the app could
+  reach, `wantsMutual` was always false, and `verifyMutual` returned
+  immediately. The verification code was correct the whole time and simply
+  unreachable. There is an API and a UI field for it now, so this is finally
+  testable against real hardware; that test has still not been run.
+
+  Found in the security audit (2026-08-16), along with the reason one-way CHAP
+  was not working either: secrets are filed under the target record id, and
+  login looked them up by CHAP *username*, so the lookup missed — and a missing
+  secret was not an error but a silent downgrade to `AuthMethod=None`.
 - **Root daemon reading the keychain before login** (R3 in the original plan).
   Only matters if auto-attach at boot is ever built; the daemon currently only
   needs secrets after a user is logged in.

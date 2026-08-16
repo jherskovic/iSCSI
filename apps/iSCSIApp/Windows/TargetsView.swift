@@ -132,7 +132,9 @@ struct TargetEditor: View {
     @State private var chapUser: String
     @State private var chapSecret: String
     @State private var mutualChapUser: String
+    @State private var mutualChapSecret: String
     @State private var hasStoredSecret = false
+    @State private var hasStoredMutualSecret = false
 
     init(model: AppModel, target: TargetRecord?) {
         self.model = model
@@ -148,6 +150,7 @@ struct TargetEditor: View {
         _chapUser = State(initialValue: target?.chapUser ?? "")
         _mutualChapUser = State(initialValue: target?.mutualChapUser ?? "")
         _chapSecret = State(initialValue: "")
+        _mutualChapSecret = State(initialValue: "")
     }
 
     var body: some View {
@@ -166,13 +169,33 @@ struct TargetEditor: View {
                     TextField("CHAP user", text: $chapUser)
                     SecureField(hasStoredSecret ? "Saved — type to replace" : "CHAP secret",
                                 text: $chapSecret)
-                    // Named rather than left to fail at login: many targets
-                    // reject a shorter secret, and the error they return says
-                    // only "authentication failure".
-                    Text("Most targets require a secret of at least 12 characters.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    // Enforced, not just advised. RFC 7143 §12.1.1 sets 12 bytes
+                    // as the floor, and the error a target returns for a short
+                    // secret says only "authentication failure", which sends
+                    // people looking in the wrong place.
+                    Text("Secrets must be at least 12 characters.")
+                        .font(.caption)
+                        .foregroundStyle(secretTooShort ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                }
+
+                Section("Verify the target") {
                     TextField("Mutual CHAP user", text: $mutualChapUser,
                               prompt: Text("optional"))
+                    SecureField(hasStoredMutualSecret ? "Saved — type to replace"
+                                                      : "Mutual CHAP secret",
+                                text: $mutualChapSecret)
+                    // Its own section because it does the opposite job to the
+                    // one above: that proves who we are to the target, this
+                    // proves the target is the machine we think it is. On a
+                    // plaintext link it is the only thing that would catch a
+                    // stand-in feeding this Mac a fabricated disk.
+                    Text(mutualHalfConfigured
+                         ? "Enter the secret too, or clear the user — a name on its "
+                           + "own does not verify anything."
+                         : "Optional. Proves the target is who it claims to be.")
+                        .font(.caption)
+                        .foregroundStyle(mutualHalfConfigured ? AnyShapeStyle(.red)
+                                                              : AnyShapeStyle(.secondary))
                 }
             }
             .formStyle(.grouped)
@@ -191,8 +214,33 @@ struct TargetEditor: View {
         .task {
             if let id = existing?.id {
                 hasStoredSecret = (try? await DaemonConnection.hasCHAPSecret(targetID: id)) ?? false
+                hasStoredMutualSecret =
+                    (try? await DaemonConnection.hasMutualCHAPSecret(targetID: id)) ?? false
             }
         }
+    }
+
+    /// A secret was typed and is too short. Only checks what was typed: an
+    /// already-stored secret is not readable from here, and re-prompting for one
+    /// the user cannot see would be unanswerable.
+    private var secretTooShort: Bool {
+        (!chapSecret.isEmpty && chapSecret.utf8.count < 12)
+            || (!mutualChapSecret.isEmpty && mutualChapSecret.utf8.count < 12)
+    }
+
+    /// A CHAP user with no secret, stored or typed — the state that used to save
+    /// happily and then fail at login, or worse, log in with no authentication.
+    private var credentialIncomplete: Bool {
+        !chapUser.trimmingCharacters(in: .whitespaces).isEmpty
+            && chapSecret.isEmpty && !hasStoredSecret
+    }
+
+    /// Mutual CHAP with a name but no secret. The daemon refuses this rather
+    /// than quietly falling back to one-way, so catching it here turns a failed
+    /// attach into a disabled Save button.
+    private var mutualHalfConfigured: Bool {
+        !mutualChapUser.trimmingCharacters(in: .whitespaces).isEmpty
+            && mutualChapSecret.isEmpty && !hasStoredMutualSecret
     }
 
     private var isValid: Bool {
@@ -200,6 +248,7 @@ struct TargetEditor: View {
             && !host.trimmingCharacters(in: .whitespaces).isEmpty
             && !targetIQN.trimmingCharacters(in: .whitespaces).isEmpty
             && UInt16(port) != nil && UInt64(lun) != nil
+            && !secretTooShort && !credentialIncomplete && !mutualHalfConfigured
     }
 
     private func save() {
@@ -219,7 +268,9 @@ struct TargetEditor: View {
 
         LastPortal.remember(host: record.host, port: record.port)
         Task {
-            await model.save(record, secret: chapSecret.isEmpty ? nil : chapSecret)
+            await model.save(record,
+                             secret: chapSecret.isEmpty ? nil : chapSecret,
+                             mutualSecret: mutualChapSecret.isEmpty ? nil : mutualChapSecret)
             dismiss()
         }
     }

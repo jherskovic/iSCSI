@@ -20,6 +20,12 @@ public enum BlockDeviceError: Error, Equatable, Sendable {
     case misaligned(offset: UInt64, length: Int, blockSize: Int)
     case outOfRange(lba: UInt64, blocks: UInt32, capacity: UInt64)
     case scsiError(status: UInt8, sense: SenseData?)
+    /// READ CAPACITY described a device that cannot exist.
+    ///
+    /// Its own case rather than a `misaligned` or a generic protocol error
+    /// because the fix for it is entirely different: nothing the initiator does
+    /// will make this target usable, and the geometry is the evidence.
+    case invalidGeometry(blockSize: Int, blockCount: UInt64, reason: String)
 }
 
 /// Concrete block device over an `ISCSISession`. Reads/writes are chunked so a
@@ -116,6 +122,65 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         }
     }
 
+    /// Parse and sanity-check a READ CAPACITY(16) Data-In.
+    ///
+    /// Pure and `static` on purpose, for the same reason `ModeSense` is: it is a
+    /// parser of wholly attacker-controlled bytes, so it should be reachable
+    /// from a fuzzer without standing up a session. It had no such seam, and
+    /// consequently had never been fuzzed.
+    ///
+    /// Three separate crashes lived in the four lines this replaces, all from
+    /// trusting the numbers:
+    ///
+    /// - `lastLBA + 1` is a *trapping* add. Eight `0xFF` bytes aborted the
+    ///   process — and `DaemonCore.login` calls this on every login, so it was
+    ///   the first command of every session.
+    /// - `blockSize` went unchecked into `maxTransferBytes / blockSize`, so a
+    ///   reported size of zero was a division by zero on any path that skipped
+    ///   `validate`.
+    /// - `blockSize * blockCount` overflowed in the FSKit extension, and further
+    ///   out a non-power-of-two size let `BlockAligner.alignUp` wrap.
+    ///
+    /// Requiring a power of two is doing more work than it looks like. It is
+    /// what guarantees the largest multiple of `blockSize` below 2^64 leaves
+    /// `blockSize - 1` bytes of headroom, which is what stops `alignUp`'s
+    /// wrapping `&+` from rolling over. Relaxing this rule silently reopens
+    /// that; there is a regression test pinning it.
+    public static func geometry(fromReadCapacity16 data: Data) throws
+        -> (blockSize: Int, blockCount: UInt64) {
+        guard data.count >= 12 else {
+            throw BlockDeviceError.invalidGeometry(
+                blockSize: 0, blockCount: 0,
+                reason: "READ CAPACITY(16) returned \(data.count) bytes, needs at least 12")
+        }
+        let lastLBA = data.beU64(0)
+        let blockSize = Int(data.beU32(8))
+
+        guard lastLBA != .max else {
+            throw BlockDeviceError.invalidGeometry(
+                blockSize: blockSize, blockCount: 0,
+                reason: "last LBA is 2^64-1, so the block count would overflow")
+        }
+        let blockCount = lastLBA &+ 1
+
+        guard blockSize >= 512, blockSize <= 1 << 20, blockSize.nonzeroBitCount == 1 else {
+            throw BlockDeviceError.invalidGeometry(
+                blockSize: blockSize, blockCount: blockCount,
+                reason: "block size must be a power of two between 512 and 1048576")
+        }
+        guard blockCount > 0 else {
+            throw BlockDeviceError.invalidGeometry(
+                blockSize: blockSize, blockCount: 0, reason: "zero blocks")
+        }
+        guard !blockSize.multipliedReportingOverflow(by: Int(clamping: blockCount)).overflow,
+              !UInt64(blockSize).multipliedReportingOverflow(by: blockCount).overflow else {
+            throw BlockDeviceError.invalidGeometry(
+                blockSize: blockSize, blockCount: blockCount,
+                reason: "block size x block count exceeds 2^64 bytes")
+        }
+        return (blockSize, blockCount)
+    }
+
     /// READ CAPACITY(16) to learn geometry; cached after first call.
     public func readCapacity() async throws -> (blockSize: Int, blockCount: UInt64) {
         if capacityKnown { return (cachedBlockSize, cachedBlockCount) }
@@ -127,9 +192,9 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         guard result.isGood, result.data.count >= 12 else {
             throw BlockDeviceError.scsiError(status: result.status, sense: result.sense.flatMap(SenseData.init))
         }
-        let lastLBA = result.data.beU64(0)
-        cachedBlockSize = Int(result.data.beU32(8))
-        cachedBlockCount = lastLBA + 1
+        let (blockSize, blockCount) = try Self.geometry(fromReadCapacity16: result.data)
+        cachedBlockSize = blockSize
+        cachedBlockCount = blockCount
         capacityKnown = true
         return (cachedBlockSize, cachedBlockCount)
     }

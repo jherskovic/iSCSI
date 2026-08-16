@@ -45,37 +45,61 @@ public enum KeychainStore {
     /// This is R3 in the plan and needs a reboot experiment before any
     /// auto-attach feature can rely on it. Until then nothing depends on
     /// reading a secret at boot: the app is running whenever a login happens.
-    private static func baseQuery(_ targetID: String) -> [String: Any] {
+    private static func baseQuery(_ targetID: String, _ kind: Kind = .initiator) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: targetID,
+            kSecAttrAccount as String: kind.account(for: targetID),
             kSecUseDataProtectionKeychain as String: true,
         ]
     }
 
-    public static func setCHAPSecret(_ secret: String, for targetID: String) {
-        try? store(secret, for: targetID)
+    /// Which half of a mutual CHAP pair a secret is.
+    ///
+    /// Separate accounts rather than a second service, so one target's two
+    /// secrets stay adjacent and `removeAll` can still find them by service. The
+    /// initiator account is the bare id, unprefixed, so items written before
+    /// mutual CHAP existed keep resolving.
+    public enum Kind: Sendable {
+        /// What we prove to the target.
+        case initiator
+        /// What the target must prove to us.
+        case mutual
+
+        func account(for targetID: String) -> String {
+            switch self {
+            case .initiator: return targetID
+            case .mutual:    return "mutual:" + targetID
+            }
+        }
+    }
+
+    public static func setCHAPSecret(_ secret: String, for targetID: String,
+                                     kind: Kind = .initiator) {
+        try? store(secret, for: targetID, kind: kind)
     }
 
     /// Throwing variant. `SecItemAdd`'s status used to be discarded entirely, so
     /// a keychain that refused the write was indistinguishable from one that
     /// accepted it — and the first symptom was a login failing against a target
     /// whose credentials the user had definitely entered.
-    public static func store(_ secret: String, for targetID: String) throws {
-        var query = baseQuery(targetID)
+    public static func store(_ secret: String, for targetID: String,
+                             kind: Kind = .initiator) throws {
+        var query = baseQuery(targetID, kind)
         SecItemDelete(query as CFDictionary)
 
         query[kSecValueData as String] = Data(secret.utf8)
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        query[kSecAttrLabel as String] = "iSCSI Initiator — CHAP secret"
+        query[kSecAttrLabel as String] = kind == .mutual
+            ? "iSCSI Initiator — mutual CHAP secret"
+            : "iSCSI Initiator — CHAP secret"
 
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else { throw StoreFailure.osStatus(status) }
     }
 
-    public static func chapSecret(for targetID: String) -> String? {
-        var query = baseQuery(targetID)
+    public static func chapSecret(for targetID: String, kind: Kind = .initiator) -> String? {
+        var query = baseQuery(targetID, kind)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -85,16 +109,26 @@ public enum KeychainStore {
         return String(data: data, encoding: .utf8)
     }
 
-    public static func deleteCHAPSecret(for targetID: String) {
-        SecItemDelete(baseQuery(targetID) as CFDictionary)
+    public static func deleteCHAPSecret(for targetID: String, kind: Kind = .initiator) {
+        SecItemDelete(baseQuery(targetID, kind) as CFDictionary)
+    }
+
+    /// Both halves, for deleting a target outright. Neither absence is an error.
+    public static func deleteAllSecrets(for targetID: String) {
+        deleteCHAPSecret(for: targetID, kind: .initiator)
+        deleteCHAPSecret(for: targetID, kind: .mutual)
     }
 }
 #else
 public enum KeychainStore {
     public enum StoreFailure: Error { case osStatus(Int32), notPersisted }
-    public static func setCHAPSecret(_ secret: String, for targetID: String) {}
-    public static func store(_ secret: String, for targetID: String) throws {}
-    public static func chapSecret(for targetID: String) -> String? { nil }
-    public static func deleteCHAPSecret(for targetID: String) {}
+    public enum Kind: Sendable { case initiator, mutual }
+    public static func setCHAPSecret(_ secret: String, for targetID: String,
+                                     kind: Kind = .initiator) {}
+    public static func store(_ secret: String, for targetID: String,
+                             kind: Kind = .initiator) throws {}
+    public static func chapSecret(for targetID: String, kind: Kind = .initiator) -> String? { nil }
+    public static func deleteCHAPSecret(for targetID: String, kind: Kind = .initiator) {}
+    public static func deleteAllSecrets(for targetID: String) {}
 }
 #endif

@@ -55,7 +55,22 @@ public actor ISCSIConnection {
     private let transport: any ConnectionTransport
     private let loginConfig: LoginConfig
     private var serializer = PDUSerializer()
-    private var deframer = PDUDeframer()
+    /// Before MRDSL is negotiated the peer is unauthenticated, so the framer
+    /// starts deliberately small and is rebuilt at the negotiated size once
+    /// login succeeds (see the `.fullFeature` transition below).
+    ///
+    /// It used to start at `PDUDeframer()`'s default of 16 MiB, which meant a
+    /// target could make us allocate 16 MiB per PDU before proving anything.
+    /// 64 KiB is eight times RFC 7143 §6.3's 8192-byte login limit — far more
+    /// headroom than a conforming target needs, and still small enough that the
+    /// pre-auth allocation is uninteresting.
+    static let loginPhaseSegmentLimit = 64 * 1024
+    /// Upper bound on login round trips before we give up on the target.
+    static let maxLoginRounds = 64
+    /// Upper bound on a reassembled Text response. SendTargets replies are the
+    /// large case and run to kilobytes on a big array, not megabytes.
+    static let maxTextResponseBytes = 1 << 20
+    private var deframer = PDUDeframer(maxDataSegmentLength: ISCSIConnection.loginPhaseSegmentLimit)
     public private(set) var parameters = OperationalParameters()
 
     private var state: State = .idle
@@ -92,10 +107,32 @@ public actor ISCSIConnection {
     /// phase and the receive loop starts.
     public func login() async throws -> LoginResult {
         guard state == .idle else { throw ConnectionError.protocolError("login on used connection") }
+        guard !(loginConfig.requiresAuthentication && loginConfig.chap == nil) else {
+            throw ConnectionError.protocolError(
+                "authentication required but no CHAP credentials were supplied")
+        }
 
         var machine = LoginStateMachine(config: loginConfig, cmdSN: cmdSN)
         var request = machine.start()
+        var rounds = 0
         while true {
+            // Bounded, because the peer decides when this ends and has not
+            // authenticated yet. Capping the text buffer stops it growing memory,
+            // but a target that keeps setting the C bit with an *empty* data
+            // segment adds nothing to the buffer and would spin here forever —
+            // the buffer cap never fires and neither does anything else.
+            //
+            // A round count rather than a wall clock: this actor has no timeout
+            // policy (that lives in ISCSISession), and a count is deterministic
+            // on a slow link, where a time limit would fail a legitimate login.
+            // A conforming login is a handful of round trips; 64 is generous.
+            rounds += 1
+            guard rounds <= Self.maxLoginRounds else {
+                let error = NegotiationError.protocolViolation(
+                    "login did not complete within \(Self.maxLoginRounds) round trips")
+                await close(reason: .loginFailed(error))
+                throw ConnectionError.loginFailed(error)
+            }
             try await sendRaw(serializer.serialize(request))
             let response = try await receiveLoginResponse()
             let outcome: LoginStateMachine.Outcome
@@ -602,9 +639,27 @@ public actor ISCSIConnection {
             throw ConnectionError.protocolError("text response for unknown ITT")
         }
         entry.buffer.append(resp.dataSegment)
+        // Bounded for the same reason the login buffer is: the target decides
+        // when a continued sequence ends. Post-authentication, so less alarming
+        // than the login case, but a SendTargets answer that never terminates
+        // grew this without limit in the root daemon.
+        guard entry.buffer.count <= Self.maxTextResponseBytes else {
+            pendingText.removeValue(forKey: resp.initiatorTaskTag)
+            let error = ConnectionError.protocolError(
+                "text response exceeded \(Self.maxTextResponseBytes) bytes")
+            entry.completion.complete(.failure(error))
+            throw error
+        }
         if resp.continued {
             pendingText[resp.initiatorTaskTag] = entry
             // Ask for the rest: empty text request, same ITT, target's TTT.
+            //
+            // Through the command window, like every other CmdSN consumer. This
+            // used to bump `cmdSN` directly, which meant a target could drive it
+            // past `maxCmdSN` simply by sending continuations — and once CmdSN is
+            // outside the window the target ignores every later non-immediate
+            // command, so the session is wedged for good rather than slowed.
+            try await waitForWindow()
             var req = TextRequestPDU()
             req.initiatorTaskTag = resp.initiatorTaskTag
             req.targetTransferTag = resp.targetTransferTag

@@ -614,7 +614,12 @@ final class DaemonStore: LUNStore {
     /// Connects to iscsid, logs in to `target`/`lun` at `host:port`, and learns
     /// the LUN geometry. Throws if any step fails, so `loadResource` can report
     /// a real error rather than presenting an empty volume.
-    init(host: String, port: Int, target: String, lun: UInt64, chapUser: String?) throws {
+    /// No `chapUser`: credentials are the daemon's business, resolved from the
+    /// target the user saved. This extension is reachable by any local user via
+    /// `mount(8)` — which needs no root — so anything it forwards is effectively
+    /// attacker-chosen, and it used to forward the mount URL's user component
+    /// straight into a keychain lookup.
+    init(host: String, port: Int, target: String, lun: UInt64) throws {
         connection = NSXPCConnection(machServiceName: iscsiDaemonServiceName, options: .privileged)
         connection.remoteObjectInterface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
         connection.resume()
@@ -626,7 +631,7 @@ final class DaemonStore: LUNStore {
         var loginError: Error?
         try Self.blocking { done in
             proxy.login(host: host, port: NSNumber(value: port), targetIQN: target,
-                        lun: NSNumber(value: lun), chapUser: chapUser) { h, e in
+                        lun: NSNumber(value: lun)) { h, e in
                 handle = h; loginError = e; done()
             }
         }
@@ -644,9 +649,22 @@ final class DaemonStore: LUNStore {
             }
         }
         if let capError { throw capError }
-        byteCount = blockSize.uint64Value * blockCount.uint64Value
-        guard byteCount > 0, blockSize.uint64Value > 0 else { throw POSIXError(.EIO) }
-        aligner = BlockAligner(blockSize: blockSize.uint64Value, capacity: byteCount)
+        // Check before multiplying, not after. `*` traps on overflow, so the
+        // guard that used to follow this line could not run: a target claiming
+        // 2^48 blocks of 64 KiB makes the product exactly 2^64 and killed the
+        // extension mid-`mount`, which wedges the mount rather than failing it.
+        //
+        // The daemon validates geometry at the parse site now
+        // (`ISCSIBlockDevice.geometry(fromReadCapacity16:)`) so these values
+        // should already be sane; this stays because the trap is one line away
+        // from the values arriving over XPC, and defence here costs nothing.
+        let bs = blockSize.uint64Value
+        let count = blockCount.uint64Value
+        guard bs > 0, count > 0 else { throw POSIXError(.EIO) }
+        let (product, overflowed) = bs.multipliedReportingOverflow(by: count)
+        guard !overflowed, product > 0 else { throw POSIXError(.EIO) }
+        byteCount = product
+        aligner = BlockAligner(blockSize: bs, capacity: byteCount)
         self.blockSize = blockSize.uint64Value
 
         fsLog.log("DaemonStore session=\(handle, privacy: .public) size=\(self.byteCount) blockSize=\(blockSize.uint64Value)")
@@ -870,8 +888,12 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         let target = parts[0]
         let lun = parts.count >= 2 ? (UInt64(parts[1]) ?? 0) : 0
         fsLog.log("connecting to iscsid: host=\(host, privacy: .public) target=\(target, privacy: .public) lun=\(lun)")
+        // `url.user` is deliberately ignored. It used to be forwarded as the
+        // daemon's keychain lookup key, which made a mount URL a way to name
+        // which stored secret root should spend. The daemon now decides that
+        // from its own saved record, and refuses portals it has no record for.
         return try DaemonStore(host: host, port: url.port ?? 3260,
-                               target: target, lun: lun, chapUser: url.user)
+                               target: target, lun: lun)
     }
 
     func probeResource(resource: FSResource,

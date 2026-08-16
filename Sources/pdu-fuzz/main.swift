@@ -12,18 +12,34 @@ public func fuzzOne(_ start: UnsafeRawPointer, _ count: Int) -> CInt {
 }
 
 func fuzzBody(_ data: Data) {
-    for header in [false, true] {
-        for dataDigest in [false, true] {
-            var deframer = PDUDeframer(
-                digests: DigestConfig(headerDigest: header, dataDigest: dataDigest),
-                maxDataSegmentLength: 1 << 20
-            )
-            deframer.append(data)
-            while let raw = try? deframer.next() {
-                if let pdu = try? AnyPDU.decode(raw) {
-                    // Re-encode of a decoded PDU must never crash.
-                    _ = pdu.encode()
-                }
+    stateless(data)
+    // Again at a non-zero startIndex. Every input this harness generates is a
+    // fresh Data whose startIndex is 0, so it structurally could not catch the
+    // classic Swift parsing bug: indexing a *slice* with an absolute offset.
+    // Foundation keeps the original startIndex on a slice, and the accessors in
+    // Support/Endian are all `self[startIndex + offset]` — this is what pins
+    // that. A regression here would be silent and catastrophic.
+    var prefixed = Data([0xAA, 0x55, 0x00])
+    prefixed.append(data)
+    stateless(prefixed.dropFirst(3))
+
+    chapParsers(data)
+    loginExchange(data)
+}
+
+/// Stateless parsers of target-controlled bytes.
+private func stateless(_ data: Data) {
+    // Two digest configurations, not four. A mutated input essentially never
+    // carries a valid CRC, so `(true, false)` and `(false, true)` threw at the
+    // digest check and did almost no decoding — costing half the CPU budget for
+    // no added coverage.
+    for digests in [DigestConfig(), DigestConfig(headerDigest: true, dataDigest: true)] {
+        var deframer = PDUDeframer(digests: digests, maxDataSegmentLength: 1 << 20)
+        deframer.append(data)
+        while let raw = try? deframer.next() {
+            if let pdu = try? AnyPDU.decode(raw) {
+                // Re-encode of a decoded PDU must never crash.
+                _ = pdu.encode()
             }
         }
     }
@@ -33,6 +49,83 @@ func fuzzBody(_ data: Data) {
     // check here is a crash, not a wrong answer.
     _ = ModeSense.writeCacheEnabled(inResponse: data)
     _ = SenseData(data)
+    // READ CAPACITY(16). Extracted as a pure function precisely so it could be
+    // reached from here: three separate remote aborts lived in the four lines
+    // that used to parse this inline, and none of them were fuzzable.
+    _ = try? ISCSIBlockDevice.geometry(fromReadCapacity16: data)
+}
+
+/// The CHAP value parsers, which run on attacker-chosen text *before*
+/// authentication completes and had never been fuzzed.
+private func chapParsers(_ data: Data) {
+    let text = String(decoding: data, as: UTF8.self)
+    _ = try? CHAP.decodeValue(text)
+    _ = try? CHAP.decodeID(text)
+    // The prefixed forms are the ones that actually reach the hex and base64
+    // branches; raw bytes almost never start with "0x".
+    _ = try? CHAP.decodeValue("0x" + text)
+    _ = try? CHAP.decodeValue("0b" + text)
+    // And as key/value pairs, the way they arrive.
+    if let params = try? TextParameters.decode(data) {
+        for key in ["CHAP_A", "CHAP_I", "CHAP_C", "CHAP_N", "CHAP_R"] {
+            if let value = params[key] {
+                _ = try? CHAP.decodeValue(value)
+                _ = try? CHAP.decodeID(value)
+            }
+        }
+    }
+}
+
+/// Drive the login state machine through a whole conversation, which is where
+/// the negotiation engine, the CHAP exchange and the continuation buffers live.
+///
+/// Needs a multi-round exchange rather than a single blob, so it is driven by
+/// slicing the input into successive login responses. Bounded rounds: a hostile
+/// script that never terminates is a real behaviour (and now a caught one), but
+/// this loop must still return.
+private func loginExchange(_ data: Data) {
+    guard !data.isEmpty else { return }
+    for withCHAP in [false, true] {
+        var config = LoginConfig(
+            initiatorName: "iqn.2026-08.com.example:fuzz",
+            sessionType: .normal,
+            targetName: "iqn.2026-08.com.example:disk0",
+            chap: withCHAP ? CHAP.Credentials(name: "u", secret: "secretsecret1234") : nil
+        )
+        config.desired.offerDigests = true
+
+        var machine = LoginStateMachine(config: config, cmdSN: 1)
+        var request = machine.start()
+        var cursor = data.startIndex
+        var rounds = 0
+        while cursor < data.endIndex, rounds < 24 {
+            rounds += 1
+            let take = 1 + Int(data[cursor]) % 96
+            let end = min(data.index(cursor, offsetBy: take, limitedBy: data.endIndex)
+                          ?? data.endIndex, data.endIndex)
+            let chunk = data[cursor ..< end]
+            cursor = end
+
+            var resp = LoginResponsePDU()
+            let flags = chunk.first ?? 0
+            resp.transit = flags & 0x80 != 0
+            resp.continued = !resp.transit && (flags & 0x40 != 0)
+            resp.currentStage = LoginStage(rawValue: (flags >> 2) & 3) ?? .securityNegotiation
+            resp.nextStage = LoginStage(rawValue: flags & 3) ?? .securityNegotiation
+            resp.statusClass = (flags & 0x20) != 0 ? 1 : 0
+            resp.statSN = UInt32(rounds - 1)
+            resp.expCmdSN = 1
+            resp.maxCmdSN = 64
+            resp.dataSegment = Data(chunk)
+
+            guard let outcome = try? machine.receive(resp) else { break }
+            switch outcome {
+            case .send(let next): request = next
+            case .success, .redirect: cursor = data.endIndex
+            }
+            _ = request
+        }
+    }
 }
 
 #if !FUZZING
@@ -107,6 +200,41 @@ func seedCorpus() -> [Data] {
     t.append("TargetAddress", "10.0.0.1:3260,1")
     text.dataSegment = t.encode()
     seeds.append(plain.serialize(text))
+
+    // A CHAP challenge, so mutation lands inside the authentication parsers
+    // rather than only near them. These values are the ones a hostile target
+    // controls, and they are consumed before the login completes.
+    var challenge = LoginResponsePDU()
+    challenge.currentStage = .securityNegotiation
+    challenge.nextStage = .securityNegotiation
+    var chapKeys = TextParameters()
+    chapKeys.append("CHAP_A", "5")
+    chapKeys.append("CHAP_I", "42")
+    chapKeys.append("CHAP_C", "0x8f1e2d3c4b5a69780f1e2d3c4b5a6978")
+    challenge.dataSegment = chapKeys.encode()
+    seeds.append(plain.serialize(challenge))
+
+    // A continued login response: the shape that grew an unbounded buffer
+    // before the login text cap, and the one worth keeping under mutation.
+    var continued = LoginResponsePDU()
+    continued.transit = false
+    continued.continued = true
+    continued.currentStage = .loginOperationalNegotiation
+    continued.nextStage = .loginOperationalNegotiation
+    var opKeys = TextParameters()
+    opKeys.append("MaxRecvDataSegmentLength", "262144")
+    opKeys.append("MaxBurstLength", "1048576")
+    opKeys.append("HeaderDigest", "CRC32C")
+    continued.dataSegment = opKeys.encode()
+    seeds.append(plain.serialize(continued))
+
+    // A READ CAPACITY(16) payload, for the geometry parser. Bare bytes rather
+    // than a PDU: `geometry(fromReadCapacity16:)` takes a data segment.
+    var capacity = Data(count: 32)
+    capacity.setU8(0x00, 0); capacity.setU8(0x1F, 6); capacity.setU8(0xFF, 7)  // lastLBA
+    capacity.setU8(0x00, 8); capacity.setU8(0x00, 9)
+    capacity.setU8(0x02, 10); capacity.setU8(0x00, 11)                          // 512-byte blocks
+    seeds.append(capacity)
 
     return seeds
 }

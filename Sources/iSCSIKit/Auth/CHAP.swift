@@ -7,6 +7,35 @@ import Foundation
 /// MD5 is cryptographically broken in general but is what the iSCSI CHAP
 /// exchange specifies and what every deployed target implements.
 public enum CHAP {
+    public enum CredentialError: Error, LocalizedError, Equatable {
+        case emptyName
+        case emptySecret(label: String)
+        case secretTooShort(label: String, length: Int)
+
+        public var errorDescription: String? {
+            switch self {
+            case .emptyName:
+                return "A CHAP user name is required."
+            case .emptySecret(let label):
+                return "The \(label) is empty."
+            case .secretTooShort(let label, let length):
+                return "The \(label) is \(length) characters; "
+                     + "at least \(Credentials.minimumSecretLength) are required."
+            }
+        }
+
+        public var recoverySuggestion: String? {
+            switch self {
+            case .emptyName:
+                return nil
+            case .emptySecret, .secretTooShort:
+                return "RFC 7143 sets 12 characters as the minimum, and most targets "
+                     + "reject anything shorter with an error that says only "
+                     + "“authentication failure”."
+            }
+        }
+    }
+
     public struct Credentials: Sendable, Equatable {
         public var name: String
         public var secret: String
@@ -14,11 +43,42 @@ public enum CHAP {
         public var mutualName: String?
         public var mutualSecret: String?
 
+        /// RFC 7143 §12.1.1's floor. Below this, a captured exchange is
+        /// brute-forceable offline: the response is one MD5 over a short input,
+        /// and both the id and the challenge that go into it are chosen by
+        /// whoever we are talking to.
+        public static let minimumSecretLength = 12
+
         public init(name: String, secret: String, mutualName: String? = nil, mutualSecret: String? = nil) {
             self.name = name
             self.secret = secret
             self.mutualName = mutualName
             self.mutualSecret = mutualSecret
+        }
+
+        /// Throws rather than accepting a secret no target should honour.
+        ///
+        /// The non-throwing initialiser above stays for tests and for callers
+        /// holding an already-validated secret; this is what anything taking a
+        /// secret from a human or a file should use. The case it exists for is
+        /// an *empty* secret: `--chap-user x` with the secret argument forgotten
+        /// used to produce `MD5(id ‖ "" ‖ challenge)` — a complete, well-formed
+        /// exchange that tells the peer the secret is empty.
+        public static func validated(name: String, secret: String,
+                                     mutualName: String? = nil,
+                                     mutualSecret: String? = nil) throws -> Credentials {
+            guard !name.isEmpty else { throw CredentialError.emptyName }
+            try check(secret, label: "CHAP secret")
+            if let mutualSecret { try check(mutualSecret, label: "mutual CHAP secret") }
+            return Credentials(name: name, secret: secret,
+                               mutualName: mutualName, mutualSecret: mutualSecret)
+        }
+
+        private static func check(_ secret: String, label: String) throws {
+            guard !secret.isEmpty else { throw CredentialError.emptySecret(label: label) }
+            guard secret.utf8.count >= minimumSecretLength else {
+                throw CredentialError.secretTooShort(label: label, length: secret.utf8.count)
+            }
         }
 
         public var wantsMutual: Bool { mutualSecret != nil }

@@ -74,6 +74,28 @@ extension DaemonConnection {
         }
     }
 
+    static func setMutualCHAPSecret(targetID: String, secret: String) async throws {
+        try await call { proxy, finish in
+            proxy.setMutualCHAPSecret(targetID: targetID, secret: secret) { error in
+                finish(error.map { .failure($0) } ?? .success(()))
+            }
+        }
+    }
+
+    static func deleteMutualCHAPSecret(targetID: String) async throws {
+        try await call { proxy, finish in
+            proxy.deleteMutualCHAPSecret(targetID: targetID) { error in
+                finish(error.map { .failure($0) } ?? .success(()))
+            }
+        }
+    }
+
+    static func hasMutualCHAPSecret(targetID: String) async throws -> Bool {
+        try await call { proxy, finish in
+            proxy.hasMutualCHAPSecret(targetID: targetID) { finish(.success($0)) }
+        }
+    }
+
     // MARK: - Discovery and sessions
 
     static func discoverTargets(host: String, port: UInt16,
@@ -90,20 +112,23 @@ extension DaemonConnection {
     /// Check reachability and credentials without holding a session. See the
     /// protocol note — this exists because handles are connection-scoped and
     /// this client opens a connection per call.
+    /// No credential parameter: the daemon resolves the portal against its own
+    /// saved targets and uses that record's CHAP identity. Passing one was the
+    /// bug — it let a caller pick which stored secret got spent, and where.
     static func testConnection(host: String, port: UInt16, targetIQN: String,
-                               lun: UInt64, chapUser: String?) async throws -> LUNInfo {
+                               lun: UInt64) async throws -> LUNInfo {
         try await decode(LUNInfo.self) { proxy, finish in
             proxy.testConnection(host: host, port: NSNumber(value: port),
-                                 targetIQN: targetIQN, lun: NSNumber(value: lun),
-                                 chapUser: chapUser) { data, error in finish(data, error) }
+                                 targetIQN: targetIQN,
+                                 lun: NSNumber(value: lun)) { data, error in finish(data, error) }
         }
     }
 
     static func login(host: String, port: UInt16, targetIQN: String,
-                      lun: UInt64, chapUser: String?) async throws -> String {
+                      lun: UInt64) async throws -> String {
         try await call { proxy, finish in
             proxy.login(host: host, port: NSNumber(value: port), targetIQN: targetIQN,
-                        lun: NSNumber(value: lun), chapUser: chapUser) { handle, error in
+                        lun: NSNumber(value: lun)) { handle, error in
                 if let error { finish(.failure(error)) }
                 else if let handle { finish(.success(handle)) }
                 else { finish(.failure(Unreachable(reason: "the daemon returned no session"))) }

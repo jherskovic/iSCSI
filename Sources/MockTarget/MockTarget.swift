@@ -222,8 +222,18 @@ public actor MockTarget {
     private func loginPhase() async throws {
         var securityDone = !config.requireChap
         var chapState = 0 // 0: awaiting CHAP_A, 1: awaiting response
-        let chapID: UInt8 = 0x2A
-        let chapChallenge = Data((0 ..< 16).map { UInt8($0 * 7 & 0xFF) })
+        // Per connection, from the system CSPRNG. These were compile-time
+        // constants — `0x2A` and `00 07 0e 15 …` — identical on every run, which
+        // makes a captured CHAP_R replay forever. Harmless while this is only a
+        // unit-test fixture, but `iscsi-target-sim` wraps it as a real
+        // executable that binds a port and accepts `--require-chap`, so anyone
+        // pointing it at a non-loopback interface had a target whose challenge
+        // never changed.
+        //
+        // Fixed challenges also make the tests weaker in a subtle way: they
+        // cannot catch an initiator that caches or precomputes a response.
+        let chapID = UInt8.random(in: 0 ... 255)
+        let chapChallenge = Data((0 ..< 16).map { _ in UInt8.random(in: 0 ... 255) })
 
         while running {
             guard let pdu = try await nextPDU() else { throw TransportError.closed }

@@ -19,12 +19,24 @@ import Foundation
     func discover(host: String, port: NSNumber, reply: @escaping ([String]?, Error?) -> Void)
 
     /// Log in and establish a session for `targetIQN`. Reply: session handle.
+    ///
+    /// The portal identifies a target the daemon **already has on file**; there
+    /// is deliberately no credential parameter. The daemon resolves
+    /// (host, port, targetIQN, lun) against its own `TargetStore` and takes the
+    /// CHAP identity from that record, so a client can neither choose which
+    /// stored secret is used nor point one at a portal the user never
+    /// configured. A portal with no matching record is refused.
+    ///
+    /// This replaced a `chapUser` parameter that was used verbatim as the
+    /// keychain account name. Because secrets are filed under the record id,
+    /// passing a username missed every time — and a missing secret was not an
+    /// error but a silent downgrade to `AuthMethod=None`. Passing an id instead
+    /// made it a way to spend any stored secret against an attacker's portal.
     func login(
         host: String,
         port: NSNumber,
         targetIQN: String,
         lun: NSNumber,
-        chapUser: String?,
         reply: @escaping (String?, Error?) -> Void
     )
 
@@ -95,6 +107,21 @@ import Foundation
     /// So the UI can show "secret saved" without ever handling the secret.
     func hasCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void)
 
+    /// The *target's* secret, for mutual CHAP: what the target must prove it
+    /// knows before we trust the block device it is serving.
+    ///
+    /// This had no API at all, which is why `CHAP.Credentials.mutualSecret` was
+    /// never non-nil on any path the app could reach, `wantsMutual` was always
+    /// false, and the target was never authenticated. The verification code was
+    /// correct the whole time and simply unreachable — the target-edit sheet
+    /// collected a mutual username that nothing could ever act on.
+    ///
+    /// Stored under a separate keychain account from the initiator secret so the
+    /// two cannot collide for one target.
+    func setMutualCHAPSecret(targetID: String, secret: String, reply: @escaping (Error?) -> Void)
+    func deleteMutualCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void)
+    func hasMutualCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void)
+
     // MARK: - Discovery and inspection
 
     /// SendTargets against a portal, **with** optional CHAP.
@@ -126,8 +153,13 @@ import Foundation
     ///
     /// The geometry comes back because the caller usually wants it anyway, and
     /// it costs nothing once logged in.
+    ///
+    /// Resolves credentials the same way `login` does, and refuses a portal that
+    /// is not on file — otherwise this would be the same credential oracle by a
+    /// different name, and it is the call the UI makes to *validate* credentials,
+    /// so a false success here is worse than elsewhere.
     func testConnection(host: String, port: NSNumber, targetIQN: String, lun: NSNumber,
-                        chapUser: String?, reply: @escaping (Data?, Error?) -> Void)
+                        reply: @escaping (Data?, Error?) -> Void)
 
     /// Delete everything the daemon owns: the targets file, its directory, and
     /// every stored CHAP secret.

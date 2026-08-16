@@ -53,12 +53,41 @@ public final class TracingTransport: ConnectionTransport, @unchecked Sendable {
         }
     }
 
+    /// Keys whose values must never reach a log.
+    ///
+    /// Login-phase PDUs are text PDUs and digests are off during login, so this
+    /// decoder used to print the whole CHAP exchange verbatim in both
+    /// directions. `CHAP_R` is not the secret, but it is `MD5(id ‖ secret ‖
+    /// challenge)`, and it was printed next to the `CHAP_I` and `CHAP_C` that
+    /// complete the triple — which is the entire input an offline cracker needs.
+    ///
+    /// The realistic path was not an attacker on the machine. It was a user
+    /// hitting a login problem, being told to run with `--debug`, and attaching
+    /// the output to a bug report.
+    ///
+    /// Redaction lives here rather than at call sites because this type is
+    /// `public` and reusable, and a redaction rule that each caller has to
+    /// remember is one that some caller will not.
+    private static let sensitiveKeys: Set<String> = [
+        "CHAP_R", "CHAP_C", "CHAP_N", "CHAP_I", "CHAP_A",
+    ]
+
+    private static func redactIfSensitive(key: String, value: String) -> String {
+        guard sensitiveKeys.contains(key.uppercased()) else { return value }
+        // Length, not content: it is the one property worth having in a trace
+        // (a truncated or empty challenge is a real bug) and it discloses
+        // nothing useful about the secret.
+        return "<redacted \(value.utf8.count)B>"
+    }
+
     private func summary(_ raw: RawPDU) -> String {
         let opName = raw.opcode.map { "\($0)" } ?? String(format: "op=0x%02x", raw.opcodeByte)
         var parts = [opName, String(format: "itt=0x%08x", raw.initiatorTaskTag)]
         if raw.data.count > 0 {
             if let text = try? TextParameters.decode(raw.data), !text.isEmpty {
-                let kv = text.pairs.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+                let kv = text.pairs
+                    .map { "\($0.key)=\(Self.redactIfSensitive(key: $0.key, value: $0.value))" }
+                    .joined(separator: " ")
                 parts.append("{\(kv)}")
             } else {
                 parts.append("data=\(raw.data.count)B")

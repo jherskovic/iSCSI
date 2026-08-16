@@ -123,15 +123,28 @@ final class AppModel: ObservableObject {
 
     // MARK: - Targets
 
-    func save(_ target: TargetRecord, secret: String?) async {
+    func save(_ target: TargetRecord, secret: String?, mutualSecret: String? = nil) async {
         do {
             // Use the id the daemon actually stored under. Adding a target
             // that already exists keeps the existing record's id, so filing the
             // secret under the id we sent would put it somewhere nothing looks.
             let stored = try await DaemonConnection.saveTarget(target)
-            // The secret goes in its own call and never into targets.json.
+            // Secrets go in their own calls and never into targets.json.
+            //
+            // Clearing a user name clears its secret with it. Otherwise the
+            // secret outlives the username that gave it meaning, and re-adding
+            // the same name later silently resurrects a credential the user
+            // believes they removed.
             if let secret, !secret.isEmpty {
                 try await DaemonConnection.setCHAPSecret(targetID: stored.id, secret: secret)
+            } else if target.chapUser == nil {
+                try? await DaemonConnection.deleteCHAPSecret(targetID: stored.id)
+            }
+            if let mutualSecret, !mutualSecret.isEmpty {
+                try await DaemonConnection.setMutualCHAPSecret(targetID: stored.id,
+                                                               secret: mutualSecret)
+            } else if target.mutualChapUser == nil {
+                try? await DaemonConnection.deleteMutualCHAPSecret(targetID: stored.id)
             }
             targets = try await DaemonConnection.listTargets()
         } catch {
@@ -175,7 +188,7 @@ final class AppModel: ObservableObject {
             // instead of to their password.
             _ = try await DaemonConnection.testConnection(
                 host: target.host, port: target.port, targetIQN: target.targetIQN,
-                lun: target.lun, chapUser: target.chapUser)
+                lun: target.lun)
 
             let attachment = try await attachments.attach(target)
             sessions = try await DaemonConnection.sessions()

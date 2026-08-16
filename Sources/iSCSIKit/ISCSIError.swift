@@ -182,6 +182,16 @@ public enum ISCSIError {
                                + "(SCSI status 0x%02X).", status),
                         "The sense data attached to this error identifies the cause.",
                         sense.map(hex))
+            case .invalidGeometry(let blockSize, let blockCount, let reason):
+                // Points at the target, not at the user, because there is
+                // nothing they can change here — and not at the initiator
+                // either, because it is the target that is misreporting.
+                return (.deviceNotReady,
+                        "The target described a device that cannot exist: \(reason) "
+                        + "(block size \(blockSize), \(blockCount) blocks).",
+                        "The target is misreporting its capacity, or something "
+                        + "between this Mac and it is altering the reply. Check the "
+                        + "target's LUN configuration.", nil)
             }
 
         case let e as TransportError:

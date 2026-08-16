@@ -36,10 +36,20 @@ final class InstallLocation: SetupStep {
         bundleURL.path.contains("/AppTranslocation/")
     }
 
+    /// `/Applications` only — deliberately not `~/Applications`.
+    ///
+    /// The daemon's plist uses `BundleProgram`, resolved relative to this
+    /// bundle, so launchd runs a root binary out of whatever directory the app
+    /// sits in. `~/Applications` is owned and writable by the unprivileged user.
+    ///
+    /// That is not arbitrary root execution — launchd validates the signature,
+    /// and an attacker has no Developer ID for this team. What it does allow is
+    /// a silent **downgrade**: replace the bundle with an older, still validly
+    /// signed release of this same app and launchd will happily run it, putting
+    /// back whatever has since been fixed. No prompt, no signature failure,
+    /// nothing the user would notice.
     var isInApplications: Bool {
-        let path = bundleURL.path
-        return path.hasPrefix("/Applications/")
-            || path.hasPrefix(NSHomeDirectory() + "/Applications/")
+        bundleURL.path.hasPrefix("/Applications/")
     }
 
     func check() async {
@@ -51,10 +61,15 @@ final class InstallLocation: SetupStep {
             return
         }
         guard isInApplications else {
+            // Names /Applications specifically, because ~/Applications is the
+            // near miss this is most likely to be reporting and "Applications"
+            // alone reads as if that would do.
             state = .actionable(
                 "running from \(bundleURL.deletingLastPathComponent().path). "
-                + "A LaunchDaemon has to be reachable before anyone logs in, so "
-                + "the app needs to live in Applications.")
+                + "A LaunchDaemon has to be reachable before anyone logs in, and "
+                + "it runs as root from wherever this app lives — so the app needs "
+                + "to be in /Applications, which only an administrator can change, "
+                + "rather than in your home folder.")
             return
         }
         state = .satisfied(bundleURL.path)

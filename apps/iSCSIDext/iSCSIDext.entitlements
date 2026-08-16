@@ -12,7 +12,26 @@
     <true/>
     <key>com.apple.developer.driverkit.family.scsicontroller</key>
     <true/>
-    <!-- Allow the daemon (by bundle id) to open our user client. -->
+    <!--
+      MUST BE REPLACED BEFORE BACKEND B SHIPS.
+
+      This does NOT mean "allow the daemon (by bundle id)", which is what the
+      comment here used to claim. It means what it says: it removes the
+      requirement that an opener hold `userclient-access` naming this dext, so
+      *any* process can IOServiceOpen us. Neither iSCSIUserClient::Start nor
+      ExternalMethod checks the caller, and the selectors behind them publish
+      LUN geometry, dequeue and complete SCSI tasks, and map the shared payload
+      arena — i.e. read/write access to in-flight disk buffers.
+
+      Not live: the dext is excluded from the shipping bundle (see project.yml),
+      lives in its own dev scheme, and these entitlements are Apple-approval
+      gated. Left alone deliberately rather than fixed blind, because changing
+      it means re-requesting the grant and re-testing a parked backend.
+
+      The fix is the paired model: drop this, give iscsid
+      `com.apple.developer.driverkit.userclient-access` naming
+      me.herko.iSCSIInitiator.dext, and add an explicit client check in Start.
+    -->
     <key>com.apple.developer.driverkit.allow-any-userclient-access</key>
     <true/>
 </dict>

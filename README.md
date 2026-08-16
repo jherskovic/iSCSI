@@ -116,6 +116,33 @@ presenting the LUN as **removable** media makes macOS elide every flush in-kerne
 so APFS's barriers became silent no-ops. When presented as a fixed disk, flushes
 reach the wire. See "The flush gap" in `docs/architecture.md`.
 
+## Run it on a network you trust
+
+iSCSI here is **plaintext TCP on port 3260**. There is no TLS and no IPsec — the
+protocol permits TLS and this implementation does not offer it yet, so the
+transport gives you no confidentiality and no integrity.
+
+What that means concretely, for anyone on the path between this Mac and the
+target:
+
+- Every byte of the volume is readable. `Data-In` PDUs carry file contents in
+  the clear.
+- Every byte is modifiable, in both directions. The CRC32C header and data
+  digests are verified, but a checksum with a published polynomial is not a MAC
+  — anyone altering bytes simply recomputes it.
+- Responses can be forged wholesale: SCSI status, sense data, `READ CAPACITY`,
+  the login exchange.
+
+CHAP authenticates the *initiator to the target*. **Mutual CHAP** is the only
+control here that authenticates the target back, which is what would catch a
+stand-in feeding this Mac a fabricated disk that macOS then mounts as APFS — so
+configure it if your target supports it. It is per-target, under "Verify the
+target" in the target editor.
+
+Run this on a trusted, isolated segment, or inside a WireGuard/IPsec tunnel.
+FileVault on the volume protects the data at rest and over the wire; it does not
+stop an on-path attacker from corrupting the filesystem underneath you.
+
 ## Building
 
 ```sh

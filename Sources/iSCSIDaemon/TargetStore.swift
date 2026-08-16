@@ -16,6 +16,15 @@
 //  backup, a support bundle, a screenshot of Finder — discloses topology, which
 //  is unpleasant, rather than credentials, which is a breach.
 //
+//  That argument is still true and it is still not a reason to leave the file
+//  readable. It was written when the file was 0644, and it held only because the
+//  record id was inert; login then started using a client-supplied string as the
+//  keychain account name, which quietly turned this file into a list of valid
+//  credential selectors. The lesson is that "this data is harmless" is a claim
+//  about code elsewhere, and code elsewhere changes. It is 0600 in a 0700
+//  directory now, and the argument above is a nice-to-have rather than the
+//  thing standing between a local user and a secret.
+//
 
 import Foundation
 import iSCSIKit
@@ -78,6 +87,22 @@ public actor TargetStore {
         return incoming
     }
 
+    /// The configured target at this portal, if there is one.
+    ///
+    /// Login resolves credentials through here rather than taking them from the
+    /// caller, so the set of portals the daemon will authenticate to is exactly
+    /// the set the user configured. Uses the same (host, port, IQN, LUN)
+    /// identity as `save`, which is what makes "the record the user edited" and
+    /// "the record a mount URL names" the same record.
+    public func record(host: String, port: UInt16, targetIQN: String, lun: UInt64) -> TargetRecord? {
+        all().first {
+            $0.host.caseInsensitiveCompare(host) == .orderedSame
+                && $0.port == port
+                && $0.targetIQN == targetIQN
+                && $0.lun == lun
+        }
+    }
+
     private func isSameTarget(_ a: TargetRecord, _ b: TargetRecord) -> Bool {
         a.host.caseInsensitiveCompare(b.host) == .orderedSame
             && a.port == b.port
@@ -114,9 +139,19 @@ public actor TargetStore {
     }
 
     private func persist(_ records: [TargetRecord]) throws {
+        // 0700/0600, not 0755/0644. The header above argues that a leak
+        // discloses topology rather than credentials, and that was true only
+        // while the record id was not itself a credential selector. It was: the
+        // daemon used to look a CHAP secret up by a string the client supplied,
+        // so a world-readable list of ids was a list of keychain account names.
+        // Login no longer works that way, but nothing unprivileged has any
+        // business reading this either — every legitimate reader is this daemon
+        // or goes through `listTargets` on the authenticated XPC channel.
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o755])
+            attributes: [.posixPermissions: 0o700])
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: url.deletingLastPathComponent().path)
 
         let encoder = JSONEncoder()
         // Sorted and pretty so the file diffs cleanly and can be read by a human
@@ -128,7 +163,12 @@ public actor TargetStore {
         // one, and would cost the user their whole configuration for a crash
         // that happened to land mid-write.
         try data.write(to: url, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+        // An atomic write lands a fresh inode with umask-derived permissions, so
+        // there is a moment before this chmod when the file is world-readable.
+        // The 0700 on the directory above is what actually closes that window:
+        // an unprivileged process cannot traverse into it to open the file at
+        // all, whatever mode the file itself is wearing at the time.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         cache = records
     }
 }
