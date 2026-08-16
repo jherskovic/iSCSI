@@ -240,6 +240,9 @@ swift run iscsictl verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --writ
 printf 'crash\n' | nc 127.0.0.1 3262     # target power loss, on demand
 ```
 
+`docs/open-questions.md` lists what is known to be untested, unexplained, or
+deferred — with what is known about each and how to attack it.
+
 See `docs/architecture.md` for the two-backend design and the DriverKit
 throughput caveat, `docs/backend-a-fskit-notes.md` for how the shipping backend
 actually behaves on both OS versions, `docs/daemon-registration.md` for what
