@@ -212,3 +212,37 @@ cache produced a confident wrong number; the others are recorded above.
 
 And it had never failed, which is not the same as being able to. A deliberately
 planted stale block is detected and named: "STALE, generation 3 instead of 5".
+
+## Correction: FSKit asks for 1 MiB, not 256 KiB
+
+Once the extension reported its own numbers, the request size turned out to be
+1 MiB:
+
+    reads=81/84934656B req=1048576B depth=8 readahead=97% (79 hit, 2 miss, 0 unanswered)
+
+84934656 / 81 = 1048575 bytes per read. Every "256 KiB" statement above about
+what FSKit requests is wrong.
+
+The inference that produced it: build 13, with readahead fixed at four slots,
+reached 391.5 MB/s, and the raw path at queue depth 4 with 256 KiB commands
+reached 393.4 MB/s. Two numbers within half a percent of each other, from a
+model that predicted them. It was a coincidence, and it was treated as
+confirmation because it was the answer being looked for.
+
+What survives is the reasoning that mattered, which never depended on the
+number being 256 KiB: counting requests rather than bytes under-fills the pipe
+whenever the request size differs from what the budget was tuned against, and a
+budget in bytes is right either way. What does not survive is the specific
+figure, and the tidiness of the story that produced it.
+
+The measured configuration is now: 1 MiB requests, an 8 MiB budget giving depth
+8, and a 97% hit rate. Depth 8 at 1 MiB sits directly on the edge of the cliff
+above — 8 was fine at 1164 MB/s and 16 collapsed to 340 — which the byte budget
+happens to land on correctly rather than by design. The 256 KiB
+`maxTransferBytes` cap is what actually removes the risk: each 1 MiB request is
+now split into four concurrent 256 KiB commands, so the SCSI layer never issues
+a command the cliff applies to.
+
+Reading a number beats deriving one. This whole section exists because the
+extension was not asked what it was doing until after every conclusion had been
+drawn.
