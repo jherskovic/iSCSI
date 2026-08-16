@@ -179,40 +179,77 @@ final class DaemonController: ObservableObject {
 
     // MARK: - Acting
 
+    /// Register, retrying while the system says nothing was recorded.
+    ///
+    /// `register()` throws EPERM (SMAppServiceErrorDomain 1) in two unrelated
+    /// situations, and they need opposite responses:
+    ///
+    ///   * The daemon is recorded but unapproved. `.status` is then
+    ///     `requiresApproval` and the user has somewhere to go. Retrying is
+    ///     pointless and would delay telling them.
+    ///   * A previous `unregister()` has not finished. `.status` is
+    ///     `notRegistered` and nothing was recorded at all. Only asking again
+    ///     helps.
+    ///
+    /// The second is what made every reinstall take two clicks. Measured:
+    ///
+    ///     11:08:41.582  register() calling
+    ///     11:08:41.603  state checking -> notRegistered
+    ///     11:08:47.858  settle gave up after 24 rounds in notRegistered
+    ///                   failed("SMAppServiceErrorDomain 1 ... not permitted")
+    ///     11:09:15.346  register() returned without throwing   [second click]
+    ///     11:09:15.415  running(build 19, pid 70587)
+    ///
+    /// The first attempt threw, the second did not. Polling `.status` after a
+    /// failed register — which is what the previous fix did, 24 times over six
+    /// seconds — cannot help, because there is no pending result to wait for.
+    /// The user's second click was not confirming anything; it was doing the
+    /// work. So do it here.
+    ///
+    /// `unregister()` waits for the daemon process to die, and that is
+    /// evidently not the same as launchd having finished with the job.
     func register() async {
         state = .checking
-        Self.log.log("register() calling")
-        do {
-            try service.register()
-            detail = "register() succeeded"
-            Self.log.log("register() returned without throwing")
-        } catch let error as NSError {
-            // Already registered is not a failure — it is the state we wanted,
-            // reached earlier. Fall through to the status check rather than
-            // reporting an error the user can do nothing about.
-            if error.code == kSMErrorAlreadyRegistered {
-                detail = "already registered"
-            } else {
-                // A throw here does NOT mean nothing happened. Registering a
-                // LaunchDaemon that has not been approved yet fails with EPERM
-                // (SMAppServiceErrorDomain 1) *after* smd has already recorded
-                // the item in Background Task Management, at which point
-                // .status is requiresApproval and the user's next step is to go
-                // approve it. Reporting the throw as the final state told the
-                // user their install had failed when it was one switch away.
-                //
-                // So ask the system what actually happened, and fall back to
-                // interpreting the error only when nothing registered at all.
-                let thrown = Self.describe(error)
+        var lastError: NSError?
+
+        for attempt in 1 ... 5 {
+            do {
+                Self.log.log("register() calling (attempt \(attempt, privacy: .public))")
+                try service.register()
+                Self.log.log("register() returned without throwing")
+                detail = "register() succeeded"
                 await settle()
-                if case .notRegistered = state {
-                    state = Self.mapRegisterError(error)
-                }
-                detail = "register() threw \(thrown) — status afterwards: \(detail)"
                 return
+            } catch let error as NSError where error.code == kSMErrorAlreadyRegistered {
+                // The state we wanted, reached earlier. Not a failure.
+                Self.log.log("register(): already registered")
+                detail = "already registered"
+                await settle()
+                return
+            } catch let error as NSError {
+                lastError = error
+                Self.log.log("register() threw \(Self.describe(error), privacy: .public) on attempt \(attempt, privacy: .public)")
+
+                // Did it record the job despite throwing? One cheap look, not
+                // the full settle: the answer here is immediate either way.
+                await refresh()
+                guard case .notRegistered = state else {
+                    // Something was recorded — approval pending, or already
+                    // running. Let the normal path report it.
+                    await settle()
+                    return
+                }
+
+                if attempt < 5 {
+                    try? await Task.sleep(for: .milliseconds(400 * attempt))
+                }
             }
         }
-        await settle()
+
+        if let lastError {
+            transition(to: Self.mapRegisterError(lastError),
+                       "register() never took: \(Self.describe(lastError))")
+        }
     }
 
     /// Refresh until the answer stops changing, or a deadline passes.
