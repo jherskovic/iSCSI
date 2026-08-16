@@ -119,6 +119,23 @@ volume, checksum verified identical every time:
 | 0.3.6 | none | 219.7 MB/s |
 | 0.3.7 b13 | fixed 4 slots | 391.5 MB/s |
 | 0.3.7 b14 | 4 MiB budget (16 slots) | 636.2 MB/s |
+| 0.3.7 b15 | 8 MiB budget (32 slots) | 1099.0 MB/s |
+
+1099 MB/s is 94% of the 1165 MB/s the same target and link sustain from
+`iscsictl`, and 5.0x the unmodified path. Each step was predicted from the
+previous one's arithmetic rather than guessed: b13's number identified the
+request size, b14's identified the XPC round trip, and b15 covered it.
+
+Worth stopping there. What remains is the last 6% plus whatever the target has
+in it, and more slots costs memory and moves closer to the command-size cliff
+below for nothing.
+
+Correctness was checked at every step by reading a known 256 MiB region and
+comparing SHA-256 against the same read through the unmodified build. It
+matched every time. That checks the pattern readahead optimises — a pure
+sequential read — and does *not* exercise interleaved writes invalidating
+slots, or seeks mid-stream. Those are argued correct in the code and have not
+been measured.
 
 The fixed-4 number is what confirmed the request size: 391.5 MB/s through the
 extension against 393.4 MB/s for the raw path at queue depth 4 with 256 KiB
