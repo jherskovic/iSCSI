@@ -34,6 +34,26 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
 
     /// Cap per-SCSI-command transfer. Kept ≤ negotiated MaxBurstLength; also
     /// bounds memory per request.
+    ///
+    /// The default is 256 KiB rather than the 1 MiB it used to be, because
+    /// large commands degrade badly once several are outstanding. Measured
+    /// against a TrueNAS target over 10GbE, with the same number of bytes in
+    /// flight either way:
+    ///
+    ///     16 commands x 1 MiB   = 16 MiB outstanding ->  340 MB/s
+    ///     64 commands x 256 KiB = 16 MiB outstanding -> 1169 MB/s
+    ///
+    /// 256 KiB reached the same ceiling as 1 MiB at low depth and kept it out
+    /// to 64 outstanding, where 1 MiB fell to under a third of line rate
+    /// somewhere between 8 and 16. Smaller commands cost more round trips for
+    /// a given transfer, which pipelining already hides; the cliff is not
+    /// something depth can compensate for.
+    ///
+    /// Measured on one target, and 1 MiB happens to be exactly its negotiated
+    /// MaxBurstLength, so the boundary may be specific to it. The change is
+    /// still the right default: 256 KiB was never slower anywhere tested, and
+    /// it removes a failure mode that looks like the network being bad. See
+    /// docs/queue-depth.md.
     private let maxTransferBytes: Int
 
     /// When true, every WRITE carries Force Unit Access, so the target commits
@@ -48,7 +68,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     /// write durable, at a cost in throughput.
     private let writeThrough: Bool
 
-    public init(session: ISCSISession, lun: UInt64 = 0, maxTransferBytes: Int = 1 << 20,
+    public init(session: ISCSISession, lun: UInt64 = 0, maxTransferBytes: Int = 256 << 10,
                 writeThrough: Bool = false) {
         self.session = session
         self.lun = lun
@@ -126,26 +146,72 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         let (bs, count) = try await readCapacity()
         try validate(offset: offset, length: length, blockSize: bs, capacity: count)
         let blocksPerChunk = max(1, maxTransferBytes / bs)
+        let firstLBA = offset / UInt64(bs)
+        let totalBlocks = length / bs
 
-        var out = Data(capacity: length)
-        var lba = offset / UInt64(bs)
-        var remaining = length / bs
+        // One command: the overwhelmingly common case, and not worth a task
+        // group.
+        if totalBlocks <= blocksPerChunk {
+            return try await readChunk(lba: firstLBA, blocks: totalBlocks, blockSize: bs)
+        }
+
+        // Several commands, issued together rather than one after another.
+        //
+        // They used to be sequential, which made splitting a request strictly
+        // worse than not splitting it: a 1 MiB read became four 256 KiB round
+        // trips end to end, ~189 MB/s where a single 1 MiB command managed 349.
+        // That would have turned lowering maxTransferBytes — done to avoid the
+        // large-command cliff described above — into a regression for anyone
+        // asking for more than one chunk at a time.
+        //
+        // Concurrently, the split is a gain instead: the chunks of one request
+        // pipeline against each other, which is the same reason readahead works
+        // one layer up. Chunks of a read are independent and the results are
+        // reassembled by index, so nothing depends on completion order.
+        var plan: [(index: Int, lba: UInt64, blocks: Int)] = []
+        var lba = firstLBA
+        var remaining = totalBlocks
         while remaining > 0 {
             let blocks = min(remaining, blocksPerChunk)
-            let byteLen = blocks * bs
-            let result = try await executeAbsorbingUnitAttention(SCSITask(
-                lun: lunAddress,
-                cdb: CDB.read16(lba: lba, blocks: UInt32(blocks)),
-                direction: .read(expectedLength: UInt32(byteLen))
-            ))
-            guard result.isGood else {
-                throw BlockDeviceError.scsiError(status: result.status, sense: result.sense.flatMap(SenseData.init))
-            }
-            out.append(result.data)
+            plan.append((plan.count, lba, blocks))
             lba += UInt64(blocks)
             remaining -= blocks
         }
+
+        let parts = try await withThrowingTaskGroup(
+            of: (Int, Data).self, returning: [Int: Data].self
+        ) { group in
+            for chunk in plan {
+                group.addTask { [self] in
+                    (chunk.index, try await readChunk(lba: chunk.lba,
+                                                      blocks: chunk.blocks,
+                                                      blockSize: bs))
+                }
+            }
+            var collected: [Int: Data] = [:]
+            for try await (index, data) in group { collected[index] = data }
+            return collected
+        }
+
+        var out = Data(capacity: length)
+        for chunk in plan {
+            guard let part = parts[chunk.index] else { throw BlockDeviceError.notReady }
+            out.append(part)
+        }
         return out
+    }
+
+    private func readChunk(lba: UInt64, blocks: Int, blockSize bs: Int) async throws -> Data {
+        let result = try await executeAbsorbingUnitAttention(SCSITask(
+            lun: lunAddress,
+            cdb: CDB.read16(lba: lba, blocks: UInt32(blocks)),
+            direction: .read(expectedLength: UInt32(blocks * bs))
+        ))
+        guard result.isGood else {
+            throw BlockDeviceError.scsiError(
+                status: result.status, sense: result.sense.flatMap(SenseData.init))
+        }
+        return result.data
     }
 
     public func write(offset: UInt64, data: Data) async throws {

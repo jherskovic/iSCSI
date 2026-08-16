@@ -185,3 +185,48 @@ struct BlockDeviceTests {
         await fleet.shutdown()
     }
 }
+
+extension BlockDeviceTests {
+    /// Chunks must be reassembled in the order they were requested.
+    ///
+    /// `largeTransferChunks` above cannot check this. Its payload is
+    /// `(i * 7) & 0xFF`, which repeats every 256 bytes, and its chunks are 8192
+    /// bytes — a whole number of periods. Swap any two chunks and the result is
+    /// byte-identical, so it would pass against a device that reassembled them
+    /// in arrival order.
+    ///
+    /// That was harmless while the chunks of one read were issued one after
+    /// another. They are now issued together, so they complete in whatever
+    /// order the target answers, and correctness depends entirely on
+    /// reassembling by index. This makes each chunk's contents unique to its
+    /// position, so any transposition changes the bytes.
+    @Test func concurrentChunksAreReassembledInOrder() async throws {
+        let blockSize = 512
+        let chunkBytes = 8192
+        let totalBytes = 262_144
+        let (device, fleet) = try await makeDevice(
+            blockSize: blockSize, capacityBlocks: 2048, maxTransferBytes: chunkBytes
+        )
+
+        // Byte i carries its own chunk index, so no two chunks hold the same
+        // bytes and a swap is visible.
+        var payload = Data(capacity: totalBytes)
+        for i in 0 ..< totalBytes {
+            let chunk = UInt8((i / chunkBytes) & 0xFF)
+            payload.append(chunk ^ UInt8(i & 0xFF))
+        }
+
+        try await device.write(offset: 0, data: payload)
+        let readback = try await device.read(offset: 0, length: totalBytes)
+        #expect(readback == payload)
+
+        // Where, if it did go wrong. A bare inequality on 256 KiB says nothing
+        // about which chunk moved.
+        if readback != payload {
+            let firstBad = zip(readback, payload).enumerated()
+                .first { $0.element.0 != $0.element.1 }?.offset ?? -1
+            Issue.record("first mismatch at byte \(firstBad), chunk \(firstBad / chunkBytes)")
+        }
+        await fleet.shutdown()
+    }
+}

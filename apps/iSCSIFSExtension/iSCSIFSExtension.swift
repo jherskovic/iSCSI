@@ -284,6 +284,20 @@ final class DaemonStore: LUNStore {
     private(set) var writeBytes: UInt64 = 0
     private(set) var flushCount = 0
 
+    /// Readahead accounting, and the request size it is sized against.
+    ///
+    /// These exist because working out what this path was doing took an evening
+    /// of arithmetic that a log line would have answered. Throughput divided by
+    /// a round-trip time said FSKit asks in ~256 KiB pieces, which turned out to
+    /// be right and was still a guess. `hitRate` says whether readahead is doing
+    /// anything at all, and `lastRequestBytes` says what it is sized for — the
+    /// two numbers that decide whether the window is too small, too large, or
+    /// not being claimed because the stream is not sequential.
+    private(set) var prefetchHits = 0
+    private(set) var prefetchMisses = 0
+    private(set) var prefetchUnanswered = 0
+    private(set) var lastRequestBytes = 0
+
     /// Seconds to wait for any single daemon call.
     private static let timeout: TimeInterval = 30
 
@@ -482,6 +496,7 @@ final class DaemonStore: LUNStore {
             // A claimed slot is proof the stream is sequential: the read landed
             // exactly where the previous one predicted.
             recordSuccess()
+            lock.lock(); prefetchHits += 1; lastRequestBytes = length; lock.unlock()
             _ = noteServed(offset: offset, length: length)
             scheduleReadahead(after: offset, length: length)
             return data
@@ -492,6 +507,7 @@ final class DaemonStore: LUNStore {
             // wrong places; drop them rather than hold memory for reads nobody
             // wants.
             discardPrefetches()
+            lock.lock(); prefetchMisses += 1; lastRequestBytes = length; lock.unlock()
             let data = try rawRead(offset: offset, length: length)
             // Only start reading ahead once a second request has continued the
             // first. One read tells you nothing about what comes next.
@@ -508,6 +524,7 @@ final class DaemonStore: LUNStore {
             // exists to get out of. Count it and fail now; the latch trips
             // after three and everything afterwards fails immediately.
             discardPrefetches()
+            lock.lock(); prefetchUnanswered += 1; lock.unlock()
             throw recordTimeout()
         }
     }
@@ -579,7 +596,13 @@ final class DaemonStore: LUNStore {
 
     var summary: String {
         lock.lock(); defer { lock.unlock() }
-        return "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B flushes=\(flushCount)"
+        let claimed = prefetchHits + prefetchMisses
+        let rate = claimed > 0 ? (prefetchHits * 100 / claimed) : 0
+        let depth = Self.readaheadDepth(forRequestOf: lastRequestBytes)
+        return "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B "
+             + "flushes=\(flushCount) req=\(lastRequestBytes)B depth=\(depth) "
+             + "readahead=\(rate)% (\(prefetchHits) hit, \(prefetchMisses) miss, "
+             + "\(prefetchUnanswered) unanswered)"
     }
 
     /// Connects to iscsid, logs in to `target`/`lun` at `host:port`, and learns
