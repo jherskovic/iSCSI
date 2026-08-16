@@ -326,6 +326,15 @@ struct ReadBench: AsyncParsableCommand {
         """)
     var queueDepth: Int = 1
 
+    @Option(help: """
+        Cap on a single SCSI command, which is a different thing from --chunk: \
+        a request larger than this is split into several commands issued \
+        together. Defaults to what the daemon uses. Set it equal to --chunk to \
+        measure one command per request, which is how the large-command cliff \
+        in docs/queue-depth.md was found.
+        """)
+    var maxTransfer: Int = 256 << 10
+
     func run() async throws {
         #if canImport(Network)
         guard queueDepth >= 1 else {
@@ -341,11 +350,11 @@ struct ReadBench: AsyncParsableCommand {
         config.desired.offerDigests = true
         let session = ISCSISession(login: config) { try await transport }
         try await session.activate()
-        let device = ISCSIBlockDevice(session: session, lun: lun, maxTransferBytes: chunk)
+        let device = ISCSIBlockDevice(session: session, lun: lun, maxTransferBytes: maxTransfer)
         let (blockSize, blockCount) = try await device.readCapacity()
         let capacity = UInt64(blockSize) * blockCount
         print("capacity \(capacity / 1_048_576) MiB, blockSize \(blockSize), "
-              + "chunk \(chunk), queueDepth \(queueDepth)")
+              + "chunk \(chunk), maxTransfer \(maxTransfer), queueDepth \(queueDepth)")
 
         var offset = UInt64(offsetMB) * 1_048_576
         // Align to a block boundary; the device rejects unaligned requests.
