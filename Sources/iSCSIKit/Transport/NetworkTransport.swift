@@ -65,15 +65,54 @@ public final class NetworkTransport: ConnectionTransport, @unchecked Sendable {
         }
     }
 
+    /// Deliver bytes, and give up if the caller stops waiting.
+    ///
+    /// `contentProcessed` fires when the data has been handed to the stack, and
+    /// on a peer that has stopped draining a full socket buffer that is *never*.
+    /// This used to be a bare continuation, so nothing could interrupt it: not
+    /// the caller's deadline, not task cancellation, not the NOP keepalive's own
+    /// timeout — which sends through here too, and so could never detect the
+    /// dead peer that would have triggered recovery.
+    ///
+    /// That is what wedged a Mac for eight hours. Every SCSI command blocked in
+    /// here, the keepalive blocked in here, no recovery event was ever logged
+    /// because nothing was ever able to notice, and `withDeadline` could not
+    /// unwind past an uncancellable child.
+    ///
+    /// Cancelling tears down the whole `NWConnection`, which is heavier than it
+    /// looks and is the only correct answer: a send that never completed may
+    /// have put some fraction of a PDU on the wire, so the byte stream is no
+    /// longer at a frame boundary and nothing after it can be trusted. The
+    /// connection is finished; the session layer rebuilds it.
     public func send(_ data: Data) async throws {
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, any Error>) in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error {
-                    c.resume(throwing: TransportError.connectFailed("\(error)"))
-                } else {
-                    c.resume()
+        let resumed = OSAllocatedUnfairLock(initialState: false)
+        let connection = self.connection
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, any Error>) in
+                @Sendable func resumeOnce(_ result: Result<Void, any Error>) {
+                    let already = resumed.withLock { done -> Bool in
+                        defer { done = true }
+                        return done
+                    }
+                    if !already { c.resume(with: result) }
                 }
-            })
+                // Checked before sending as well as after: cancellation can land
+                // between the handler being installed and this running, and a
+                // continuation nobody resumes is the bug being fixed.
+                if Task.isCancelled {
+                    resumeOnce(.failure(CancellationError()))
+                    return
+                }
+                connection.send(content: data, completion: .contentProcessed { error in
+                    if let error {
+                        resumeOnce(.failure(TransportError.connectFailed("\(error)")))
+                    } else {
+                        resumeOnce(.success(()))
+                    }
+                })
+            }
+        } onCancel: {
+            connection.cancel()
         }
     }
 
