@@ -10,7 +10,7 @@ some very real throughput limits (see `docs/architecture.md`).
 
 ## AI warning
 
-The vast majority of the work here was done by Claude Code using Opus 5 and Fable 5.
+The vast majority of the code here is written by Claude Code using Opus 5 and Fable 5.
 It was closely supervised, but most of the architecture and discovery was by trial-and-error,
 because lots of things that _should_ work, don't. Most of that is purposefully left in the repo
 to act as documentation and memory. Claude also wrote most of the documentation, although I
@@ -30,16 +30,25 @@ and history. No secrets are actually compromised.
 I also manually test the initiator on a completely different bare-metal macOS 26 machine.
 It works. It's not just VMs.
 
+## Performance/testing
+
 Most of the work and testing is done against a LUN on my actual TrueNAS server in my
 homelab. There is also a target simulator that can be, and was, used for destructive
 testing.
 
 There are some speed enhancements, but it is single-connection for simplicity and
-stability. Don't expect it to be a speed demon. I achieve about 70 MB/sec against my
-hardware HDD-backed RAID Z1 array, even over 10 gbps. Usable, but no records will be
-broken. True optimization will need more users, more time, and to be done at a later
-step in the process. It's too early for that, and things like multiple streams were
-tested and discarded because they conferred zero speed benefits on my setup.
+stability. It has a simple read-ahead buffer that makes the daemon achieve about 1 GB/sec
+against my hardware HDD-backed RAID Z1 array over 10 gbps, in synthetic tests (i.e. linear
+best-case reads against the raw device). So it saturates the connection in ideal conditions.
+Real-world tests on the entire stack are, for me, at best 300 MB/sec, which is what my
+10-year-old NAS can deliver. True optimization for other conditions will need more users,
+more time, and detailed reports.
+
+I have no way of testing against stacks other than TrueNAS on Intel hardware. The
+implementation _should_ respect the standard so it _should_ work. I'm currently
+using it to store VMs for some of my experiments, and it has worked for me so far.
+
+CAVEAT USER.
 
 ## Status
 
@@ -250,10 +259,10 @@ longer file and a requirement to note modifications.
 Bundled dependencies, both permissive and neither imposing conditions on this
 code:
 
-| | licence |
-|---|---|
+|                                                                         | licence    |
+| ----------------------------------------------------------------------- | ---------- |
 | [swift-argument-parser](https://github.com/apple/swift-argument-parser) | Apache 2.0 |
-| [Sparkle](https://github.com/sparkle-project/Sparkle) | MIT |
+| [Sparkle](https://github.com/sparkle-project/Sparkle)                   | MIT        |
 
 Sparkle ships inside the app bundle, so a redistributed binary carries its
 copyright notice; the framework includes its own licence file.
