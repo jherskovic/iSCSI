@@ -278,3 +278,37 @@ command and `read()` never takes its multi-chunk path. That path remains
 verified only against MockTarget, where completions may well arrive in order —
 which is precisely the condition the reassembly-by-index logic exists to
 survive. Re-running the soak with a 1 MiB block size would cover it.
+
+## The split path, verified against real hardware
+
+The earlier soak could not exercise concurrent chunk splitting: its 256 KiB
+reads equalled `maxTransferBytes`, so every request was one command. Re-run at
+1 MiB:
+
+    sequential runs 2801, writes 1234, seeks 1015
+    blocks read 105710, written 12608
+    no mismatches
+
+and the extension's own accounting for the same run:
+
+    reads=195475/130188771840B writes=17487/17858969600B
+    readahead=92% (181069 hit, 14406 miss, 0 unanswered)
+
+130.2 GB over 195,475 requests averaging 650 KiB — against a 256 KiB command
+cap, that is ~2.5 SCSI commands per request, issued together and reassembled by
+index. Every one verified. Reassembly ordering is no longer resting on
+MockTarget, whose in-memory pipe may well complete in order and so cannot test
+the condition the index exists for.
+
+The 92% hit rate is what the workload implies rather than a shortfall: a quarter
+of the operations are writes, which discard the window, and a fifth are seeks,
+which break the stream. Zero unanswered across 195k requests is the number that
+says the daemon kept up.
+
+One more measurement of request size, and the last needed to settle the point.
+The soak reads and writes in 1 MiB units, and the extension saw writes arrive at
+990 KiB average but reads at 552-650 KiB: something above splits reads and
+passes writes through whole. Combined with the 256 KiB and 953 KiB averages seen
+from other workloads, the request size is not a property of FSKit to be designed
+against. It is whatever the caller and the layers above happen to produce, which
+is why the readahead window is budgeted in bytes and computed per request.
