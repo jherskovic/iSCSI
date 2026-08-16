@@ -315,11 +315,28 @@ final class DaemonStore: LUNStore {
     /// get depth, because the depth cannot come from a caller that will not
     /// issue a second request until the first returns.
     ///
-    /// Four, because four is where the measured curve flattens: queue depth 2
-    /// reaches ~1135 MB/s and 4 reaches ~1160, after which more depth buys
-    /// nothing and each slot costs a buffered chunk of memory. See
-    /// docs/queue-depth.md.
-    private static let readaheadDepth = 4
+    /// How much data to keep in flight, rather than how many requests.
+    ///
+    /// The raw sweep flattened at queue depth 4 with 1 MiB commands — 4 MiB
+    /// outstanding. Counting requests instead of bytes silently under-fills the
+    /// pipe when the requests are smaller: with readahead fixed at 4 slots the
+    /// extension reached 391 MB/s, and at a 2.72 ms round trip that works out
+    /// to roughly 266 KB per request, so FSKit is asking in ~256 KiB pieces and
+    /// four of them is 1 MiB in flight, a quarter of what the link wants.
+    ///
+    /// So the budget is 4 MiB and the depth follows from the request size.
+    private static let readaheadBytes = 4 * 1024 * 1024
+
+    /// Never more slots than this, however small the requests get. Each slot is
+    /// an outstanding XPC call and a buffer; a pathological 4 KiB stream should
+    /// not open a thousand of them.
+    private static let readaheadMaxSlots = 24
+
+    /// Slots to keep in flight for a given request size.
+    private static func readaheadDepth(forRequestOf length: Int) -> Int {
+        guard length > 0 else { return 0 }
+        return max(1, min(readaheadMaxSlots, readaheadBytes / length))
+    }
 
     /// One speculative read that has been asked for but not yet wanted.
     private final class PrefetchSlot {
@@ -415,7 +432,9 @@ final class DaemonStore: LUNStore {
             prefetchLength = length
         }
         var wanted: Set<UInt64> = []
-        for step in 1 ... Self.readaheadDepth {
+        let depth = Self.readaheadDepth(forRequestOf: length)
+        guard depth > 0 else { prefetchLock.unlock(); return }
+        for step in 1 ... depth {
             let next = offset &+ UInt64(step * length)
             guard next &+ UInt64(length) <= byteCount else { break }
             wanted.insert(next)
