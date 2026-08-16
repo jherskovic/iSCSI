@@ -236,3 +236,24 @@ throughput caveat, `docs/backend-a-fskit-notes.md` for how the shipping backend
 actually behaves on both OS versions, `docs/daemon-registration.md` for what
 SMAppService really does, `docs/resilience.md` for the fault matrix, and
 `docs/test-playbook.md` for the full test strategy.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
+
+Apache rather than MIT for the patent grant in section 3. This implements a
+standardised protocol, and a permissive licence that says nothing about patents
+leaves users relying on the goodwill of every contributor; Apache makes the
+grant explicit and terminates it for anyone who sues over it. The cost is a
+longer file and a requirement to note modifications.
+
+Bundled dependencies, both permissive and neither imposing conditions on this
+code:
+
+| | licence |
+|---|---|
+| [swift-argument-parser](https://github.com/apple/swift-argument-parser) | Apache 2.0 |
+| [Sparkle](https://github.com/sparkle-project/Sparkle) | MIT |
+
+Sparkle ships inside the app bundle, so a redistributed binary carries its
+copyright notice; the framework includes its own licence file.
