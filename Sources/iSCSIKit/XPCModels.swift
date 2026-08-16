@@ -57,10 +57,17 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
     /// Mutual CHAP: we authenticate the target too.
     public var mutualChapUser: String?
     public var autoAttach: Bool
+    /// Durability trade-off, as the user configured it. nil (the default, and
+    /// what every pre-0.3.9 record decodes as) means write-through: FUA on
+    /// every write. N > 0 means no FUA and a SYNCHRONIZE CACHE every N
+    /// seconds; 0 means the user has declared the target's cache non-volatile
+    /// and wants no periodic flush at all. See `FlushPolicy`.
+    public var flushIntervalSeconds: Int?
 
     public init(id: String, displayName: String, host: String, port: UInt16 = 3260,
                 targetIQN: String, lun: UInt64 = 0, chapUser: String? = nil,
-                mutualChapUser: String? = nil, autoAttach: Bool = false) {
+                mutualChapUser: String? = nil, autoAttach: Bool = false,
+                flushIntervalSeconds: Int? = nil) {
         self.id = id
         self.displayName = displayName
         self.host = host
@@ -70,6 +77,39 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
         self.chapUser = chapUser
         self.mutualChapUser = mutualChapUser
         self.autoAttach = autoAttach
+        self.flushIntervalSeconds = flushIntervalSeconds
+    }
+}
+
+/// What keeps an acknowledged write from being a lie.
+///
+/// FSKit never delivers a barrier (see the header of iSCSIFSExtension.swift),
+/// so the initiator cannot know when the filesystem above the disk image
+/// wanted a flush. `.writeThrough` closes that hole per-write with FUA and is
+/// the only mode that preserves APFS's ordering assumptions; the other two
+/// trade that away and are only genuinely safe when the target's cache is
+/// non-volatile. Derived from `TargetRecord.flushIntervalSeconds` rather than
+/// stored, so the persisted format stays a plain optional integer.
+public enum FlushPolicy: Sendable, Equatable {
+    /// Every WRITE carries FUA. The default.
+    case writeThrough
+    /// No FUA; SYNCHRONIZE CACHE every `seconds`, and always on detach.
+    /// Bounds staleness after a power cut, but not corruption: between
+    /// flushes the target destages in arbitrary order.
+    case interval(seconds: Int)
+    /// No FUA and no periodic flush; the user has declared the target's cache
+    /// non-volatile. Still flushes on detach.
+    case never
+
+    public init(intervalSeconds: Int?) {
+        switch intervalSeconds {
+        case nil: self = .writeThrough
+        case 0: self = .never
+        case let n? where n > 0: self = .interval(seconds: n)
+        // The record file is hand-editable; a nonsense value must not
+        // silently become a durability downgrade.
+        case .some: self = .writeThrough
+        }
     }
 }
 

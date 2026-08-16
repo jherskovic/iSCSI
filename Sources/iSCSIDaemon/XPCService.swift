@@ -122,12 +122,13 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             do {
-                let (_, chap) = try await self.credentials(
+                let (record, chap) = try await self.credentials(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value)
                 let handle = try await core.login(
                     host: host, port: port.uint16Value,
-                    targetIQN: targetIQN, lun: lun.uint64Value, chap: chap
+                    targetIQN: targetIQN, lun: lun.uint64Value, chap: chap,
+                    flushPolicy: FlushPolicy(intervalSeconds: record.flushIntervalSeconds)
                 )
                 self.claim(handle)
                 box.value(handle, nil)

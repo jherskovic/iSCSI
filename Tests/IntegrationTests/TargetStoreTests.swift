@@ -243,6 +243,44 @@ struct XPCModelWireTests {
         #expect(record.mutualChapUser == nil, "an absent optional must stay decodable")
     }
 
+    /// The flush setting was added after 0.3.8 shipped, so every installed
+    /// targets.json lacks it. Absent must mean write-through — the safe default
+    /// — not a decode failure and not some other policy.
+    @Test("a pre-flush-setting record decodes as write-through")
+    func flushSettingAbsentIsWriteThrough() throws {
+        let golden = """
+            {"autoAttach":true,"chapUser":"initiator","displayName":"NAS",
+             "host":"192.168.0.101","id":"t1","lun":0,"port":3260,
+             "targetIQN":"iqn.2026-08.me.herko:disk0"}
+            """
+        let record = try JSONDecoder().decode(TargetRecord.self, from: Data(golden.utf8))
+        #expect(record.flushIntervalSeconds == nil)
+        #expect(FlushPolicy(intervalSeconds: record.flushIntervalSeconds) == .writeThrough)
+    }
+
+    @Test("the flush setting round-trips and maps to the right policy")
+    func flushSettingRoundTrips() throws {
+        var record = TargetRecord(id: "t1", displayName: "NAS", host: "192.168.0.101",
+                                  targetIQN: "iqn.2026-08.me.herko:disk0")
+        record.flushIntervalSeconds = 30
+        var decoded = try JSONDecoder().decode(
+            TargetRecord.self, from: JSONEncoder().encode(record))
+        #expect(decoded.flushIntervalSeconds == 30)
+        #expect(FlushPolicy(intervalSeconds: 30) == .interval(seconds: 30))
+
+        // 0 is "never flush": the user has declared the target's cache
+        // non-volatile.
+        record.flushIntervalSeconds = 0
+        decoded = try JSONDecoder().decode(
+            TargetRecord.self, from: JSONEncoder().encode(record))
+        #expect(decoded.flushIntervalSeconds == 0)
+        #expect(FlushPolicy(intervalSeconds: 0) == .never)
+
+        // The file is hand-editable; a nonsense negative falls back to the
+        // safe default rather than becoming a policy.
+        #expect(FlushPolicy(intervalSeconds: -5) == .writeThrough)
+    }
+
     @Test("DaemonInfo decodes from a committed golden payload")
     func daemonInfoGolden() throws {
         let golden = """

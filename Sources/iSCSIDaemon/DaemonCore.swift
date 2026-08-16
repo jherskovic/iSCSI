@@ -10,6 +10,17 @@ public actor DaemonCore {
         let device: ISCSIBlockDevice
         let targetIQN: String
         let lun: UInt64
+        let flushPolicy: FlushPolicy
+        /// The periodic SYNCHRONIZE CACHE loop; only `.interval` sessions
+        /// have one.
+        var flushTask: Task<Void, Never>?
+        /// Bumped on every write; compared against `flushedGeneration` so an
+        /// idle session's timer skips the round trip. Two counters rather
+        /// than a dirty flag because `flush` suspends the actor: a write that
+        /// lands mid-flush must not have its dirtiness cleared by the flush
+        /// that missed it.
+        var writeGeneration: UInt64 = 0
+        var flushedGeneration: UInt64 = 0
     }
 
     private var sessions: [String: SessionEntry] = [:]
@@ -49,8 +60,13 @@ public actor DaemonCore {
         port: UInt16,
         targetIQN: String,
         lun: UInt64,
-        chap: CHAP.Credentials? = nil
+        chap: CHAP.Credentials? = nil,
+        flushPolicy: FlushPolicy? = nil
     ) async throws -> String {
+        // A record's stored policy wins when the caller resolved one; nil is
+        // a record-less login (iscsictl direct), which keeps following the
+        // process-wide ISCSI_WRITE_THROUGH default.
+        let durability = flushPolicy ?? (writeThrough ? FlushPolicy.writeThrough : FlushPolicy.never)
         var config = LoginConfig(
             initiatorName: initiatorName,
             sessionType: .normal,
@@ -76,7 +92,8 @@ public actor DaemonCore {
         // its barrier was honoured. FUA costs throughput and buys crash
         // consistency, which is the right trade for a network disk. It is a
         // no-op when the target's write cache is already disabled.
-        let device = ISCSIBlockDevice(session: session, lun: lun, writeThrough: writeThrough)
+        let device = ISCSIBlockDevice(session: session, lun: lun,
+                                      writeThrough: durability == .writeThrough)
         _ = try await device.readCapacity() // fail fast if the LUN is bad
 
         // Report the target's cache policy once per session: if WCE is set and
@@ -91,9 +108,14 @@ public actor DaemonCore {
         case .some(false): cacheLabel = "disabled"
         case nil: cacheLabel = "unknown (target returned no caching page)"
         }
-        let wtLabel = writeThrough ? "on" : "off"
+        let policyLabel: String
+        switch durability {
+        case .writeThrough: policyLabel = "write-through (FUA)"
+        case .interval(let seconds): policyLabel = "flush every \(seconds)s"
+        case .never: policyLabel = "no periodic flush (cache declared non-volatile)"
+        }
         var line = "iscsid: " + targetIQN + " lun " + String(lun)
-        line += ": write cache " + cacheLabel + ", writeThrough=" + wtLabel
+        line += ": write cache " + cacheLabel + ", " + policyLabel
         DaemonLog.session(line)
 
         // Route recovery events into the unified log. Without this a session
@@ -119,12 +141,55 @@ public actor DaemonCore {
 
         handleCounter += 1
         let handle = "s\(handleCounter)"
-        sessions[handle] = SessionEntry(session: session, device: device, targetIQN: targetIQN, lun: lun)
+        sessions[handle] = SessionEntry(session: session, device: device,
+                                        targetIQN: targetIQN, lun: lun,
+                                        flushPolicy: durability)
+        if case .interval(let seconds) = durability {
+            sessions[handle]?.flushTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard (try? await Task.sleep(for: .seconds(seconds))) != nil else { return }
+                    await self?.flushIfDirty(handle)
+                }
+            }
+        }
         return handle
+    }
+
+    /// One tick of an `.interval` session's timer: SYNCHRONIZE CACHE, but only
+    /// if something was written since the last one — an idle session should
+    /// not keep a network round trip on a metronome.
+    private func flushIfDirty(_ handle: String) async {
+        guard let entry = sessions[handle],
+              entry.writeGeneration > entry.flushedGeneration else { return }
+        let goal = entry.writeGeneration
+        do {
+            try await entry.device.flush()
+            // Only advance to what this flush provably covered; a write that
+            // landed while the flush was in flight stays dirty.
+            if let current = sessions[handle], current.flushedGeneration < goal {
+                sessions[handle]?.flushedGeneration = goal
+            }
+        } catch {
+            // The next tick retries. A failing flush must not tear the session
+            // down by itself — the death latch decides that from the I/O path.
+            DaemonLog.error("\(entry.targetIQN): periodic SYNCHRONIZE CACHE failed (\(error)); retrying next tick")
+        }
     }
 
     public func logout(_ handle: String) async throws {
         guard let entry = sessions.removeValue(forKey: handle) else { return }
+        entry.flushTask?.cancel()
+        // Under FUA every acknowledged write is already durable. In either
+        // relaxed mode the target's cache may hold acknowledged writes, and
+        // this detach is the last chance to commit them.
+        if entry.flushPolicy != .writeThrough {
+            do {
+                try await entry.device.flush()
+            } catch {
+                DaemonLog.error("\(entry.targetIQN): SYNCHRONIZE CACHE on detach failed (\(error)); "
+                                + "writes acknowledged since the last flush may not be on stable media")
+            }
+        }
         try await entry.session.logout()
     }
 
@@ -138,6 +203,7 @@ public actor DaemonCore {
 
     public func write(_ handle: String, offset: UInt64, data: Data) async throws {
         try await device(handle).write(offset: offset, data: data)
+        sessions[handle]?.writeGeneration += 1
     }
 
     public func flush(_ handle: String) async throws {
@@ -167,7 +233,7 @@ public actor DaemonCore {
                 blockSize: blockSize,
                 blockCount: blockCount,
                 writeCacheEnabled: wce ?? nil,
-                writeThrough: writeThrough,
+                writeThrough: entry.flushPolicy == .writeThrough,
                 recoveryCount: recoveries,
                 negotiated: negotiated
             ))
