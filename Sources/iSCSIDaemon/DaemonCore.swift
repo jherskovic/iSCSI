@@ -207,6 +207,10 @@ public actor DaemonCore {
     }
 
     public func flush(_ handle: String) async throws {
+        // Deliberately does not advance `flushedGeneration`: this path has no
+        // proof of which writes it covered relative to the counter. The worst
+        // case is one redundant SYNCHRONIZE CACHE on an interval session's
+        // next tick, which is cheaper than reasoning about the race.
         try await device(handle).flush()
     }
 

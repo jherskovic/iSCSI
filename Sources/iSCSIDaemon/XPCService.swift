@@ -388,6 +388,10 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 let (_, chap) = try await self.credentials(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value)
+                // Unlike `login`, the record's flush policy is deliberately not
+                // passed: a probe reads one capacity and logs out, so it stays
+                // write-through rather than spinning up a flush timer for a
+                // session that lives milliseconds.
                 let handle = try await core.login(
                     host: host, port: port.uint16Value, targetIQN: targetIQN,
                     lun: lun.uint64Value, chap: chap)
