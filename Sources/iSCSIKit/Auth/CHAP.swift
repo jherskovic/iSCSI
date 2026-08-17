@@ -7,6 +7,30 @@ import Foundation
 /// MD5 is cryptographically broken in general but is what the iSCSI CHAP
 /// exchange specifies and what every deployed target implements.
 public enum CHAP {
+    /// Whether the app offers mutual CHAP, and whether the daemon acts on
+    /// credentials already stored for it.
+    ///
+    /// **Off since 2026-08-17, and not because this implementation is in
+    /// doubt.** It is exercised end to end in `AuthTraceTests`, and against a
+    /// real target the wire trace shows a well-formed RFC 7143 §12.1.3
+    /// exchange: `CHAP_N CHAP_R CHAP_I CHAP_C` in one Login Request, mirroring
+    /// the encodings the target itself chose. One-way and mutual logins were
+    /// run minutes apart against the same target with the same credentials —
+    /// one-way succeeded, mutual was refused with 0x02/0x01.
+    ///
+    /// The target is what cannot answer. TrueNAS SCALE writes `OutgoingUser`
+    /// into `/etc/scst.conf` and never loads it into `/sys/kernel/scst_tgt/`,
+    /// across a service restart, so `iscsi-scstd` logs "CHAP target auth.: no
+    /// outgoing credentials configured" and rejects the login without ever
+    /// composing an answer. A switch that turns a working target into a broken
+    /// one is worse than no switch.
+    ///
+    /// This gates *use*, not storage. A record that already names a mutual
+    /// user keeps it, the keychain keeps the secret, and setting this back to
+    /// `true` restores the feature with nothing re-entered. Deleting the
+    /// credentials instead would make the retreat one-way.
+    public static let mutualIsOffered = false
+
     public enum CredentialError: Error, LocalizedError, Equatable {
         case emptyName
         case emptySecret(label: String)

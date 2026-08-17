@@ -207,6 +207,12 @@ struct TargetEditor: View {
                         .foregroundStyle(secretTooShort ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
                 }
 
+                // Hidden while CHAP.mutualIsOffered is false. The fields are
+                // gated rather than deleted because nothing here is wrong: the
+                // exchange is correct on the wire and the only target available
+                // to test against will not answer a challenge. See the note on
+                // CHAP.mutualIsOffered.
+                if CHAP.mutualIsOffered {
                 Section("Verify the target") {
                     TextField("Mutual CHAP user", text: $mutualChapUser,
                               prompt: Text("optional"))
@@ -225,6 +231,7 @@ struct TargetEditor: View {
                         .font(.caption)
                         .foregroundStyle(mutualHalfConfigured ? AnyShapeStyle(.red)
                                                               : AnyShapeStyle(.secondary))
+                }
                 }
 
                 Section("Write safety") {
@@ -328,8 +335,14 @@ struct TargetEditor: View {
     /// Mutual CHAP with a name but no secret. The daemon refuses this rather
     /// than quietly falling back to one-way, so catching it here turns a failed
     /// attach into a disabled Save button.
+    ///
+    /// False outright while the fields are hidden. A record saved when mutual
+    /// CHAP was still offered can carry a user with no stored secret, and that
+    /// would disable Save with the explanation invisible — a dead button and
+    /// nothing on screen saying why.
     private var mutualHalfConfigured: Bool {
-        !mutualChapUser.trimmingCharacters(in: .whitespaces).isEmpty
+        guard CHAP.mutualIsOffered else { return false }
+        return !mutualChapUser.trimmingCharacters(in: .whitespaces).isEmpty
             && mutualChapSecret.isEmpty && !hasStoredMutualSecret
     }
 

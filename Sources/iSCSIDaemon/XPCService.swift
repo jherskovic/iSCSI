@@ -114,13 +114,24 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         // mutual username with no stored secret is a half-finished setup, and
         // silently continuing one-way would leave the target unauthenticated
         // while the UI implied otherwise.
-        if let mutualUser = record.mutualChapUser, !mutualUser.isEmpty {
+        //
+        // Gated on CHAP.mutualIsOffered, which is currently false — see the
+        // note there. This is the half that matters for a record saved while it
+        // was still on: the UI can be hidden, but a stored mutual user would
+        // otherwise keep making us challenge a target that answers 0x02/0x01,
+        // and with the fields gone there would be nothing to clear it with. The
+        // record and the keychain item are left alone, so turning the flag back
+        // on restores the setup exactly.
+        if CHAP.mutualIsOffered, let mutualUser = record.mutualChapUser, !mutualUser.isEmpty {
             guard let mutualSecret = KeychainStore.chapSecret(for: record.id, kind: .mutual) else {
                 throw DaemonAuthError.mutualSecretMissing(user: mutualUser,
                                                           target: record.displayName)
             }
             chap.mutualName = mutualUser
             chap.mutualSecret = mutualSecret
+        } else if let mutualUser = record.mutualChapUser, !mutualUser.isEmpty {
+            DaemonLog.auth("\(record.displayName): ignoring the stored mutual CHAP user "
+                           + "“\(mutualUser)” — mutual CHAP is switched off in this build")
         }
         return (record, chap)
     }
