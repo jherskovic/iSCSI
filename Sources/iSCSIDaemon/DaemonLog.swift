@@ -30,6 +30,11 @@ public enum DaemonLog {
     private static let dextLog = Logger(subsystem: subsystem, category: "dext")
     #endif
     private static let lifecycleLog = Logger(subsystem: subsystem, category: "lifecycle")
+    /// Login negotiation, CHAP, and the keychain that holds its secrets. Its own
+    /// category because these are the questions asked while a user is standing
+    /// in front of a failing dialog, and `--predicate 'category == "auth"'`
+    /// beats reading a session log for them.
+    private static let authLog = Logger(subsystem: subsystem, category: "auth")
 
     /// Messages here are marked `.public`. os.Logger redacts interpolated
     /// strings by default, and a log full of `<private>` is the reason the FSKit
@@ -55,6 +60,15 @@ public enum DaemonLog {
         echo("iscsid[dext]: \(message)")
     }
     #endif
+
+    /// Authentication diagnostics. Subject to the same rule as everything else
+    /// here, and it matters more on this path than on any other: **no secret,
+    /// no CHAP_R, no challenge bytes.** User names and byte counts are the
+    /// budget. `LoginConfig.trace` states the reasoning in full.
+    public static func auth(_ message: String) {
+        authLog.notice("\(message, privacy: .public)")
+        echo("iscsid: \(message)")
+    }
 
     public static func error(_ message: String) {
         lifecycleLog.error("\(message, privacy: .public)")

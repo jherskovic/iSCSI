@@ -15,6 +15,11 @@ apps/build/
 apps/*.xcodeproj/project.xcworkspace/
 apps/*.xcodeproj/xcuserdata/
 *.p8
+# iscsictl takes CHAP secrets from files rather than argv, so debugging a login
+# leaves them in the working tree. Untracked is not the same as un-committable.
+.secret
+.mutual-secret
+*.secret
 build/
 *.dmg
 *.xcarchive

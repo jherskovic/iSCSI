@@ -330,9 +330,11 @@ public enum Discovery {
     public static func sendTargets(
         transport: any ConnectionTransport,
         initiatorName: String,
-        chap: CHAP.Credentials? = nil
+        chap: CHAP.Credentials? = nil,
+        trace: (@Sendable (String) -> Void)? = nil
     ) async throws -> [DiscoveredTarget] {
-        var config = LoginConfig(initiatorName: initiatorName, sessionType: .discovery, chap: chap)
+        var config = LoginConfig(initiatorName: initiatorName, sessionType: .discovery,
+                                 chap: chap, trace: trace)
         config.desired.offerDigests = false
         let connection = ISCSIConnection(transport: transport, login: config)
         _ = try await connection.login()

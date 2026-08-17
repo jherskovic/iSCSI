@@ -46,12 +46,18 @@ public actor DaemonCore {
         self.transportFactory = transportFactory
     }
 
+    /// iSCSIKit narrates the login exchange through a closure rather than a
+    /// logger of its own — see `LoginConfig.trace`. This is where the daemon
+    /// supplies one.
+    static let authTrace: @Sendable (String) -> Void = { DaemonLog.auth($0) }
+
     public func discover(host: String, port: UInt16, chap: CHAP.Credentials? = nil) async throws -> [DiscoveredTarget] {
         let transport = try await transportFactory(host, port)
         return try await Discovery.sendTargets(
             transport: transport,
             initiatorName: initiatorName,
-            chap: chap
+            chap: chap,
+            trace: Self.authTrace
         )
     }
 
@@ -71,7 +77,8 @@ public actor DaemonCore {
             initiatorName: initiatorName,
             sessionType: .normal,
             targetName: targetIQN,
-            chap: chap
+            chap: chap,
+            trace: Self.authTrace
         )
         // Once credentials have been resolved, using them is not optional. A nil
         // `chap` further down means "offer AuthMethod=None", so anything that

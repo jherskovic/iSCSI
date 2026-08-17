@@ -110,6 +110,18 @@ struct GlobalOptions: ParsableArguments {
                                               mutualSecret: mutual)
     }
 
+    /// The login exchange's own narration, alongside the PDU trace and under
+    /// the same flag. The PDU trace shows what crossed the wire with every CHAP
+    /// value redacted; this says what we were trying to do with it, which is
+    /// the half that a redacted trace cannot show.
+    var authTrace: (@Sendable (String) -> Void)? {
+        guard debug else { return nil }
+        let label = host
+        return { message in
+            FileHandle.standardError.write(Data("[\(label)] \(message)\n".utf8))
+        }
+    }
+
     func openTransport() async throws -> any ConnectionTransport {
         #if canImport(Network)
         let tcp = try await NetworkTransport.connect(host: host, port: port)
@@ -135,7 +147,8 @@ struct Discover: AsyncParsableCommand {
         let targets = try await Discovery.sendTargets(
             transport: transport,
             initiatorName: options.initiator,
-            chap: try options.credentials()
+            chap: try options.credentials(),
+            trace: options.authTrace
         )
         if targets.isEmpty {
             print("No targets advertised by \(options.host):\(options.port)")

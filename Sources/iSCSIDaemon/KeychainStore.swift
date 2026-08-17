@@ -86,7 +86,7 @@ public enum KeychainStore {
     public static func store(_ secret: String, for targetID: String,
                              kind: Kind = .initiator) throws {
         var query = baseQuery(targetID, kind)
-        SecItemDelete(query as CFDictionary)
+        let deleted = SecItemDelete(query as CFDictionary)
 
         query[kSecValueData as String] = Data(secret.utf8)
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -95,7 +95,22 @@ public enum KeychainStore {
             : "iSCSI Initiator — CHAP secret"
 
         let status = SecItemAdd(query as CFDictionary, nil)
+        // Logged here rather than at the call site because `setCHAPSecret` is
+        // `try?` over this function: the status is discarded one frame up, and
+        // what the user is shown instead — "saved but could not be read back" —
+        // describes a symptom two steps downstream of whatever actually went
+        // wrong. This is the only place the real answer exists.
+        DaemonLog.auth("keychain write \(kind) for \(targetID): "
+                       + "SecItemDelete \(describe(deleted)), SecItemAdd \(describe(status))")
         guard status == errSecSuccess else { throw StoreFailure.osStatus(status) }
+    }
+
+    /// An OSStatus with its name, because `-34018` is unreadable and
+    /// `errSecMissingEntitlement` is a diagnosis.
+    private static func describe(_ status: OSStatus) -> String {
+        guard status != errSecSuccess else { return "ok" }
+        let text = SecCopyErrorMessageString(status, nil) as String?
+        return "\(status) (\(text ?? "no description"))"
     }
 
     public static func chapSecret(for targetID: String, kind: Kind = .initiator) -> String? {
@@ -104,8 +119,15 @@ public enum KeychainStore {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else {
+            // Distinguishes the two ways this returns nil, which the caller
+            // cannot: "no such item" is an ordinary answer for a target with no
+            // CHAP configured, and anything else is a keychain that is refusing
+            // us. Both arrive at the call site as a bare nil.
+            DaemonLog.auth("keychain read \(kind) for \(targetID): \(describe(status))")
+            return nil
+        }
         return String(data: data, encoding: .utf8)
     }
 

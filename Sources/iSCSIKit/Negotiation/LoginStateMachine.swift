@@ -29,18 +29,39 @@ public struct LoginConfig: Sendable {
     public var tsih: UInt16 = 0
     public var cid: UInt16 = 0
 
+    /// Where the authentication exchange narrates itself, or nil for silence.
+    ///
+    /// A closure rather than an `os.Logger` in this module, for two reasons.
+    /// iSCSIKit does not get to name the app's logging subsystem — it is the
+    /// half of the codebase that has no platform in it. And the place a CHAP
+    /// failure is actually watched is `iscsictl --debug` on a terminal, which
+    /// an os_log sink does not reach. The daemon points this at `DaemonLog`,
+    /// the CLI points it at stderr next to the PDU trace, and tests leave it
+    /// nil and observe no behaviour change at all.
+    ///
+    /// **Nothing secret may be written here.** User names, algorithm numbers,
+    /// stage names and byte counts only — never a secret, never `CHAP_R`, never
+    /// challenge bytes. `CHAP_R` is MD5 over the secret with an id and a
+    /// challenge the peer chose, so publishing it to a log that outlives the
+    /// connection hands an offline attack to anyone who reads the log. Where
+    /// the shape of a value matters, log its length in the `<redacted NB>` form
+    /// `TracingTransport` already uses.
+    public var trace: (@Sendable (String) -> Void)?
+
     public init(
         initiatorName: String,
         sessionType: SessionType,
         targetName: String? = nil,
         chap: CHAP.Credentials? = nil,
-        isid: ISID = .random()
+        isid: ISID = .random(),
+        trace: (@Sendable (String) -> Void)? = nil
     ) {
         self.initiatorName = initiatorName
         self.sessionType = sessionType
         self.targetName = targetName
         self.chap = chap
         self.isid = isid
+        self.trace = trace
     }
 }
 
@@ -140,6 +161,58 @@ public struct LoginStateMachine: Sendable {
         return pdu
     }
 
+    // MARK: Tracing
+    //
+    // Read the contract on `LoginConfig.trace` before adding a line here. The
+    // short version: names and lengths yes, key material never.
+
+    private func note(_ message: String) {
+        config.trace?("auth: \(message)")
+    }
+
+    /// The shape of a text value, for a log that must not carry its content.
+    /// Same phrasing as `TracingTransport` so the two traces read as one.
+    private static func shape(_ value: String?) -> String {
+        guard let value else { return "<absent>" }
+        return "<redacted \(value.utf8.count)B>"
+    }
+
+    /// RFC 7143 §11.13.5. Naming the code is the whole point: "status 2/1" sent
+    /// a real debugging session looking at the initiator's credentials when the
+    /// target was rejecting something else entirely.
+    private static func describe(statusClass: UInt8, statusDetail: UInt8) -> String {
+        let meaning: String?
+        switch (statusClass, statusDetail) {
+        case (0x02, 0x01): meaning = "authentication failure"
+        case (0x02, 0x02): meaning = "authorization failure"
+        case (0x02, 0x03): meaning = "target not found"
+        case (0x02, 0x04): meaning = "target removed"
+        case (0x02, 0x05): meaning = "unsupported version"
+        case (0x02, 0x06): meaning = "too many connections"
+        case (0x02, 0x07): meaning = "missing parameter"
+        case (0x02, 0x08): meaning = "cannot include in session"
+        case (0x02, 0x09): meaning = "session type not supported"
+        case (0x02, 0x0A): meaning = "session does not exist"
+        case (0x02, 0x0B): meaning = "invalid during login"
+        case (0x03, 0x00): meaning = "target error"
+        case (0x03, 0x01): meaning = "service unavailable"
+        case (0x03, 0x02): meaning = "out of resources"
+        default: meaning = nil
+        }
+        let code = String(format: "status 0x%02X/0x%02X", statusClass, statusDetail)
+        return meaning.map { "\(code) (\($0))" } ?? code
+    }
+
+    private var stageName: String {
+        switch stage {
+        case .awaitingAuthMethod:    return "awaiting AuthMethod"
+        case .awaitingChapChallenge: return "awaiting CHAP challenge"
+        case .awaitingChapResult:    return "awaiting CHAP result"
+        case .operational:           return "negotiating operational parameters"
+        case .done:                  return "already complete"
+        }
+    }
+
     /// First login request.
     public mutating func start() -> LoginRequestPDU {
         var params = TextParameters()
@@ -149,6 +222,13 @@ public struct LoginStateMachine: Sendable {
             params.append("TargetName", target)
         }
         if chapExchange != nil {
+            // Whether we will challenge back is decided here and not announced
+            // until the response, so it is worth stating up front: a target that
+            // rejects only the mutual half fails three PDUs later, and the trace
+            // is the only thing that says which half we were attempting.
+            note("offering AuthMethod=CHAP as “\(config.chap?.name ?? "?")”, "
+                 + "mutual=\(config.chap?.wantsMutual == true ? "yes" : "no")"
+                 + (config.chap?.mutualName.map { ", expecting the target to name “\($0)”" } ?? ""))
             params.append("AuthMethod", "CHAP")
             return emit(
                 text: params.encode(),
@@ -157,6 +237,10 @@ public struct LoginStateMachine: Sendable {
                 nsg: .securityNegotiation
             )
         } else {
+            // Worth a line of its own: an unauthenticated session looks
+            // identical to an authenticated one from every layer above, so this
+            // is the only place that says the credentials were never there.
+            note("offering AuthMethod=None — no credentials configured")
             params.append("AuthMethod", "None")
             stage = .operational // next response should carry us into LO stage
             return emit(
@@ -185,6 +269,13 @@ public struct LoginStateMachine: Sendable {
             return .redirect(address: address, permanent: response.statusDetail == 2)
         }
         guard response.isSuccess else {
+            // The stage is half the diagnosis. A rejection while awaiting the
+            // CHAP *result* means the target took our response and refused it;
+            // the same code while awaiting the *challenge* means it refused us
+            // before any secret was involved.
+            note("target rejected the login while \(stageName): "
+                 + Self.describe(statusClass: response.statusClass,
+                                 statusDetail: response.statusDetail))
             throw NegotiationError.loginFailed(
                 statusClass: response.statusClass,
                 statusDetail: response.statusDetail
@@ -245,10 +336,13 @@ public struct LoginStateMachine: Sendable {
         switch stage {
         case .awaitingAuthMethod:
             guard text["AuthMethod"] == "CHAP" else {
+                note("target answered AuthMethod=\(text["AuthMethod"] ?? "<missing>"), "
+                     + "which is not CHAP — nothing to authenticate with")
                 throw NegotiationError.authenticationFailed(
                     "target answered AuthMethod=\(text["AuthMethod"] ?? "<missing>")"
                 )
             }
+            note("target selected AuthMethod=CHAP; proposing CHAP_A=5 (MD5)")
             stage = .awaitingChapChallenge
             let proposal = chapExchange!.algorithmProposal()
             return .send(emit(
@@ -259,7 +353,15 @@ public struct LoginStateMachine: Sendable {
             ))
 
         case .awaitingChapChallenge:
+            note("target challenged: CHAP_A=\(text["CHAP_A"] ?? "<absent>") "
+                 + "CHAP_I=\(text["CHAP_I"] ?? "<absent>") CHAP_C=\(Self.shape(text["CHAP_C"]))")
             let reply = try chapExchange!.respond(to: text)
+            if reply["CHAP_I"] != nil {
+                note("answering as “\(config.chap?.name ?? "?")” and challenging the target back "
+                     + "(CHAP_I=\(reply["CHAP_I"] ?? "?") CHAP_C=\(Self.shape(reply["CHAP_C"])))")
+            } else {
+                note("answering as “\(config.chap?.name ?? "?")”, one-way — not challenging the target")
+            }
             stage = .awaitingChapResult
             return .send(emit(
                 text: reply.encode(),
@@ -269,7 +371,16 @@ public struct LoginStateMachine: Sendable {
             ))
 
         case .awaitingChapResult:
+            if config.chap?.wantsMutual == true {
+                note("target's answer to our challenge: CHAP_N=\(text["CHAP_N"] ?? "<absent>") "
+                     + "CHAP_R=\(Self.shape(text["CHAP_R"]))")
+            }
             try chapExchange!.verifyMutual(text)
+            if config.chap?.wantsMutual == true {
+                note("mutual CHAP verified — the target proved it knows the peer secret")
+            } else {
+                note("target accepted our credentials")
+            }
             guard response.transit else {
                 // Target wants more security negotiation we don't support.
                 throw NegotiationError.authenticationFailed("target did not complete security stage")
