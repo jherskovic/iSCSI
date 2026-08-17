@@ -4,7 +4,7 @@ Things known to be untested, unexplained, or deferred, with what is known about
 each and how to attack it. Ordered by what a failure would cost, not by how
 interesting it is.
 
-Current as of 0.3.8 (build 21), 2026-08-16.
+Current as of 0.4.0 (build 29), 2026-08-17.
 
 ---
 
@@ -135,51 +135,96 @@ Management notification can be waited on properly.
   everything after immediately. Built in response to the eight-hour wedge,
   reasoned about carefully, and never triggered in anger.
 
-## 8. The chunk cache is built and unmeasured under load
+## 8. Readahead depth is now chosen automatically — measured
 
-Both problems the second VM run isolated — size-change discards throwing away
-real sequential windows, and the ~80 reads/s serial round-trip floor that
-made a guest boot take minutes — are now addressed by one mechanism:
-`PrefetchChunkCache` (see the end of docs/queue-depth.md). Reads are served
-by range from 256 KiB chunks, misses read-around and populate a 32 MiB LRU
-cache, and speculation is chunk-wise behind the existing byte gate.
+Closed, and replaced by a different mechanism than the one this item
+anticipated. The full run log is `docs/soak-results-0.4.0.md`.
 
-**The miss latency has never been attributed.** The ~11–12 ms per cache miss
-was reasoned about as XPC + SCSI round trips, but the target is a RAID-Z1
-vdev on spinning disks, whose random small-read ceiling is roughly one
-disk's worth of seeks — 100–150 IOPS at 7–10 ms each. The observed 45–55
-misses/s fits a seek-bound array at least as well as it fits a
-software-bound stack, and the 2.7 ms round trip measured earlier was
-*sequential* 256 KiB, which ZFS prefetch and ARC flatter. If the array owns
-most of the miss, no initiator architecture — Backend B included — makes a
-scattered-read boot fast on this pool, and an SSD pool (or a ZFS
-special/L2ARC vdev) changes the story more than any code here. Two cheap
-discriminators: give `iscsictl read-bench` a random-offset mode and measure
-16 KiB random reads at queue depth 1 straight against the LUN (bypassing
-FSKit, XPC, and the cache — ~3 ms says the stack, ~10 ms says the array);
-or watch `zpool iostat -v 1` on the NAS during a VM boot and see whether
-the disks are pegged at their seek rate.
+`PrefetchChunkCache` was soaked at 256 KiB and 1 MiB against real hardware.
+Zero mismatches at both sizes, including write-through's read-back path, which
+the generation stamps are the sharpest test of. The multi-command split path is
+verified too: every 1 MiB request was exactly four 256 KiB SCSI commands
+reassembled by index — ~245,000 of them — against hardware that completes out of
+order, where before it had only ever run against MockTarget's in-memory pipe.
 
-What is owed now is measurement, not mechanism:
+The tuning question that followed turned out to be the wrong question. A
+per-target "type of workload" setting shipped briefly (builds 25–27) offering
+1/2/8 MB readahead budgets, then 512 KB/2 MB/4 MB. Measurement killed it:
 
-- **The VM verdict.** Under the guest workload, `cache=%` should multiply
-  and misses collapse *if the guest's reads cluster within 256 KiB chunks*.
-  If they genuinely don't — hit rate stays low and `readAround=` shows bytes
-  paid for nothing — the honest conclusion is that Backend A's one-op-at-a-
-  time delivery cannot host VMs, and the answer is architectural, not more
-  readahead tuning.
-- **The sequential regression check.** `readahead-soak.py` at 256 KiB and
-  1 MiB against the build-16 numbers (1099 MB/s, 92% hits). The soak
-  **writes**, so it runs on the test-rig scratch volume, never on a volume
-  holding real VM images.
-- **Coherence under the soak.** Write semantics have now changed twice:
-  first drop-the-overlap, now write-through — acknowledged bytes are patched
-  into overlapping cached chunks (`didWrite`), with drops only for pending
-  fetches and failed writes (single-initiator assumption, stated in
-  queue-depth.md). The soak's write-then-read-back and generation stamps are
-  the sharpest test of this — under write-through the read-back is served
-  from the patched cache, so a patching bug is exactly what the generation
-  stamps would catch. It has not run against the chunk cache yet.
+    depth  budget   unused   wasted/read   hit rate
+      2    512 KB     5.9%       0.058x      93.07%
+      4      1 MB    11.1%       0.115x      93.06%
+     16      4 MB    32.4%       0.443x      93.16%
+     32      8 MB    48.8%       0.882x      93.15%
+
+Hit rate is flat across a 16x range of depth, so depth was never buying
+residency — only queue occupancy at the target, where speculation that a write
+or a seek will discard sits ahead of reads that are real. The only thing depth
+reliably changed was wasted bandwidth. A setting whose options differ only in
+how much bandwidth they waste is not a choice worth offering a user, so
+`ReadaheadDepthController` now sets it: weighted waste over the last three
+seconds of *activity* (0.6/0.3/0.1), evaluated once per active second, halving
+the cap above 15% and adding one below 6%. Additive increase against
+multiplicative decrease, so it converges rather than hunts. It is driven by the
+read path rather than a timer, so an idle volume schedules nothing.
+
+Measured end to end: the write-and-seek-heavy soak drives it to depth 3 (8.7%
+waste, 93.1% hits, no mismatches); a pure 100 GB sequential pass takes it to the
+32 ceiling and holds it there at 99.86% hits and 421 MB/s.
+
+**What is still open here** is the VM verdict — whether a guest's scattered
+reads cluster inside 256 KiB chunks well enough to host VMs on Backend A. That
+needs a guest, and it has not been run since the chunk cache landed. Nothing
+above bears on it: the soak is not a VM, and the controller cannot conjure
+locality that isn't there.
+
+**What is settled and must not be "simplified" away:** speculation waste is
+counted only when a chunk reaches a terminal state — read before it left the
+cache, or evicted having never been wanted. `chunksSpeculated - speculatedUsed`
+is the same number minus the window in flight, and the sequential pass measured
+that error at *exactly the depth*: 384,582 speculative chunks, cumulative
+`unused` up by 32, settled waste 9. Feeding the cumulative figure to a
+controller that reduces depth when waste rises inverts the loop — at a VM
+guest's ~80 chunks/s, 32 phantom chunks is 40% waste, an immediate halving, and
+halving does not shrink the ratio fast enough to escape the ratchet. See
+docs/queue-depth.md.
+
+## 8a. The extension's timeout does not know recovery is in flight
+
+**Found by accident, and it failed real I/O.** During a soak the TCP connection
+dropped; the daemon recovered in ~12 s across two attempts, and the extension's
+fixed 30 s call timeout fired **330 ms before** recovery completed:
+
+    08:21:49.003  recovery attempt 1/5
+    08:22:00.170  recovery attempt 2/5
+    08:22:00.908  extension: daemon call timed out after 30s   -> EIO
+    08:22:01.238  recovered (1 time(s) so far)
+
+The volume survived — one timeout, not the three that latch it dead — but the
+caller got EIO for a session that was about to be fine. The two timescales are
+independent: the extension counts a wall clock while the daemon is mid-recovery
+and about to succeed.
+
+Worth fixing as either a timeout that exceeds the recovery budget, or a signal
+that recovery is in progress so the wait can be extended rather than abandoned.
+The second is better and costs an XPC message.
+
+Silver lining: this is the first time ERL0 session recovery has run against real
+hardware in anger. It worked. `docs/test-playbook.md` had it as MockTarget-only.
+
+## 8b. Re-attach logs a burst of connection-lost/recovered pairs
+
+Reproducible, benign so far, unexplained. Detaching and re-attaching logs three
+to five `connection lost (no active connection); recovering` / `recovered`
+pairs within 8–14 ms:
+
+    08:52:22.061  connection lost (no active connection); recovering
+    08:52:22.065  connection lost (no active connection); recovering
+    08:52:22.069  connection lost (no active connection); recovering
+
+Nothing downstream misbehaves, but a teardown that trips the recovery machinery
+several times in milliseconds is either wasted work or a sign the teardown order
+is wrong, and the death latch counts consecutive failures.
 
 ## 9. Deferred
 
@@ -200,6 +245,20 @@ What is owed now is measurement, not mechanism:
   queue depth 8 against 1164 earlier. The headline figures predate that and
   should be reconfirmed on a rested target.
 
+  Since sharpened into something stronger, and worse (2026-08-17). Array state
+  does not merely add noise to throughput — it dominates it. The *same build at
+  the same depth* read 88,506 blocks on 16 August and 212,033 on 17 August, a
+  2.4x swing; within one morning a fixed depth moved 48%, and the day's runs
+  drifted upward with the clock regardless of what was being tested. A whole
+  afternoon's conclusion — "depth 4 gives up 29% of throughput" — was an
+  artifact of run order and had to be withdrawn.
+
+  The rule that follows: **one run per setting measures the array, not the
+  setting.** Any throughput claim needs interleaving (A/B/A/B inside one
+  session) before it is worth writing down. Waste ratios and hit rates, by
+  contrast, reproduced to the digit across both days and the 2.4x swing, which
+  is why the readahead work rests on those and not on MB/s.
+
 ---
 
 ## A note on method
@@ -209,6 +268,14 @@ inferring a number instead of asking the code for it. FSKit's request size was
 derived from throughput arithmetic and was wrong twice; the reinstall bug was
 theorised about through two failed fixes; the extension was believed silent when
 the queries were malformed.
+
+A fifth, on 2026-08-17, had a different cause and is worth its own line:
+comparing measurements taken at different times and calling the difference a
+result. Depth 4 looked 29% slower than depth 16 because it ran an hour earlier
+on a colder array. The tell was there and was noticed and was then
+under-weighted — the caveat had already been written down before the run. When
+one number in a table comes from a different hour than the others, it is not in
+the same table.
 
 Each was solved within minutes of making the code report what it was doing. The
 diagnostics in `DaemonStore.summary` and `DaemonController` exist for that

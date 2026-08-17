@@ -420,3 +420,94 @@ If hit rate does not move materially under write-through either, the
 remaining misses are genuinely scattered first-touches and the wall is
 Backend A's one-operation-at-a-time delivery — an architecture question, not
 a cache-tuning one.
+
+## The rungs that were offered, measured, and withdrawn
+
+Write-through fixed the hole the second VM run exposed, and the next question
+was what depth to run at. That briefly became a user-facing setting: a
+per-target "type of workload" picker (builds 25–27) mapping random / mixed /
+sequential onto readahead byte budgets, first 1/2/8 MB and then 512 KB/2 MB/4 MB.
+
+Measuring it removed it. One 256 KiB soak per depth, real hardware:
+
+| depth | budget | unused | wasted/read | hit rate | mismatches |
+|---|---|---|---|---|---|
+| 2 | 512 KB | 5.9% | 0.058x | 93.07% | none |
+| 4 | 1 MB | 11.1% | 0.115x | 93.06% | none |
+| 16 | 4 MB | 32.4% | 0.443x | 93.16% | none |
+| 32 | 8 MB | 48.8% | 0.882x | 93.15% | none |
+
+Hit rate does not move across a 16x range of depth. Depth was never buying
+residency; it was buying queue occupancy at the target, where speculation that a
+write or a seek is about to discard sits in front of reads that are real. The
+only thing it reliably changed was how much bandwidth was thrown away.
+
+That is not a choice worth putting in front of a user — nobody knowingly picks
+the option that wastes more for the same result — so the picker is gone and
+`ReadaheadDepthController` decides.
+
+### The controller
+
+Weighted waste over the last three seconds of **activity** (0.6 / 0.3 / 0.1,
+most recent first), evaluated once per active second: above 15% the cap halves,
+below 6% it gains one, and in between it holds. Additive increase against
+multiplicative decrease, which converges instead of hunting; equilibrium
+therefore sits below the deadband's midpoint by construction.
+
+Two details that are load-bearing rather than incidental:
+
+**It has no clock of its own.** Evaluation happens on the read path, and each
+read contributes `min(gap since previous read, 100 ms)` toward the next second.
+An idle volume schedules no wakeups, advances no window, and is steered by
+nothing — and under load, where reads are milliseconds apart, the cap never
+binds so the window tracks wall time exactly.
+
+**Weights apply to counts, not to per-second ratios.** Otherwise a second
+holding three settled chunks outvotes one holding three hundred.
+
+Measured at both ends of its range. The soak's write-and-seek mix (21% writes,
+17% seeks by count) drives it to depth 3 — 8.7% waste, 93.1% hits, no
+mismatches. A pure 100.9 GB sequential pass takes it to the 32 ceiling and holds
+it: 99.86% hits, 421 MB/s, `readAround` 0.012%.
+
+### Why waste is counted at eviction, not at speculation
+
+`chunksSpeculated - speculatedUsed` is the obvious waste metric and it cannot be
+used to steer depth. It scores every speculative chunk that has not *yet* been
+read as wasted, including ones sitting in cache whose reader is 200 ms behind —
+so its error is the size of the window in flight, which is the very quantity
+being controlled.
+
+The sequential pass measured that error exactly. Over 384,582 speculative
+chunks at depth 32:
+
+    cumulative unused   +32      <- the in-flight window, no more and no less
+    settled              9 wasted / 384,563 used   = 0.0023%
+
+Feeding the cumulative figure to a controller that cuts depth when waste rises
+inverts the loop. At the ~1,600 chunks/s that pass sustains, 32 phantom chunks
+is ~2% of a one-second window and harmless; at a VM guest's ~80 chunks/s the
+same 32 is ~40%, over the trigger, so depth halves — and halving does not shrink
+the ratio fast enough to escape, so it ratchets to the floor. The controller
+would cut depth hardest exactly where traffic is slow and speculation is working
+perfectly.
+
+So a speculative chunk is counted only when it reaches a terminal state: read at
+least once before it left the cache (`resolvedUsed`), or evicted having never
+been wanted (`resolvedWasted`). Chunks still resident are undecided and count
+for nothing. Every removal from the map goes through one helper so a new removal
+site cannot silently skip the verdict.
+
+The lag this introduces — a chunk resolves when it is evicted, which under light
+load can be seconds — is real and deliberate. It is *unbiased*, which is what a
+control loop needs; the cumulative counter is fast and wrong in a direction that
+correlates with the control variable.
+
+### What the throughput numbers in this section are worth
+
+Less than they look. See the note under item 9 of `docs/open-questions.md`: the
+same build at the same depth moved 2.4x between two consecutive days, and 48%
+within one morning. Every table above that reports MB/s or blocks/600s is one
+run per setting, which measures the array as much as the setting. The waste
+ratios and hit rates reproduced across both days and the 2.4x swing; those are
+the numbers the design rests on.

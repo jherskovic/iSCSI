@@ -50,12 +50,17 @@ lie APFS will act on. That costs real throughput (measured 4.5x on my hardware).
 Each target can instead be set to commit its cache on a timer (1–60 s) or never,
 for targets whose cache is genuinely non-volatile — battery-backed, on a UPS, or
 write-through on the target side. The app warns loudly when you pick this: the
-interval bounds how *stale* the disk can be after a target power cut, not whether
+interval bounds how _stale_ the disk can be after a target power cut, not whether
 the volume survives it intact.
 
 I have no way of testing against stacks other than TrueNAS on Intel hardware. The
 implementation _should_ respect the standard so it _should_ work. I'm currently
 using it to store VMs for some of my experiments, and it has worked for me so far.
+
+Final performance warning: by the nature of the driver, connections, and general architecture,
+sequential access performs much, much, _much_ better than random access, at least on HDDs.
+Copying large files to and from, works well. Booting a macOS VM hosted on an iSCSI volume?
+You might as well be swapping floppies. It works, yes. It does not work _well_.
 
 CAVEAT USER.
 
@@ -142,7 +147,7 @@ target:
 - Responses can be forged wholesale: SCSI status, sense data, `READ CAPACITY`,
   the login exchange.
 
-CHAP authenticates the *initiator to the target*. **Mutual CHAP** is the only
+CHAP authenticates the _initiator to the target_. **Mutual CHAP** is the only
 control here that authenticates the target back, which is what would catch a
 stand-in feeding this Mac a fabricated disk that macOS then mounts as APFS — so
 configure it if your target supports it. It is per-target, under "Verify the

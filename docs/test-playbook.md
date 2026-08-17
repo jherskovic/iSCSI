@@ -38,6 +38,13 @@ socket (`MockTargetServer`), with 20+ switchable faults.
 - **Session recovery (ERL0)**: recover after target drop, data survives target
   reboot, recovery exhaustion surfaces, keepalive detects a dead-but-connected
   peer, logout stops recovery, CHAP re-runs on recovery, bounded retry.
+
+  No longer MockTarget-only: on 2026-08-17 a real connection to the NAS dropped
+  mid-soak (`POSIXErrorCode 60`) and recovery reconnected in ~12 s over two
+  attempts, unprompted. It also exposed that the extension's fixed 30 s call
+  timeout is unaware of recovery and gave up 330 ms before it succeeded, failing
+  the caller's I/O for a session that was about to be fine — item 8a in
+  `docs/open-questions.md`.
 - **Real TCP loopback**: login/write/flush/read/verify with CRC32C over an
   actual socket; discovery; session recovery — validates `NetworkTransport`.
 
@@ -61,6 +68,30 @@ Run: `swift test --filter IntegrationTests`
 Multi-hour `fio` soak with periodic fault injection; track daemon RSS (leaks),
 dext health, latency percentiles; lifecycle churn (login/logout, dext
 activate/teardown cycles).
+
+Two scripts carry this today, and they answer different questions:
+
+- `scripts/readahead-soak.py <lun0.img> --seconds N --block-kib {256,1024}` —
+  every read verified against a per-(block, generation) pattern, with writes and
+  seeks interleaved so invalidation and coherence are under test rather than
+  assumed. Destructive: it writes at 12–14 GiB of the LUN, so point it at a
+  scratch target. `--block-kib 1024` is the only way to exercise multi-command
+  splitting against hardware that completes out of order.
+- A pure sequential read pass (read-only, `F_NOCACHE`) — the soak is ~21% writes
+  and ~17% seeks, which pins the readahead depth controller near its floor, so
+  it can never exercise deep speculation. Only an unbroken stream drives the cap
+  to its ceiling.
+
+**Read the extension's counters, not just the script's output.** `cap=` and
+`settled=Nused/Mwasted` in the CLOSE summary are what make the depth controller
+observable; a soak that never moves `cap` is not testing it. Query with
+`/usr/bin/log show --predicate 'subsystem == "me.herko.iSCSIInitiator.fsext"'
+--info --debug` — spelled absolutely, because a `log` shell function shadows it
+and returns nothing at all.
+
+**One run per setting measures the array, not the setting.** Throughput on this
+target moved 2.4x day over day and 48% within a morning at fixed settings.
+Interleave (A/B/A/B in one session) before believing any MB/s comparison.
 
 ## Fuzzing
 
