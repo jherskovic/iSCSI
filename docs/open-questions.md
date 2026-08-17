@@ -144,6 +144,22 @@ made a guest boot take minutes — are now addressed by one mechanism:
 by range from 256 KiB chunks, misses read-around and populate a 32 MiB LRU
 cache, and speculation is chunk-wise behind the existing byte gate.
 
+**The miss latency has never been attributed.** The ~11–12 ms per cache miss
+was reasoned about as XPC + SCSI round trips, but the target is a RAID-Z1
+vdev on spinning disks, whose random small-read ceiling is roughly one
+disk's worth of seeks — 100–150 IOPS at 7–10 ms each. The observed 45–55
+misses/s fits a seek-bound array at least as well as it fits a
+software-bound stack, and the 2.7 ms round trip measured earlier was
+*sequential* 256 KiB, which ZFS prefetch and ARC flatter. If the array owns
+most of the miss, no initiator architecture — Backend B included — makes a
+scattered-read boot fast on this pool, and an SSD pool (or a ZFS
+special/L2ARC vdev) changes the story more than any code here. Two cheap
+discriminators: give `iscsictl read-bench` a random-offset mode and measure
+16 KiB random reads at queue depth 1 straight against the LUN (bypassing
+FSKit, XPC, and the cache — ~3 ms says the stack, ~10 ms says the array);
+or watch `zpool iostat -v 1` on the NAS during a VM boot and see whether
+the disks are pegged at their seek rate.
+
 What is owed now is measurement, not mechanism:
 
 - **The VM verdict.** Under the guest workload, `cache=%` should multiply
