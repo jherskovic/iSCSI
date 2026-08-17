@@ -42,6 +42,22 @@ struct TargetsView: View {
         .sheet(item: $editing) { target in
             TargetEditor(model: model, target: target)
         }
+        // Detach on a target whose volume is mounted: offer to eject rather
+        // than refuse or rip. The layers below fall back to a force-eject, and
+        // a mounted volume can have live writers — a running VM, most likely —
+        // so the one thing that must not happen is doing that silently.
+        .alert(item: $model.pendingDetach) { target in
+            Alert(
+                title: Text("Eject “\(target.displayName)”?"),
+                message: Text("Its volume is still mounted. Detaching will eject "
+                            + "the volume first; anything still using files on it "
+                            + "— a running virtual machine, an open document — "
+                            + "should be shut down before continuing."),
+                primaryButton: .default(Text("Eject and Detach")) {
+                    Task { await model.detach(target, ejectingMounted: true) }
+                },
+                secondaryButton: .cancel())
+        }
     }
 
     private var empty: some View {

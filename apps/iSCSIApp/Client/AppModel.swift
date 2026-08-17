@@ -44,7 +44,9 @@ final class AppModel: ObservableObject {
         updates.detachEverything = { [weak self] in
             guard let self else { return }
             for row in rows where row.isAttached {
-                await detach(row.target)
+                // The user already said "Detach and Install"; stopping here to
+                // ask again would silently stall the update.
+                await detach(row.target, ejectingMounted: true)
             }
         }
 
@@ -73,6 +75,13 @@ final class AppModel: ObservableObject {
     /// refuse a second click without a modal.
     @Published private(set) var busy: Set<String> = []
     @Published var lastError: PresentableError?
+    /// Set when Detach was pressed on a target whose volume is still mounted:
+    /// the UI asks before ejecting, because the layers below will fall back to
+    /// a force-eject and a mounted volume can have live writers (a running VM,
+    /// most likely). Explicitly-labelled eject paths — the menu bar's Eject
+    /// and Detach All, the updater's detach-and-install — skip the question;
+    /// their click *is* the consent.
+    @Published var pendingDetach: TargetRecord?
 
     var isReady: Bool { setup.isReady }
 
@@ -210,11 +219,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func detach(_ target: TargetRecord) async {
+    func detach(_ target: TargetRecord, ejectingMounted: Bool = false) async {
         busy.insert(target.id)
         defer { busy.remove(target.id) }
         guard let attachment = attachments.attachments.first(where: { $0.targetID == target.id })
         else { return }
+        if !ejectingMounted, !attachment.volumePaths.isEmpty {
+            pendingDetach = target
+            return
+        }
         do {
             // Unmounting is what closes the session: the extension logs out in
             // deactivateVolume. The app owns no session of its own to close —

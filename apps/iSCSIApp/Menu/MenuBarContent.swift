@@ -35,7 +35,11 @@ struct MenuBarContent: View {
                 menuButton("Detach All", systemImage: "eject") {
                     Task {
                         for row in model.rows where row.isAttached {
-                            await model.detach(row.target)
+                            // Labelled with an eject icon and reachable only
+                            // deliberately: the click is the consent, and the
+                            // confirmation alert lives in a window that may
+                            // not even be open.
+                            await model.detach(row.target, ejectingMounted: true)
                         }
                     }
                 }
@@ -115,7 +119,7 @@ private struct MenuRow: View {
                 ProgressView().controlSize(.small)
             } else if row.isAttached {
                 Button("Show") { model.reveal(row) }.buttonStyle(.link)
-                Button("Eject") { Task { await model.detach(row.target) } }
+                Button("Eject") { Task { await model.detach(row.target, ejectingMounted: true) } }
                     .buttonStyle(.borderless)
             } else {
                 Button("Attach") { Task { await model.attach(row.target) } }
