@@ -279,29 +279,69 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         return result.data
     }
 
+    /// The chunks of one write pipeline against each other, for the same reason
+    /// and by the same argument as `read`: they are contiguous slices of a single
+    /// buffer, so they are **disjoint by construction** and nothing depends on
+    /// the order they complete in. No ordering gate is needed or wanted here.
+    ///
+    /// This is deliberately not conditioned on the write-through setting. Four
+    /// disjoint FUA writes issued together are each still individually durable
+    /// when acknowledged, so there is no durability trade to gate on — this buys
+    /// latency back without spending safety.
+    ///
+    /// What it does *not* do is give a small write any depth. A write is one
+    /// FSKit operation and the extension holds `ioLock` across it, so the gain is
+    /// confined to requests larger than `maxTransferBytes` — file copies, not the
+    /// 7-16 KB writes a running VM makes.
     public func write(offset: UInt64, data: Data) async throws {
         let (bs, count) = try await readCapacity()
         try validate(offset: offset, length: data.count, blockSize: bs, capacity: count)
         let blocksPerChunk = max(1, maxTransferBytes / bs)
 
+        var plan: [(lba: UInt64, payload: Data)] = []
         var lba = offset / UInt64(bs)
         var cursor = data.startIndex
         var remaining = data.count / bs
         while remaining > 0 {
             let blocks = min(remaining, blocksPerChunk)
             let byteLen = blocks * bs
-            let chunk = data[cursor ..< cursor + byteLen]
-            let result = try await executeAbsorbingUnitAttention(SCSITask(
-                lun: lunAddress,
-                cdb: CDB.write16(lba: lba, blocks: UInt32(blocks), fua: writeThrough),
-                direction: .write(Data(chunk))
-            ))
-            guard result.isGood else {
-                throw BlockDeviceError.scsiError(status: result.status, sense: result.sense.flatMap(SenseData.init))
-            }
+            plan.append((lba, Data(data[cursor ..< cursor + byteLen])))
             lba += UInt64(blocks)
             cursor += byteLen
             remaining -= blocks
+        }
+
+        // The overwhelmingly common case, and it should not pay for a task group
+        // to discover it has one member.
+        if plan.count == 1 {
+            try await writeChunk(lba: plan[0].lba, payload: plan[0].payload, blockSize: bs)
+            return
+        }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for chunk in plan {
+                group.addTask { [self] in
+                    try await writeChunk(lba: chunk.lba, payload: chunk.payload, blockSize: bs)
+                }
+            }
+            try await group.waitForAll()
+        }
+    }
+
+    /// One WRITE(16). On failure the group cancels its siblings, so which chunks
+    /// reached the medium is indeterminate — as it already was, since a partial
+    /// write is a partial write whether the survivors form a prefix or a subset.
+    /// `DaemonStore.write` drops the whole overlap from its cache on any error
+    /// for exactly that reason.
+    private func writeChunk(lba: UInt64, payload: Data, blockSize bs: Int) async throws {
+        let result = try await executeAbsorbingUnitAttention(SCSITask(
+            lun: lunAddress,
+            cdb: CDB.write16(lba: lba, blocks: UInt32(payload.count / bs), fua: writeThrough),
+            direction: .write(payload)
+        ))
+        guard result.isGood else {
+            throw BlockDeviceError.scsiError(
+                status: result.status, sense: result.sense.flatMap(SenseData.init))
         }
     }
 

@@ -9,12 +9,18 @@ struct TargetHarness {
     let target: MockTarget
     let serveTask: Task<Void, Never>
 
+    /// `faultBox` is for the tests that need to arm a fault *after* some clean
+    /// traffic has happened — stalling every command from the start also stalls
+    /// the READ CAPACITY that any block-device call makes first, so a test about
+    /// write behaviour never reaches a write.
     static func start(
         config: MockTargetConfig = MockTargetConfig(),
-        disk: RAMDisk? = nil
+        disk: RAMDisk? = nil,
+        faultBox: FaultBox? = nil
     ) -> TargetHarness {
         let (initiatorSide, targetSide) = MemoryPipe.pair()
-        let target = MockTarget(config: config, disk: disk, transport: targetSide)
+        let target = MockTarget(config: config, disk: disk,
+                                faultBox: faultBox, transport: targetSide)
         let serve = Task { await target.run() }
         return TargetHarness(transport: initiatorSide, target: target, serveTask: serve)
     }
