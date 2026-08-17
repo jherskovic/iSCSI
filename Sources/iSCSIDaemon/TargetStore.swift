@@ -127,7 +127,30 @@ public actor TargetStore {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         do {
             let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode([TargetRecord].self, from: data)
+            let records = try JSONDecoder().decode([TargetRecord].self, from: data)
+
+            // Retire any `workloadProfile` left behind by the workload picker,
+            // which existed for three builds and is gone. Nothing can display
+            // or clear one now, and a stale value silently pins that volume's
+            // readahead depth for good — which is not hypothetical: a target
+            // still carrying "sequential" came up pinned on the test rig with
+            // the depth controller inert. Rewritten to disk rather than dropped
+            // in memory, or the next daemon start would pin it again.
+            let stale = records.filter { $0.workloadProfile != nil }
+            guard stale.isEmpty else {
+                let cleaned = records.map { record -> TargetRecord in
+                    var r = record
+                    r.workloadProfile = nil
+                    return r
+                }
+                // Best-effort: if the rewrite fails the daemon still runs with
+                // the cleared values, and tries again next load.
+                try? persist(cleaned)
+                DaemonLog.lifecycle("cleared a stale workload profile from \(stale.count) "
+                              + "target(s); readahead depth is chosen automatically")
+                return cleaned
+            }
+            return records
         } catch {
             let quarantined = url.appendingPathExtension("corrupt")
             try? FileManager.default.removeItem(at: quarantined)
