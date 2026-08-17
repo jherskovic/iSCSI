@@ -298,14 +298,23 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         try validate(offset: offset, length: data.count, blockSize: bs, capacity: count)
         let blocksPerChunk = max(1, maxTransferBytes / bs)
 
-        var plan: [(lba: UInt64, payload: Data)] = []
+        // Ranges, not payloads. Materialising every chunk here would copy the
+        // whole request before the first byte reached the wire — worse on peak
+        // memory and worse on first-byte latency, which is the very thing
+        // pipelining is for, and worse the larger the write. Each task slices
+        // its own chunk when it is about to send it.
+        //
+        // The copy itself stays: `data[range]` is a slice carrying a non-zero
+        // `startIndex`, and normalising it is what the original code's
+        // `Data(chunk)` was doing.
+        var plan: [(lba: UInt64, bytes: Range<Data.Index>)] = []
         var lba = offset / UInt64(bs)
         var cursor = data.startIndex
         var remaining = data.count / bs
         while remaining > 0 {
             let blocks = min(remaining, blocksPerChunk)
             let byteLen = blocks * bs
-            plan.append((lba, Data(data[cursor ..< cursor + byteLen])))
+            plan.append((lba, cursor ..< cursor + byteLen))
             lba += UInt64(blocks)
             cursor += byteLen
             remaining -= blocks
@@ -314,14 +323,16 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         // The overwhelmingly common case, and it should not pay for a task group
         // to discover it has one member.
         if plan.count == 1 {
-            try await writeChunk(lba: plan[0].lba, payload: plan[0].payload, blockSize: bs)
+            try await writeChunk(lba: plan[0].lba,
+                                 payload: Data(data[plan[0].bytes]), blockSize: bs)
             return
         }
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             for chunk in plan {
                 group.addTask { [self] in
-                    try await writeChunk(lba: chunk.lba, payload: chunk.payload, blockSize: bs)
+                    try await writeChunk(lba: chunk.lba,
+                                         payload: Data(data[chunk.bytes]), blockSize: bs)
                 }
             }
             try await group.waitForAll()
