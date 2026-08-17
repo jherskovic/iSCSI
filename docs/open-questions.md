@@ -4,7 +4,7 @@ Things known to be untested, unexplained, or deferred, with what is known about
 each and how to attack it. Ordered by what a failure would cost, not by how
 interesting it is.
 
-Current as of 0.4.1 (build 30), 2026-08-17.
+Current as of 0.4.1 (build 31), 2026-08-17.
 
 ---
 
@@ -146,6 +146,13 @@ It moves if either:
 - the user can declare their target's cache non-volatile — battery-backed or
   UPS-protected — and accept the consequence. That is a UI and a stored setting,
   not a protocol change, and it is the only half available from here.
+
+**Pipelining a large write is now worth 2.1x under FUA and 2.6x cached**
+(2026-08-17), which does not change this item's trade but moves both sides of
+it: a request larger than `maxTransferBytes` issues its chunks together instead
+of one round trip at a time. It does nothing for the small writes that dominate
+a running VM, which is where FUA hurts most. Numbers and method in
+`docs/performance.md`.
 
 **The second half is built** (post-0.3.8): `TargetRecord.flushIntervalSeconds`
 drops FUA in favour of a periodic SYNCHRONIZE CACHE (1–60 s), or none at all

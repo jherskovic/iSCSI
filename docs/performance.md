@@ -115,6 +115,45 @@ commands would buy nothing.** Rejected on evidence rather than implemented on
 intuition — it would have added real risk (reordering, weakened RMW
 serialization) for no measurable gain.
 
+**Half of that is superseded — see the next section.** The measurement above is
+sound and the conclusion drawn from it was too broad. Four independent *streams*
+is not the same experiment as the chunks of *one* request going out together,
+and the two results point opposite ways for a reason worth understanding.
+
+## Splitting one write across concurrent commands: 2.1-2.6x (2026-08-17)
+
+`ISCSIBlockDevice.read` has pipelined the chunks of a single request since the
+readahead work. `write` sat three lines below it issuing the same kind of chunks
+one at a time, paying a full round trip each. Making it match:
+
+| mode | serial | pipelined | gain |
+|---|---|---|---|
+| FUA (what ships) | 53.7 / 58.6 / 57.8 -> **56.7** MB/s | 121.6 / 117.0 / 117.2 -> **118.6** | **2.09x** |
+| cached | 329.8 / 321.5 / 306.1 -> **319.1** MB/s | 809.3 / 816.2 / 820.8 -> **815.4** | **2.56x** |
+
+512 MiB per pass, 1 MiB requests split into four 256 KiB commands, against
+`iscsi-driver-testing`. Interleaved A/B/A/B in one session, per the rule in
+`open-questions`: the spread within each arm is 9% and 7%, an order below the
+gap, and the worst pipelined run still beats the best serial one 2.00x and
+2.45x. The pipelined arm is also the *steadier* of the two (1.4% spread in
+cached mode against 7.4%), which is not what noise looks like.
+
+**Why this does not contradict the section above.** Four concurrent streams
+write four unrelated LBA regions and destroy the sequential pattern the array
+reads ahead on — measured flat for writes and 23% *worse* for reads. Four
+concurrent chunks of one request are contiguous by construction: the same
+sequential run, in the same order, with the round-trip stall between commands
+removed. One scatters the access pattern; the other only stops waiting. The
+earlier experiment answered "should separate operations overlap" (no) and was
+read as answering "should one operation be split" (which it never tested).
+
+Correctness on hardware, not just throughput: `iscsictl verify --write --blocks
+2048` round-trips 1 MiB — four concurrent commands — byte-exact at LBA 262144.
+
+Note the FUA multiple is roughly preserved, 5.6x before and 6.9x after, so this
+does not touch the trade in item 5 of `open-questions`; it makes both sides of
+it faster.
+
 ## What is actually limiting each direction
 
 - **Reads** are transport-bound at ~98 MB/s.
