@@ -20,6 +20,10 @@ public enum KeychainStore {
         /// Written without error, but not readable afterwards. Worth its own
         /// case because it is the shape the boot-time problem takes.
         case notPersisted
+        /// The System keychain would not open. Distinct from a refused write:
+        /// there is nowhere to write *to*, and no amount of retrying or
+        /// re-entering the secret will change it.
+        case noSystemKeychain
 
         public var errorDescription: String? {
             switch self {
@@ -28,30 +32,72 @@ public enum KeychainStore {
                 return "The keychain refused the request: \(text ?? "OSStatus \(status)")"
             case .notPersisted:
                 return "The secret was saved but could not be read back."
+            case .noSystemKeychain:
+                return "The System keychain could not be opened, so there is "
+                     + "nowhere to save the secret."
             }
         }
     }
 
-    /// UNRESOLVED, and deliberately marked as such: whether a root LaunchDaemon
-    /// can read this back *before any user logs in*.
+    /// RESOLVED 2026-08-17, and the answer is worse than the question was.
     ///
-    /// `kSecUseDataProtectionKeychain` is required, or a root daemon's item goes
-    /// to root's login keychain, which is locked at boot — the failure would
-    /// only ever appear as auto-attach silently not working after a restart.
-    /// `AfterFirstUnlockThisDeviceOnly` is the most permissive accessibility that
-    /// is still device-bound and excluded from backups, but "after first unlock"
-    /// is a statement about a *user* session, and a daemon at boot has none.
+    /// This used to pass `kSecUseDataProtectionKeychain: true`, reasoning that
+    /// otherwise a root daemon's item lands in root's login keychain, which is
+    /// locked at boot. The open question was whether a daemon could read such an
+    /// item back *before any user logs in*.
     ///
-    /// This is R3 in the plan and needs a reboot experiment before any
-    /// auto-attach feature can rely on it. Until then nothing depends on
-    /// reading a secret at boot: the app is running whenever a login happens.
+    /// It cannot read or write one at all, at any time. The data-protection
+    /// keychain is served by `secd`, which is a **per-user agent**. `iscsid` is
+    /// a LaunchDaemon in the system domain, where `com.apple.securityd.xpc` is
+    /// not in the bootstrap namespace, so every call failed:
+    ///
+    ///     Failed to talk to secd after 4 attempts.
+    ///     error:[-25291] … com.apple.securityd.xpc … Connection invalid —
+    ///       Connection init failed at lookup with error 3 - No such process
+    ///     keychain write initiator for …: SecItemDelete -25291, SecItemAdd -25291
+    ///
+    /// `-25291` is `errSecNotAvailable`. Every CHAP secret ever entered was
+    /// silently discarded — `setCHAPSecret` is `try?` over `store`, so the user
+    /// saw only "saved but could not be read back", which is what the read-back
+    /// check reports when there is nothing to read.
+    ///
+    /// The System keychain is what a system-domain daemon is meant to use: it is
+    /// served by the system `securityd`, is unlocked at boot from
+    /// `/var/db/SystemKey`, and needs no user session. Verified as root by
+    /// writing in one process and reading the value back in a later one.
+    ///
+    /// Nothing was migrated because nothing was ever stored.
     private static func baseQuery(_ targetID: String, _ kind: Kind = .initiator) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: kind.account(for: targetID),
-            kSecUseDataProtectionKeychain as String: true,
         ]
+    }
+
+    /// Opened per call rather than cached: `SecKeychain` is a CF type and not
+    /// `Sendable`, opening it is cheap, and secrets are touched only when one is
+    /// saved or a login resolves one.
+    ///
+    /// `SecKeychainOpen` is deprecated in favour of the data-protection
+    /// keychain, which is precisely what a system-domain daemon cannot reach.
+    /// There is no non-deprecated way to name a file keychain, so the
+    /// deprecation is acknowledged rather than avoidable.
+    ///
+    /// The build therefore carries one deprecation warning, on the
+    /// `SecKeychainOpen` line below, and it is meant to stay: it marks the one
+    /// place this constraint lives. Do not silence it by annotating the callers
+    /// — that spreads a false "deprecated" onto this type's whole public API —
+    /// and do not silence it by going back to the data-protection keychain,
+    /// which is what did not work.
+    private static func systemKeychain() -> SecKeychain? {
+        var keychain: SecKeychain?
+        let status = SecKeychainOpen("/Library/Keychains/System.keychain", &keychain)
+        guard status == errSecSuccess else {
+            DaemonLog.auth("cannot open the System keychain: \(describe(status))")
+            return nil
+        }
+        return keychain
     }
 
     /// Which half of a mutual CHAP pair a secret is.
@@ -85,11 +131,22 @@ public enum KeychainStore {
     /// whose credentials the user had definitely entered.
     public static func store(_ secret: String, for targetID: String,
                              kind: Kind = .initiator) throws {
+        guard let keychain = systemKeychain() else { throw StoreFailure.noSystemKeychain }
+
         var query = baseQuery(targetID, kind)
+        // Searching and adding name the keychain differently: a search takes a
+        // list, an add takes the one to write into. Passing the wrong key is
+        // not an error, it just silently addresses the default keychain — which
+        // for a root daemon is root's login keychain, locked at boot.
+        query[kSecMatchSearchList as String] = [keychain]
         let deleted = SecItemDelete(query as CFDictionary)
 
+        query[kSecMatchSearchList as String] = nil
+        query[kSecUseKeychain as String] = keychain
         query[kSecValueData as String] = Data(secret.utf8)
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        // No kSecAttrAccessible: that is a data-protection-keychain attribute
+        // and means nothing here. The System keychain's availability comes from
+        // /var/db/SystemKey, which is why it works with no user logged in.
         query[kSecAttrLabel as String] = kind == .mutual
             ? "iSCSI Initiator — mutual CHAP secret"
             : "iSCSI Initiator — CHAP secret"
@@ -114,7 +171,9 @@ public enum KeychainStore {
     }
 
     public static func chapSecret(for targetID: String, kind: Kind = .initiator) -> String? {
+        guard let keychain = systemKeychain() else { return nil }
         var query = baseQuery(targetID, kind)
+        query[kSecMatchSearchList as String] = [keychain]
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -132,7 +191,13 @@ public enum KeychainStore {
     }
 
     public static func deleteCHAPSecret(for targetID: String, kind: Kind = .initiator) {
-        SecItemDelete(baseQuery(targetID, kind) as CFDictionary)
+        guard let keychain = systemKeychain() else { return }
+        var query = baseQuery(targetID, kind)
+        query[kSecMatchSearchList as String] = [keychain]
+        let status = SecItemDelete(query as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            DaemonLog.auth("keychain delete \(kind) for \(targetID): \(describe(status))")
+        }
     }
 
     /// Both halves, for deleting a target outright. Neither absence is an error.

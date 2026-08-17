@@ -141,8 +141,12 @@ reach the wire. See "The flush gap" in `docs/architecture.md`.
 
 ## Run it on a network you trust
 
-iSCSI here is **plaintext TCP on port 3260**. There is no TLS and no IPsec — the
-protocol permits TLS and this implementation does not offer it yet, so the
+iSCSI here is **plaintext TCP on port 3260**, and that is not a gap this
+project can close on its own. RFC 7143 defines exactly three authentication
+methods — Kerberos, SRP and CHAP — and **no TLS binding at all**; the transport
+protection the standard specifies is IPsec (RFC 3723, updated by RFC 7146).
+There is nothing to implement here that a target would understand, and the one
+this is developed against runs SCST, which has no TLS support either. So the
 transport gives you no confidentiality and no integrity.
 
 What that means concretely, for anyone on the path between this Mac and the
@@ -157,10 +161,19 @@ target:
   the login exchange.
 
 CHAP authenticates the _initiator to the target_. **Mutual CHAP** is the only
-control here that authenticates the target back, which is what would catch a
-stand-in feeding this Mac a fabricated disk that macOS then mounts as APFS — so
-configure it if your target supports it. It is per-target, under "Verify the
-target" in the target editor.
+control that would authenticate the target back — the thing that would catch a
+stand-in feeding this Mac a fabricated disk that macOS then mounts as APFS.
+
+It is implemented, tested, and **currently hidden in the UI**, because the
+target it was developed against cannot complete it. TrueNAS SCALE writes
+`OutgoingUser` into `/etc/scst.conf` and never loads it into
+`/sys/kernel/scst_tgt/`, including across an iSCSI service restart, so
+`iscsi-scstd` logs "CHAP target auth.: no outgoing credentials configured" and
+refuses the login. One-way and mutual logins minutes apart with the same
+credentials: one-way in, mutual out. Rather than ship a switch whose only
+observable effect was to break a working target, `CHAP.mutualIsOffered` turns
+it off; flipping that constant restores it. If you have a target that does
+answer a mutual challenge, that is worth hearing about.
 
 Run this on a trusted, isolated segment, or inside a WireGuard/IPsec tunnel.
 FileVault on the volume protects the data at rest and over the wire; it does not
