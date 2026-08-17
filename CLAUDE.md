@@ -120,6 +120,14 @@ LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Bac
   recovery text survive the XPC boundary intact.
 - **`MountpointTag` is `sha256(portal|target|lun)` and is a compatibility
   contract** — changing how it is derived orphans every existing mount.
+- **CHAP secrets live in the System keychain, and must.** The data-protection
+  keychain (`kSecUseDataProtectionKeychain`) is served by `secd`, a per-user
+  agent; `iscsid` is a system-domain LaunchDaemon with no such service in its
+  bootstrap namespace, so every call returns `-25291` and no secret was ever
+  stored. Naming a file keychain costs one deprecation warning on
+  `SecKeychainOpen`, which is deliberate — see `KeychainStore.swift`.
+- **Mutual CHAP is implemented but switched off** at `CHAP.mutualIsOffered`.
+  The blocker is target-side; `docs/open-questions.md` item 3a has the evidence.
 - **The attach path is unprivileged and lives in the app, not the daemon.**
   `mount -F` resolves the FSKit module through the user's `fskit_agent`; a root
   daemon's lookup goes to `fskitd`, which holds no third-party modules.

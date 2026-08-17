@@ -4,7 +4,7 @@ Things known to be untested, unexplained, or deferred, with what is known about
 each and how to attack it. Ordered by what a failure would cost, not by how
 interesting it is.
 
-Current as of 0.4.0 (build 29), 2026-08-17.
+Current as of 0.4.1 (build 30), 2026-08-17.
 
 ---
 
@@ -47,6 +47,65 @@ standard-conforming, but "should" is doing a lot of work and every number in
 
 Specifically worth re-running elsewhere: the command-size cliff (below), the
 readahead byte budget, and the FUA cost.
+
+## 3a. Mutual CHAP cannot be exercised — the one target refuses it
+
+The sharpest instance of item 3, and the reason it sits this high: it is the
+only control that authenticates the *target* to us, on a transport with no
+confidentiality and no integrity. Without it, nothing catches a stand-in
+feeding this Mac a fabricated disk that macOS then mounts as APFS.
+
+**Hidden in the UI since 0.4.1** behind `CHAP.mutualIsOffered`. Not because the
+implementation is suspect. It is driven end to end by `AuthTraceTests` against
+a peer that answers, and on the wire it produces RFC 7143 §12.1.3's literal
+form — `CHAP_N CHAP_R CHAP_I CHAP_C` in one Login Request, mirroring the
+encodings the target itself chose.
+
+TrueNAS SCALE cannot answer. It writes `OutgoingUser` into `/etc/scst.conf`,
+never loads it into `/sys/kernel/scst_tgt/`, and does not pick it up across an
+iSCSI service restart, so `iscsi-scstd` logs
+
+    CHAP target auth.: no outgoing credentials configured[ for discovery].
+
+and refuses the login with `0x02/0x01`. That message comes from
+`chap_target_auth_create_response` in `iscsi-scst/usr/chap.c`, which errors when
+`account_get_first(conn->tid, ISCSI_USER_DIR_OUTGOING)` returns NULL — so the
+target never composes an answer, it declines to. The ` for discovery` suffix is
+`conn->tid` being zero: discovery and each target hold **separate** outgoing
+accounts, which is why fixing one left the other failing.
+
+The measured pair, same target and credentials, minutes apart:
+
+    read-bench, no mutual pair   -> login, READ CAPACITY, 4 x 256 KiB reads, logout
+    read-bench, mutual pair      -> 0x02/0x01 at the CHAP result
+
+Two deductions worth not re-deriving. **Our `--mutual-user` never crosses the
+wire** — `CHAP.respond` appends only `CHAP_I`/`CHAP_C`, and `mutualName` is used
+locally in `verifyMutual` to check the name that comes back — so no client-side
+peer-name setting can change the target's answer, and changing it did not.
+And **SCST never requires the initiator to ask**: mutual is initiator-driven, so
+a correctly configured target still accepts a one-way login. "It authenticates
+without mutual even when set to Mutual CHAP" is not evidence of anything.
+
+**How to attack.** A second target implementation is the whole answer — anything
+that answers a mutual challenge clears this in one run of
+`iscsictl discover --debug --mutual-user … --mutual-secret-file …`, whose auth
+trace narrates each step. Failing that, whether TrueNAS ever loads `OutgoingUser`
+into sysfs is a bug to file against them, not something fixable here.
+
+## 3b. There is no TLS option to add — settled
+
+Asked and closed on 2026-08-17. RFC 7143 defines exactly three `AuthMethod`
+values — Kerberos, SRP, CHAP — and **no TLS binding at all**. The transport
+protection the standard specifies is IPsec, per RFC 3723 as updated by RFC 7146.
+There is nothing for an initiator to implement that a conforming target would
+understand, and SCST has no TLS support either, so even a non-standard mode
+would need something on the NAS terminating it.
+
+What remains available is unchanged and is what the README recommends: run it on
+a trusted segment or inside a WireGuard/IPsec tunnel. The README used to claim
+"the protocol permits TLS and this implementation does not offer it yet"; it does
+not permit it, and that sentence is gone.
 
 ---
 
@@ -276,6 +335,23 @@ on a colder array. The tell was there and was noticed and was then
 under-weighted — the caveat had already been written down before the run. When
 one number in a table comes from a different hour than the others, it is not in
 the same table.
+
+A sixth, later the same day, is the most useful of them: **a probe that does not
+reproduce the process context measures the probe.** No CHAP secret had ever been
+saved, and a probe run under `sudo` reproduced the failure as `-34018`
+(`errSecMissingEntitlement`), which pointed convincingly at `iscsid` having no
+`CODE_SIGN_ENTITLEMENTS` in `project.yml` while every other target has one. That
+was wrong. `sudo` inherits the user session, so the probe had a `secd` to talk to
+and failed the entitlement check first. The daemon, in the system domain, gets
+past that check and finds `com.apple.securityd.xpc` absent from its bootstrap
+namespace — `-25291`, `errSecNotAvailable`. Same call, same uid, two different
+errors, and only the second one is the bug: the data-protection keychain is
+served by a **per-user agent** and a LaunchDaemon cannot use it at all, ever.
+Secrets now go to the System keychain (`KeychainStore.swift` carries the detail).
+
+The tell was available and was not read: the probe was root-in-a-user-session,
+which is not the thing being debugged. What settled it was the daemon logging its
+own `OSStatus` — the same move as the other five.
 
 Each was solved within minutes of making the code report what it was doing. The
 diagnostics in `DaemonStore.summary` and `DaemonController` exist for that
