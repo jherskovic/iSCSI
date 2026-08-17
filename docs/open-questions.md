@@ -135,7 +135,44 @@ Management notification can be waited on properly.
   everything after immediately. Built in response to the eight-hour wedge,
   reasoned about carefully, and never triggered in anger.
 
-## 8. Deferred
+## 8. The chunk cache is built and unmeasured under load
+
+Both problems the second VM run isolated — size-change discards throwing away
+real sequential windows, and the ~80 reads/s serial round-trip floor that
+made a guest boot take minutes — are now addressed by one mechanism:
+`PrefetchChunkCache` (see the end of docs/queue-depth.md). Reads are served
+by range from 256 KiB chunks, misses read-around and populate a 32 MiB LRU
+cache, and speculation is chunk-wise behind the existing byte gate.
+
+What is owed now is measurement, not mechanism:
+
+- **The VM verdict.** Under the guest workload, `cache=%` should multiply
+  and misses collapse *if the guest's reads cluster within 256 KiB chunks*.
+  If they genuinely don't — hit rate stays low and `readAround=` shows bytes
+  paid for nothing — the honest conclusion is that Backend A's one-op-at-a-
+  time delivery cannot host VMs, and the answer is architectural, not more
+  readahead tuning.
+- **The sequential regression check.** `readahead-soak.py` at 256 KiB and
+  1 MiB against the build-16 numbers (1099 MB/s, 92% hits). The soak
+  **writes**, so it runs on the test-rig scratch volume, never on a volume
+  holding real VM images.
+- **Coherence under the soak.** Write semantics have now changed twice:
+  first drop-the-overlap, now write-through — acknowledged bytes are patched
+  into overlapping cached chunks (`didWrite`), with drops only for pending
+  fetches and failed writes (single-initiator assumption, stated in
+  queue-depth.md). The soak's write-then-read-back and generation stamps are
+  the sharpest test of this — under write-through the read-back is served
+  from the patched cache, so a patching bug is exactly what the generation
+  stamps would catch. It has not run against the chunk cache yet.
+
+## 9. Deferred
+
+- **Detach offers to eject** (built 2026-08-16, untested in the UI): Detach on
+  a mounted volume now asks "Eject and Detach?" instead of silently falling
+  through to a force-eject. The menu bar's Eject/Detach All and the updater's
+  detach-and-install skip the question — their click is the consent, and the
+  alert lives in a window those paths may not have open. Worth one manual
+  pass: Detach with a VM running should ask; Cancel must leave it mounted.
 
 - **Tailscale failure modes.** A `newfs_hfs` over Tailscale blocked ~4 minutes
   in uninterruptible wait. Explicitly parked. The wedge fixes in 0.3.6 —

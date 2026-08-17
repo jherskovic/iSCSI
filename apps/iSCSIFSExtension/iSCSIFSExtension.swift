@@ -284,18 +284,10 @@ final class DaemonStore: LUNStore {
     private(set) var writeBytes: UInt64 = 0
     private(set) var flushCount = 0
 
-    /// Readahead accounting, and the request size it is sized against.
-    ///
-    /// These exist because working out what this path was doing took an evening
-    /// of arithmetic that a log line would have answered. Throughput divided by
-    /// a round-trip time said FSKit asks in ~256 KiB pieces, which turned out to
-    /// be right and was still a guess. `hitRate` says whether readahead is doing
-    /// anything at all, and `lastRequestBytes` says what it is sized for — the
-    /// two numbers that decide whether the window is too small, too large, or
-    /// not being claimed because the stream is not sequential.
-    private(set) var prefetchHits = 0
-    private(set) var prefetchMisses = 0
-    private(set) var prefetchUnanswered = 0
+    /// The request size most recently seen, for the summary line. Cache and
+    /// speculation accounting lives in `PrefetchChunkCache.Stats` — including
+    /// the cost side (`speculated`, `unused`, `readAround`), which the first
+    /// counters here famously lacked.
     private(set) var lastRequestBytes = 0
 
     /// Seconds to wait for any single daemon call.
@@ -320,7 +312,8 @@ final class DaemonStore: LUNStore {
         return isDead
     }
 
-    /// How many reads to keep running ahead of the one being served.
+    /// How much data may be kept speculatively in flight, once the stream has
+    /// earned that depth (see `ReadaheadPolicy`).
     ///
     /// FSKit issues one read at a time and waits for each, so without this the
     /// link is idle for a full round trip between requests — measured at 206
@@ -329,203 +322,72 @@ final class DaemonStore: LUNStore {
     /// get depth, because the depth cannot come from a caller that will not
     /// issue a second request until the first returns.
     ///
-    /// How much data to keep in flight, rather than how many requests.
-    ///
-    /// The raw sweep flattened at queue depth 4 with 1 MiB commands — 4 MiB
-    /// outstanding. Counting requests instead of bytes silently under-fills the
-    /// pipe when the requests are smaller: with readahead fixed at 4 slots the
-    /// extension reached 391 MB/s, and at a 2.72 ms round trip that works out
-    /// to roughly 266 KB per request, so FSKit is asking in ~256 KiB pieces and
-    /// four of them is 1 MiB in flight, a quarter of what the link wants.
-    ///
-    /// So the budget is in bytes and the depth follows from the request size.
-    ///
     /// 8 MiB rather than the 4 MiB that saturates the raw path, because this
     /// path is slower per request and therefore needs more of them in flight to
     /// cover the same time. Measured: at a 4 MiB budget the extension reached
-    /// 636 MB/s, which is ~2430 requests a second with 16 outstanding — 6.6 ms
-    /// each, against 3.6 ms for the same request straight from iscsictl. The
-    /// XPC round trip is that 3 ms, and depth is what hides it.
+    /// 636 MB/s; at 8 MiB, 1099 MB/s. See docs/queue-depth.md.
     private static let readaheadBytes = 8 * 1024 * 1024
 
-    /// Never more slots than this, however small the requests get. Each slot is
-    /// an outstanding XPC call and a buffer; a pathological 4 KiB stream should
-    /// not open a thousand of them.
-    ///
-    /// 32 is safe at the sizes this path actually uses: 256 KiB commands showed
-    /// no degradation out to 64 outstanding. It is *not* safe at 1 MiB, where
-    /// 16 outstanding collapsed to a third of line rate — but the byte budget
-    /// keeps 1 MiB requests at 8 slots, below that cliff. See docs/queue-depth.md.
+    /// Never more chunks in flight than this. Each is an outstanding XPC call
+    /// and a buffer. 32 x 256 KiB commands showed no degradation out to 64
+    /// outstanding; the 1 MiB command cliff no longer applies because
+    /// speculation is issued chunk-wise, never larger.
     private static let readaheadMaxSlots = 32
 
-    /// Slots to keep in flight for a given request size.
-    private static func readaheadDepth(forRequestOf length: Int) -> Int {
-        guard length > 0 else { return 0 }
-        return max(1, min(readaheadMaxSlots, readaheadBytes / length))
-    }
-
-    /// One speculative read that has been asked for but not yet wanted.
-    private final class PrefetchSlot {
-        let semaphore = DispatchSemaphore(value: 0)
-        /// Written by the XPC reply, read after the semaphore is signalled,
-        /// which is what orders the two.
-        var data: Data?
-        var failed = false
-    }
-
-    private let prefetchLock = NSLock()
-    private var prefetchSlots: [UInt64: PrefetchSlot] = [:]
-    /// The request size the outstanding slots were issued for. A stream that
-    /// changes its request size is a different stream.
-    private var prefetchLength = 0
-    /// Where the previous read finished, which is the only evidence available
-    /// that the next one will continue it.
-    private var lastServedEnd: UInt64?
-
-    /// Records where a read ended, and reports whether it continued the last
-    /// one.
+    /// Consecutive bytes a run must cover before anything is speculated.
     ///
-    /// This is what keeps readahead from making random access worse. Reading
-    /// ahead on a request that turns out to be isolated issues four speculative
-    /// reads that are never claimed, then throws them away on the next request
-    /// — five times the traffic and five times the work at the target, queued
-    /// in front of the reads that are real. On an array that is not seek-free
-    /// that is a regression, not an optimisation. So nothing is read ahead
-    /// until two consecutive requests have actually been consecutive.
-    private func noteServed(offset: UInt64, length: Int) -> Bool {
-        prefetchLock.lock()
-        defer { prefetchLock.unlock() }
-        let continuesPrevious = (lastServedEnd == offset)
-        lastServedEnd = offset &+ UInt64(length)
-        return continuesPrevious
-    }
+    /// 256 KiB keeps the benchmark behaviour — a 256 KiB stream still opens
+    /// its window on the second read — while a VM guest's 16 KiB reads need
+    /// sixteen in a row. Chosen from the first real VM run, where the old
+    /// two-requests trigger re-opened a window between every pair of writes
+    /// and wasted 100% of twelve minutes' speculation.
+    private static let readaheadMinStream = 256 * 1024
 
-    /// Forget every outstanding speculative read.
+    /// The cache's unit of fetch and residence. 256 KiB is the measured
+    /// throughput sweet spot for a single SCSI command (`maxTransferBytes`),
+    /// and geometry allows blocks up to 1 MiB, so never smaller than a block.
+    private static func chunkBytes(forBlockSize bs: Int) -> Int { max(256 << 10, bs) }
+
+    /// Resident cache ceiling. Started at 16 MiB out of caution — the appex's
+    /// memory limits are not documented — but the first VM run at 16 MiB
+    /// showed 5.5x read-around amplification (3 GB fetched for 549 MB
+    /// served), which reads as eviction churn: chunks dropped before the
+    /// guest came back for their neighbours. 32 MiB is the next measured
+    /// step, not a destination.
+    private static let maxCachedBytes = 32 << 20
+
+    /// The chunk cache is the whole read path (`PrefetchChunkCache`,
+    /// iSCSIKit, unit-tested against an in-memory LUN). Reads are served from
+    /// 256 KiB aligned chunks; a miss fetches the covering span in one round
+    /// trip and keeps it, so a VM guest's small neighbouring reads — measured
+    /// at ~80 round trips/s through the old exact-match path, which is why a
+    /// boot took minutes — become memory copies. Speculation is still gated
+    /// on `readaheadMinStream` of proven consecutive stream.
     ///
-    /// Replies still in flight are harmless once their slot is out of the map:
-    /// the reply block owns the slot, so it fills an object nobody will consult
-    /// and then releases it.
-    private func discardPrefetches() {
-        prefetchLock.lock()
-        prefetchSlots.removeAll()
-        prefetchLock.unlock()
-    }
+    /// Set once in `init` and never reassigned; IUO only because its fetch
+    /// closures need `self`.
+    private var cache: PrefetchChunkCache!
 
-    private enum PrefetchOutcome {
-        /// Usable data, already paid for.
-        case hit(Data)
-        /// Nothing suitable was waiting. Do the read properly.
-        case miss
-        /// Something was waiting and the daemon never answered it. The session
-        /// is in trouble, and re-issuing the same read would just spend a
-        /// second full timeout finding that out again.
-        case unanswered
-    }
-
-    /// Take the speculative read for exactly this range, if there is one.
-    ///
-    /// Anything unexpected — wrong size, failed reply, short data — is a miss,
-    /// and the caller then does the read for real. Readahead is only ever an
-    /// optimisation; nothing is allowed to depend on it having worked.
-    private func claimPrefetch(offset: UInt64, length: Int) -> PrefetchOutcome {
-        prefetchLock.lock()
-        guard prefetchLength == length,
-              let slot = prefetchSlots.removeValue(forKey: offset) else {
-            prefetchLock.unlock()
-            return .miss
-        }
-        prefetchLock.unlock()
-
-        guard slot.semaphore.wait(timeout: .now() + Self.timeout) == .success else {
-            return .unanswered
-        }
-        guard !slot.failed, let data = slot.data, data.count == length else {
-            return .miss
-        }
-        return .hit(data)
-    }
-
-    /// Keep `readaheadDepth` chunks in flight beyond the one just served.
-    private func scheduleReadahead(after offset: UInt64, length: Int) {
-        guard length > 0 else { return }
-
-        var toIssue: [(UInt64, PrefetchSlot)] = []
-        prefetchLock.lock()
-        // A different request size means the previous slots describe a stream
-        // that is no longer running.
-        if prefetchLength != length {
-            prefetchSlots.removeAll()
-            prefetchLength = length
-        }
-        var wanted: Set<UInt64> = []
-        let depth = Self.readaheadDepth(forRequestOf: length)
-        guard depth > 0 else { prefetchLock.unlock(); return }
-        for step in 1 ... depth {
-            let next = offset &+ UInt64(step * length)
-            guard next &+ UInt64(length) <= byteCount else { break }
-            wanted.insert(next)
-            if prefetchSlots[next] == nil {
-                let slot = PrefetchSlot()
-                prefetchSlots[next] = slot
-                toIssue.append((next, slot))
-            }
-        }
-        // Anything the stream has moved past is never going to be claimed.
-        for key in prefetchSlots.keys where !wanted.contains(key) {
-            prefetchSlots.removeValue(forKey: key)
-        }
-        prefetchLock.unlock()
-
-        guard !toIssue.isEmpty, let proxy = try? Self.proxy(connection) else { return }
-        for (start, slot) in toIssue {
-            proxy.read(session: session,
-                       offset: NSNumber(value: start),
-                       length: NSNumber(value: length)) { data, error in
-                slot.data = data
-                slot.failed = (data == nil || error != nil)
-                slot.semaphore.signal()
-            }
-        }
-    }
-
-    /// A block-aligned read, served from readahead when it can be.
+    /// A block-aligned read, served from the chunk cache.
     private func readAligned(offset: UInt64, length: Int) throws -> Data {
         try checkAlive()
-        switch claimPrefetch(offset: offset, length: length) {
-        case .hit(let data):
-            // A claimed slot is proof the stream is sequential: the read landed
-            // exactly where the previous one predicted.
-            recordSuccess()
-            lock.lock(); prefetchHits += 1; lastRequestBytes = length; lock.unlock()
-            _ = noteServed(offset: offset, length: length)
-            scheduleReadahead(after: offset, length: length)
+        lock.lock(); lastRequestBytes = length; lock.unlock()
+        do {
+            let data = try cache.read(offset: offset, length: length)
+            guard data.count == length else { throw POSIXError(.EIO) }
             return data
-
-        case .miss:
-            // Nothing was waiting for this, so the stream either just started
-            // or just jumped. Either way the outstanding slots are for the
-            // wrong places; drop them rather than hold memory for reads nobody
-            // wants.
-            discardPrefetches()
-            lock.lock(); prefetchMisses += 1; lastRequestBytes = length; lock.unlock()
-            let data = try rawRead(offset: offset, length: length)
-            // Only start reading ahead once a second request has continued the
-            // first. One read tells you nothing about what comes next.
-            if noteServed(offset: offset, length: length) {
-                scheduleReadahead(after: offset, length: length)
+        } catch let error as PrefetchChunkCache.CacheError {
+            switch error {
+            case .unanswered:
+                // A speculative read the daemon never answered. Deliberately
+                // not retried: re-asking would spend a second full timeout on
+                // a session that just failed to answer the first. Count it and
+                // fail now; the death latch trips after three and everything
+                // afterwards fails immediately.
+                throw recordTimeout()
+            case .shortRead:
+                throw POSIXError(.EIO)
             }
-            return data
-
-        case .unanswered:
-            // Deliberately not retried here. Re-issuing would spend a second
-            // full timeout on a session that just failed to answer the first,
-            // so a dead volume would cost 60 seconds per read instead of 30 —
-            // twice as long in the uninterruptible-wait state the death latch
-            // exists to get out of. Count it and fail now; the latch trips
-            // after three and everything afterwards fails immediately.
-            discardPrefetches()
-            lock.lock(); prefetchUnanswered += 1; lock.unlock()
-            throw recordTimeout()
         }
     }
 
@@ -595,20 +457,26 @@ final class DaemonStore: LUNStore {
     }
 
     var summary: String {
+        // Cache stats first: `cache.stats` takes the cache's lock, so it must
+        // not be fetched while holding `lock`.
+        let s = cache.stats
         lock.lock(); defer { lock.unlock() }
-        let claimed = prefetchHits + prefetchMisses
-        let rate = claimed > 0 ? (prefetchHits * 100 / claimed) : 0
+        let served = s.hits + s.misses
+        let rate = served > 0 ? (s.hits * 100 / served) : 0
         // Averaged, not the last one. `lastRequestBytes` was reported first and
         // was actively misleading: a volume whose reads averaged 978 KB showed
-        // `req=4096B depth=32` because one small trailing request happened to be
-        // last, and the depth printed alongside it was therefore the depth for a
-        // request size the stream never used. The average describes the run.
+        // `req=4096B` because one small trailing request happened to be last.
+        // The average describes the run.
         let avgRequest = readCount > 0 ? Int(readBytes / UInt64(readCount)) : 0
-        let depth = Self.readaheadDepth(forRequestOf: avgRequest)
+        // The cost lines: `unused` is speculative chunks paid for at the
+        // target and never touched, and `readAround` is bytes fetched beyond
+        // what callers asked for — the read-around bet. hit% alone cannot rule
+        // the cache in or out as a latency problem; these can.
         return "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B "
              + "flushes=\(flushCount) avgReq=\(avgRequest)B lastReq=\(lastRequestBytes)B "
-             + "depth=\(depth) readahead=\(rate)% (\(prefetchHits) hit, "
-             + "\(prefetchMisses) miss, \(prefetchUnanswered) unanswered)"
+             + "cache=\(rate)% (\(s.hits) hit, \(s.misses) miss, \(s.unanswered) unanswered) "
+             + "maxDepth=\(s.maxDepth) speculated=\(s.chunksSpeculated)/\(s.speculatedBytes)B "
+             + "unused=\(s.chunksSpeculated - s.speculatedUsed) readAround=\(s.readAroundBytes)B"
     }
 
     /// Connects to iscsid, logs in to `target`/`lun` at `host:port`, and learns
@@ -667,7 +535,37 @@ final class DaemonStore: LUNStore {
         aligner = BlockAligner(blockSize: bs, capacity: byteCount)
         self.blockSize = blockSize.uint64Value
 
-        fsLog.log("DaemonStore session=\(handle, privacy: .public) size=\(self.byteCount) blockSize=\(blockSize.uint64Value)")
+        // Built last: the fetch closures need `self`, which only exists once
+        // every stored property above is set. `weak` breaks the cycle the
+        // cache owning closures over its owner would otherwise create; a
+        // fetch after the store is gone just fails the volume's I/O, which is
+        // what a torn-down volume should do.
+        let chunk = Self.chunkBytes(forBlockSize: Int(bs))
+        cache = PrefetchChunkCache(
+            chunkBytes: chunk,
+            capacity: byteCount,
+            maxCachedBytes: Self.maxCachedBytes,
+            policy: ReadaheadPolicy(budgetBytes: Self.readaheadBytes,
+                                    maxSlots: Self.readaheadMaxSlots,
+                                    minStreamBytes: Self.readaheadMinStream,
+                                    chunkBytes: chunk),
+            timeout: Self.timeout,
+            fetchSync: { [weak self] offset, length in
+                guard let self else { throw POSIXError(.EIO) }
+                return try self.rawRead(offset: offset, length: length)
+            },
+            fetchAsync: { [weak self] offset, length, done in
+                guard let self, let proxy = try? Self.proxy(self.connection) else {
+                    done(nil)
+                    return
+                }
+                proxy.read(session: self.session, offset: NSNumber(value: offset),
+                           length: NSNumber(value: length)) { data, error in
+                    done(error == nil ? data : nil)
+                }
+            })
+
+        fsLog.log("DaemonStore session=\(handle, privacy: .public) size=\(self.byteCount) blockSize=\(blockSize.uint64Value) chunk=\(chunk)")
     }
 
     deinit {
@@ -743,26 +641,49 @@ final class DaemonStore: LUNStore {
         guard let plan = aligner.plan(offset: offset, length: data.count) else { return 0 }
         let payload = plan.count == data.count ? data : Data(data.prefix(plan.count))
 
-        // Anything read ahead was read before this write, so any of it that
-        // overlaps is now wrong. Rather than work out which, drop all of it: a
-        // write means the stream was not the pure sequential read that
-        // readahead is for, and serving one stale block is data corruption
-        // while re-reading a few is a few milliseconds.
+        // Writes go *through* the cache, in three acts. `willWrite` before
+        // the device write: resets the speculation ramp, arms the write
+        // generation against a racing miss fetch caching era-ambiguous bytes,
+        // and drops overlapping in-flight speculation. `didWrite` after the
+        // acknowledgement: patches the acknowledged bytes into overlapping
+        // cached chunks, so a guest's write-then-read-back — its journal,
+        // thousands of times per boot — stays a hit instead of costing a
+        // 256 KiB refetch per write. `writeFailed` on any error: which blocks
+        // reached the media is unknowable, so the overlap is dropped. The
+        // range is the RMW-widened one throughout — the edge blocks change
+        // too — and the patched bytes are the full aligned block in that
+        // branch, which is exactly what went to the target.
         //
-        // The read-modify-write branch below reads through `rawRead`, never the
-        // readahead path, so it cannot pick up a stale edge block either.
-        discardPrefetches()
-
-        if plan.isExact {
-            try rawWrite(offset: plan.alignedOffset, data: payload)
-        } else {
-            // Read-modify-write the partial edge blocks. Serialised so two
-            // partial writes to the same block cannot lose an update.
+        // Chunks the write does not touch stay servable: this initiator is
+        // the only writer of the LUN. The read-modify-write branch below
+        // reads through `rawRead`, never the cache, so it cannot pick up a
+        // stale edge block either.
+        cache.willWrite(offset: plan.alignedOffset, length: plan.alignedLength)
+        do {
+            // `ioLock` now covers *every* write, not just read-modify-write.
+            // It always serialised RMW so two partial writes to one block
+            // cannot lose an update; with write-through it also pins patch
+            // order to device order — two concurrent overlapping writes must
+            // not reach the target in one order and patch the cache in the
+            // other, or the cache diverges from the media until the next
+            // drop. FSKit delivers one operation at a time today, but none of
+            // the code around this leans on that observation, and neither
+            // does this.
             ioLock.lock()
             defer { ioLock.unlock() }
-            var block = try rawRead(offset: plan.alignedOffset, length: plan.alignedLength)
-            block.replaceSubrange(plan.skip ..< (plan.skip + plan.count), with: payload)
-            try rawWrite(offset: plan.alignedOffset, data: block)
+            if plan.isExact {
+                try rawWrite(offset: plan.alignedOffset, data: payload)
+                cache.didWrite(payload, at: plan.alignedOffset)
+            } else {
+                // Read-modify-write the partial edge blocks.
+                var block = try rawRead(offset: plan.alignedOffset, length: plan.alignedLength)
+                block.replaceSubrange(plan.skip ..< (plan.skip + plan.count), with: payload)
+                try rawWrite(offset: plan.alignedOffset, data: block)
+                cache.didWrite(block, at: plan.alignedOffset)
+            }
+        } catch {
+            cache.writeFailed(offset: plan.alignedOffset, length: plan.alignedLength)
+            throw error
         }
 
         lock.lock(); writeCount += 1; writeBytes += UInt64(plan.count); lock.unlock()

@@ -312,3 +312,111 @@ passes writes through whole. Combined with the 256 KiB and 953 KiB averages seen
 from other workloads, the request size is not a property of FSKit to be designed
 against. It is whatever the caller and the layers above happen to produce, which
 is why the readahead window is budgeted in bytes and computed per request.
+
+## The window is now earned, not granted
+
+Everything above measured pure sequential streams, and for those the window
+opened at full depth as soon as two consecutive reads were consecutive. Hosting
+VM images exposed the cost side, which none of the numbers above could see:
+guest I/O is short sequential bursts that jump, and each burst tripped the
+trigger, opened the whole window, and then jumped — stranding up to 8 MiB of
+speculative reads that cannot be recalled once issued. The daemon and target
+execute them to completion anyway, queued in front of the I/O that is real.
+Worse, a write emptied the slot map without resetting the stream, so the next
+read of a continuing run looked sequential and re-issued the entire window on
+top of its still-running orphans: every write interleaved into a sequential run
+could double the window's traffic. Subjectively, a sluggish VM; on the wire,
+milliseconds of stale speculation ahead of every real request.
+
+So depth is now earned exponentially (`ReadaheadPolicy`, unit-tested in
+iSCSIKit): nothing until a run has been consecutive for 256 KiB, then 2 slots,
+4, 8, … up to the same byte budget and slot cap as before. Any out-of-sequence
+read resets the ramp and the gate, and a write forgets the stream entirely —
+which is also what closes the duplicate-window hole. A 256 KiB-per-request
+stream still opens its window on the second read, so the steady-state
+throughput numbers above should stand (unverified as of this writing); a VM
+guest's 16 KiB reads need sixteen in a row before anything is speculated.
+
+The counters can finally see the cost, not just the benefit. `hit/miss` count
+claims, so a stranded window appeared in neither; `summary` now also reports
+`speculated=<count>/<bytes>`, `wasted=<issued - hits>`, and `maxDepth=<deepest
+window opened>` — `depthCap` is a constant for a given request size and says
+nothing about what the ramp actually reached. A good hit rate with a large
+`wasted` is readahead hurting latency while looking helpful.
+
+The byte gate was not in the first version of the ramp, and the first real VM
+run is why it exists. With the gate at "two consecutive requests", a VM boot
+plus a ~40 GB image copy measured, from the extension's own counters: a
+12-minute window of interleaved 16 KiB reads and writes that wasted **100%**
+of ~6,200 speculative reads (hits frozen while `wasted` climbed — two small
+reads between writes kept re-opening a window the next write threw away), and
+one bursty minute that issued 8,101 speculations / 498 MB and wasted 72% of
+them even though the burst was real. Overall: 3.6% hit rate, 82% of 653 MB of
+speculation wasted, against 1.5 GB of real reads. Two consecutive 16 KiB reads
+are 32 KiB of evidence, and 32 KiB of evidence is worth nothing. The remaining
+burst-minute waste — windows discarded whole whenever the request size changes
+— is a separate problem the gate does not address.
+
+## The gate was necessary and nowhere near sufficient
+
+The second VM run, with the gate in, settled where the time actually goes.
+Speculation collapsed as designed — 2,403 chunks issued against 16,647 the run
+before, and `maxDepth=32` proved real sequential bursts exist and ramp fully —
+but the boot was still minutes long, and the counters say why: 11,575 reads,
+774 hits (6.7%, all in the first minute), and ~10,800 misses at ~80 reads/s.
+Every miss is one 16–32 KiB read paying a full XPC + SCSI round trip, ~12 ms,
+serially, because FSKit hands down one operation at a time. That is the floor
+readahead-as-speculation cannot touch: speculation only helps streams, and a
+boot is locality without streams.
+
+So the slot-per-request design is gone, replaced by `PrefetchChunkCache`
+(iSCSIKit, tested against an in-memory LUN). Reads are served from 256 KiB
+aligned chunks; a miss fetches the whole covering span in one round trip
+(read-around, cost visible as `readAround=` in the summary) and keeps it in a
+32 MiB LRU cache, so a guest's neighbouring small reads become memory copies
+instead of round trips. Claims match by range, not request size, which
+removes the size-change discards outright. Speculation still exists, still
+gated on 256 KiB of proven consecutive stream, and now issues 256 KiB chunks
+— which also retires the 1 MiB-command cliff concern, since speculation never
+issues a command larger than a chunk.
+
+One deliberate semantic change rode along: a write drops only the chunks it
+overlaps, not the whole cache. Dropping everything per write forfeited
+read-around exactly where a VM needs it (guests interleave writes into every
+read run). The ramp still resets in full on every write. Keeping unrelated
+chunks assumes this initiator is the LUN's only writer — the same
+single-initiator assumption every prior readahead design here already made.
+
+That drop-the-overlap rule has since been replaced by write-through: writes
+are patched *into* the overlapping cached chunks instead of invalidating
+them, in three acts (`willWrite` / `didWrite` / `writeFailed`, the last being
+the conservative drop for a write whose outcome is unknown). The bytes are
+authoritative — they are exactly what the target just acknowledged — so
+write-then-read-back becomes a hit, and a guest's journal traffic stops
+punching refetch-sized holes in the cache. Overlapping *pending* speculation
+is still dropped at both edges of the write, and the write-generation guard
+still keeps a racing miss fetch from caching era-ambiguous bytes.
+
+First VM run against the chunk cache (16 MiB, 2026-08-16): the guest reached
+the desktop — it never had before — with a 54% cumulative hit rate (99%
+during the early sequential phase) against the 6.7% of the gated slot design,
+and ~100–120 reads/s served against the old ~80/s round-trip floor. Still
+subjectively sluggish. The suspect number: `readAround` hit 3 GB against
+549 MB served, 5.5x amplification, where perfect chunk locality predicts
+~2,100 misses and the run took 11,330 — which reads as the 16 MiB cache
+evicting chunks before the guest returns for their neighbours. The cache is
+32 MiB now to test exactly that; if the amplification and hit rate barely
+move, the scatter is real and the remaining gap is architectural, not
+tunable.
+
+They barely moved. The 32 MiB run, matched at the same point in boot: 56%
+hits against 54%, ~11.6k misses against ~11.3k, 3.1 GB read-around against
+3.0. Cache size is not the lever, so the eviction-churn hypothesis is dead —
+but the same run showed 5,208 writes by minute six, and under drop-on-write
+semantics every one of them punched a refetch-sized hole in the cache, which
+made recently-written ranges (journal, filesystem metadata — precisely the
+hot spots) guaranteed misses. That is what write-through (above) is aimed at.
+If hit rate does not move materially under write-through either, the
+remaining misses are genuinely scattered first-touches and the wall is
+Backend A's one-operation-at-a-time delivery — an architecture question, not
+a cache-tuning one.
