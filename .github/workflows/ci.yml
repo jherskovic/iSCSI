@@ -29,8 +29,18 @@ jobs:
       - name: swift build
         run: swift build
 
+      # Serial on purpose. Several tests bound real durations — `withDeadline`
+      # asserts that a 100 ms deadline has fired 2 s later, and the flush-policy
+      # tests wait on a periodic timer. Those margins are generous on a
+      # developer's machine and not on a 3-core runner: at 233 tests in parallel
+      # CI was green, and at 316 both DeadlineTests failed deterministically on
+      # two consecutive runs while passing locally every time. Saturating the
+      # cores does not make a timeout wrong, it makes every continuation late,
+      # so the suite was measuring the runner rather than the code.
+      #
+      # Costs ~17 s against ~8 s. Cheaper than a red CI nobody trusts.
       - name: swift test
-        run: swift test
+        run: swift test --no-parallel
 
   hygiene:
     name: Project hygiene
