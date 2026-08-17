@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   package:
     name: Package tests
@@ -17,6 +20,10 @@ jobs:
     # and does build there, but nothing ships to 15 — testing on it measures a
     # configuration no user has.
     runs-on: macos-26
+    # Only for the badge push at the end of this job. The other two jobs keep
+    # the read-only default from above.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -39,8 +46,43 @@ jobs:
       # so the suite was measuring the runner rather than the code.
       #
       # Costs ~17 s against ~8 s. Cheaper than a red CI nobody trusts.
+      #
+      # Coverage is instrumented on every run, PRs included, so that the badge
+      # branch is never produced by a build configuration nobody else exercises.
+      # The log is kept because swift-testing's per-bundle "Test run with N
+      # tests" lines are where the test count on the badge comes from.
       - name: swift test
-        run: swift test --no-parallel
+        run: |
+          set -o pipefail
+          swift test --no-parallel --enable-code-coverage 2>&1 | tee "$RUNNER_TEMP/swift-test.log"
+
+      # Derived data, not history: one orphan commit holding two shields.io
+      # endpoint documents, force-pushed over whatever was there. Main only —
+      # a pull request must not be able to move the numbers the README shows,
+      # and this step is skipped rather than failed on a fork, where the token
+      # is read-only regardless.
+      #
+      # The badge is only refreshed when the suite is green, since the step
+      # above fails first otherwise. A red run therefore leaves a stale count
+      # standing next to a red build badge, which is the honest pairing.
+      - name: Publish the tests and coverage badges
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          scripts/coverage-badges.sh "$RUNNER_TEMP/swift-test.log" "$RUNNER_TEMP/badges"
+          cd "$RUNNER_TEMP/badges"
+          git init -q -b badges
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Badges for $SHA" -m "Published by .github/workflows/ci.yml."
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+            badges:refs/heads/badges
+          echo "pushed $(git ls-files | tr '\n' ' ')to refs/heads/badges"
 
   hygiene:
     name: Project hygiene

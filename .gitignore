@@ -21,3 +21,8 @@ build/
 
 # py_compile leaves these behind
 __pycache__/
+
+# An instrumented binary run outside `swift test` (a `swift run iscsictl` after
+# a coverage build, say) drops its raw profile in the working directory rather
+# than under .build/.
+*.profraw

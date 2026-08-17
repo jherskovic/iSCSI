@@ -1,5 +1,11 @@
 # macOS iSCSI Initiator
 
+[![version](https://img.shields.io/github/v/release/jherskovic/iSCSI?sort=semver&display_name=tag&label=version)](https://github.com/jherskovic/iSCSI/releases/latest)
+[![license](https://img.shields.io/github/license/jherskovic/iSCSI)](LICENSE)
+[![build](https://github.com/jherskovic/iSCSI/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jherskovic/iSCSI/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jherskovic/iSCSI/badges/tests.json)](https://github.com/jherskovic/iSCSI/actions/workflows/ci.yml)
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jherskovic/iSCSI/badges/coverage.json)](https://github.com/jherskovic/iSCSI/actions/workflows/ci.yml)
+
 A modern iSCSI initiator for macOS 26/27 on Apple Silicon. macOS ships no
 initiator; the old open-source option is a dead kext. This project puts the
 iSCSI/TCP protocol engine in a user-space Swift daemon and presents the LUN as
@@ -59,7 +65,10 @@ using it to store VMs for some of my experiments, and it has worked for me so fa
 
 Final performance warning: by the nature of the driver, connections, and general architecture,
 sequential access performs much, much, _much_ better than random access, at least on HDDs.
-Copying large files to and from, works well. Booting a macOS VM hosted on an iSCSI volume?
+
+APFS, the default filesystem on Apple devices, is latency-hostile and clearly meant for SSDs.
+In my experience, on HDDs, it's bad. On iSCSI hosted on hard drives it's worse. Copying large
+files to and from, works well. Booting a macOS VM hosted on an iSCSI volume?
 You might as well be swapping floppies. It works, yes. It does not work _well_.
 
 CAVEAT USER.
@@ -72,7 +81,7 @@ clean macOS 26.6.1 machine with SIP on, no Xcode, no Apple ID and no developer
 account, against a real TrueNAS target: discover → add → attach → copy files →
 detach → re-attach. Full transcript in `docs/acceptance-2026-08-14.md`.
 
-226 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
+316 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
 clean over 100 independent seeds (`scripts/fuzz-campaign.sh`). The protocol
 stack is verified against real hardware, not just the simulator.
 
@@ -244,8 +253,8 @@ apps/
   iSCSIFSExtension/  FSKit module presenting the LUN as a file
   iSCSIDext/         DriverKit virtual SCSI HBA (parked, ISCSI_BACKEND_B)
 Tests/
-  iSCSIKitTests/     132 tests
-  IntegrationTests/  94 tests: happy paths, hostile scripts, recovery, TCP
+  iSCSIKitTests/     200 tests
+  IntegrationTests/  116 tests: happy paths, hostile scripts, recovery, TCP
                      loopback, crash consistency, stalled-target resilience,
                      XPC authorization, handle scoping, target persistence
 scripts/
@@ -309,4 +318,4 @@ code:
 | [Sparkle](https://github.com/sparkle-project/Sparkle)                   | MIT        |
 
 Sparkle ships inside the app bundle, so a redistributed binary carries its
-copyright notice; the framework includes its own licence file.
+copyright notice; the framework includes its own license file.
