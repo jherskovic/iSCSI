@@ -301,6 +301,17 @@ struct WriteBench: AsyncParsableCommand {
     @Flag(help: "Send every write with FUA (what the shipping daemon does).")
     var fua = false
 
+    @Option(help: ArgumentHelp(
+        "Cap on a single SCSI command.", discussion: """
+        The write counterpart of read-bench's flag of the same name, and read \
+        it the same way: a request larger than this is split into several \
+        commands, which are issued together. Leaving it equal to --chunk is one \
+        command per request, which is what this tool did before the option \
+        existed — and it is why it could not measure whether splitting a write \
+        helps at all.
+        """))
+    var maxTransfer: Int?
+
     func run() async throws {
         #if canImport(Network)
         let transport = try await options.openTransport()
@@ -315,14 +326,17 @@ struct WriteBench: AsyncParsableCommand {
         let session = ISCSISession(login: config) { try await transport }
         let login = try await session.activate()
         let device = ISCSIBlockDevice(
-            session: session, lun: lun, maxTransferBytes: chunk, writeThrough: fua
+            session: session, lun: lun,
+            maxTransferBytes: maxTransfer ?? chunk, writeThrough: fua
         )
         let (blockSize, blockCount) = try await device.readCapacity()
         let capacity = UInt64(blockSize) * blockCount
         let params = login.parameters
         // The negotiated burst sizes decide how many round trips a write costs,
         // so print them: comparing two runs without them is comparing nothing.
-        print("capacity \(capacity / 1_048_576) MiB, blockSize \(blockSize), chunk \(chunk), fua \(fua)")
+        print("capacity \(capacity / 1_048_576) MiB, blockSize \(blockSize), "
+              + "chunk \(chunk), maxTransfer \(maxTransfer ?? chunk), "
+              + "commands/request \(max(1, chunk / (maxTransfer ?? chunk))), fua \(fua)")
         print("negotiated: FirstBurst=\(params.firstBurstLength) MaxBurst=\(params.maxBurstLength) "
             + "ImmediateData=\(params.immediateData) InitialR2T=\(params.initialR2T) "
             + "HeaderDigest=\(params.headerDigest) DataDigest=\(params.dataDigest)")
