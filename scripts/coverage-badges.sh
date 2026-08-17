@@ -41,6 +41,10 @@ if [ ${#objects[@]} -eq 0 ]; then
     echo "no .xctest bundles under $BIN" >&2
     exit 1
 fi
+# Worth printing: locally SwiftPM builds one bundle per test target, and on the
+# CI runner it builds a single merged one. Both are correct and neither is
+# obvious from the numbers below.
+echo "covering: $(printf '%s\n' "${objects[@]}" | grep -v '^-object$' | xargs -n1 basename | tr '\n' ' ')"
 
 SUMMARY=$(mktemp)
 trap 'rm -f "$SUMMARY"' EXIT
@@ -65,8 +69,8 @@ summary_path, log_path, out_dir = sys.argv[1:4]
 lines = json.loads(pathlib.Path(summary_path).read_text())["data"][0]["totals"]["lines"]
 percent = lines["percent"]
 
-# swift-testing prints one summary per test bundle, so the total is a sum and
-# not a last-line read.
+# swift-testing prints one summary per test bundle — one line on CI's merged
+# bundle, two locally — so the total is a sum and not a last-line read.
 log = pathlib.Path(log_path).read_text(errors="replace")
 counts = [int(n) for n in re.findall(r"Test run with (\d+) test", log)]
 if not counts:
@@ -98,5 +102,5 @@ def write(name, label, message, badge_color):
 
 write("tests.json", "tests", f"{total} passing", "brightgreen")
 write("coverage.json", "coverage", f"{percent:.1f}%", color(percent))
-print(f"({lines['covered']}/{lines['count']} lines across {len(counts)} test bundles)")
+print(f"({lines['covered']}/{lines['count']} lines; {len(counts)} test-run summary line(s))")
 PY
