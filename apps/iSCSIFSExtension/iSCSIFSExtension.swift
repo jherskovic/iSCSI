@@ -322,16 +322,31 @@ final class DaemonStore: LUNStore {
     /// get depth, because the depth cannot come from a caller that will not
     /// issue a second request until the first returns.
     ///
-    /// 8 MiB rather than the 4 MiB that saturates the raw path, because this
-    /// path is slower per request and therefore needs more of them in flight to
-    /// cover the same time. Measured: at a 4 MiB budget the extension reached
-    /// 636 MB/s; at 8 MiB, 1099 MB/s. See docs/queue-depth.md.
-    private static let readaheadBytes = 8 * 1024 * 1024
+    /// Where the adaptive controller starts, and what a target that pins no
+    /// `WorkloadProfile` override begins its first second at. From here
+    /// `ReadaheadDepthController` moves it on measured waste, so this decides
+    /// the first second of a mount and nothing after it.
+    ///
+    /// It was a hardcoded 8 MiB (32 chunks) and then 4 MiB (16) before the
+    /// budget became per-target. `WorkloadProfile` carries the measurements
+    /// that set the rungs; the short version is that hit rate did not move
+    /// across a 8x range of depth, so the extra depth bought queue occupancy
+    /// rather than residency. See docs/queue-depth.md.
+    private static let readaheadBytes = WorkloadProfile.mixed.readaheadBudgetBytes
 
     /// Never more chunks in flight than this. Each is an outstanding XPC call
     /// and a buffer. 32 x 256 KiB commands showed no degradation out to 64
     /// outstanding; the 1 MiB command cliff no longer applies because
     /// speculation is issued chunk-wise, never larger.
+    ///
+    /// No longer the binding constraint, and in the shipping configuration it
+    /// cannot be: `chunkBytes` is never below 256 KiB and the deepest
+    /// `WorkloadProfile` rung is 4 MiB, so `chunkCap` tops out at 16 and takes
+    /// the lower of the two. It stays at 32 as the rail it is described as — a
+    /// ceiling on outstanding XPC calls and buffers, a resource limit rather
+    /// than a throughput tuning — so that adding a deeper rung cannot silently
+    /// uncap depth. Depth is tuned in `WorkloadProfile`; this is the thing that
+    /// stops it running away.
     private static let readaheadMaxSlots = 32
 
     /// Consecutive bytes a run must cover before anything is speculated.
@@ -475,8 +490,11 @@ final class DaemonStore: LUNStore {
         return "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B "
              + "flushes=\(flushCount) avgReq=\(avgRequest)B lastReq=\(lastRequestBytes)B "
              + "cache=\(rate)% (\(s.hits) hit, \(s.misses) miss, \(s.unanswered) unanswered) "
-             + "maxDepth=\(s.maxDepth) speculated=\(s.chunksSpeculated)/\(s.speculatedBytes)B "
-             + "unused=\(s.chunksSpeculated - s.speculatedUsed) readAround=\(s.readAroundBytes)B"
+             + "maxDepth=\(s.maxDepth) cap=\(s.currentCap) "
+             + "speculated=\(s.chunksSpeculated)/\(s.speculatedBytes)B "
+             + "unused=\(s.chunksSpeculated - s.speculatedUsed) "
+             + "settled=\(s.resolvedUsed)used/\(s.resolvedWasted)wasted "
+             + "readAround=\(s.readAroundBytes)B"
     }
 
     /// Connects to iscsid, logs in to `target`/`lun` at `host:port`, and learns
@@ -540,16 +558,37 @@ final class DaemonStore: LUNStore {
         // cache owning closures over its owner would otherwise create; a
         // fetch after the store is gone just fails the volume's I/O, which is
         // what a torn-down volume should do.
+        // Does this target pin its readahead depth? Almost none do: the daemon
+        // reports 0 unless the record carries an explicit `workloadProfile`
+        // override, and then `PrefetchChunkCache` steers depth itself from
+        // measured waste. The override exists to pin depth for debugging and
+        // A/B measurement, which is exactly what was needed to establish that
+        // the setting should not exist.
+        //
+        // A failure here is deliberately not fatal, and lands on the adaptive
+        // path: failing a mount because a tuning parameter could not be
+        // fetched would trade a working filesystem for a readahead depth.
+        var budgetReply: NSNumber = 0
+        try? Self.blocking { done in
+            proxy.readaheadBudget(session: handle) { bytes, error in
+                if error == nil { budgetReply = bytes }
+                done()
+            }
+        }
+        let pinned = budgetReply.intValue > 0
+        let budgetBytes = pinned ? budgetReply.intValue : Self.readaheadBytes
+
         let chunk = Self.chunkBytes(forBlockSize: Int(bs))
         cache = PrefetchChunkCache(
             chunkBytes: chunk,
             capacity: byteCount,
             maxCachedBytes: Self.maxCachedBytes,
-            policy: ReadaheadPolicy(budgetBytes: Self.readaheadBytes,
+            policy: ReadaheadPolicy(budgetBytes: budgetBytes,
                                     maxSlots: Self.readaheadMaxSlots,
                                     minStreamBytes: Self.readaheadMinStream,
                                     chunkBytes: chunk),
             timeout: Self.timeout,
+            adaptiveDepth: !pinned,
             fetchSync: { [weak self] offset, length in
                 guard let self else { throw POSIXError(.EIO) }
                 return try self.rawRead(offset: offset, length: length)

@@ -36,12 +36,22 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         self.targets = targets
     }
 
-    private func claim(_ handle: String) {
+    /// Readahead budget per owned handle, resolved once at login.
+    ///
+    /// Resolved at login rather than looked up on demand for the same reason
+    /// `FlushPolicy` is: a session's policy should not change under it because
+    /// the user edited the target while it was attached. Editing takes effect
+    /// on the next attach, which is what the editor says.
+    private let budgets = OSAllocatedUnfairLock(initialState: [String: Int]())
+
+    private func claim(_ handle: String, readaheadBudget: Int) {
         owned.withLock { $0.insert(handle) }
+        budgets.withLock { $0[handle] = readaheadBudget }
     }
 
     private func release(_ handle: String) {
         owned.withLock { $0.remove(handle) }
+        budgets.withLock { $0[handle] = nil }
     }
 
     /// Refuses rather than silently doing nothing: a client using a handle it
@@ -130,7 +140,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                     targetIQN: targetIQN, lun: lun.uint64Value, chap: chap,
                     flushPolicy: FlushPolicy(intervalSeconds: record.flushIntervalSeconds)
                 )
-                self.claim(handle)
+                self.claim(handle, readaheadBudget: WorkloadProfile
+                    .pinnedBudgetBytes(stored: record.workloadProfile) ?? 0)
                 box.value(handle, nil)
             } catch {
                 box.value(nil, ISCSIError.nsError(from: error,
@@ -161,6 +172,16 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                                                    context: "Reading the device size"))
             }
         }
+    }
+
+    public func readaheadBudget(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
+        if let denied = checkOwned(session) { reply(0, denied); return }
+        // Resolved at login, so this cannot fail for an owned handle. 0 means
+        // nothing is pinned and the extension should adapt, which is also the
+        // right answer if an entry were somehow missing: failing the call would
+        // fail a mount over a tuning parameter.
+        let bytes = budgets.withLock { $0[session] } ?? 0
+        reply(NSNumber(value: bytes), nil)
     }
 
     public func read(session: String, offset: NSNumber, length: NSNumber, reply: @escaping (Data?, Error?) -> Void) {

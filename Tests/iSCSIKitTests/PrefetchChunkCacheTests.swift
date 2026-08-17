@@ -357,3 +357,70 @@ struct PrefetchChunkCacheTests {
         #expect(backing.syncCount == 0)
     }
 }
+
+// MARK: - Terminal-state speculation accounting
+
+extension PrefetchChunkCacheTests {
+
+    /// `chunksSpeculated - speculatedUsed` counts every speculative chunk that
+    /// has not *yet* been read as waste, including ones still resident whose
+    /// reader is simply a few milliseconds behind. That overstates waste, and
+    /// overstates it more at greater depth, because deeper windows keep more in
+    /// flight — which is fatal for a controller that reduces depth when waste
+    /// rises. `resolvedWasted` only counts a speculative chunk once it leaves
+    /// the cache never having been touched.
+    @Test func residentUntouchedSpeculationIsNotYetWaste() throws {
+        let backing = Self.makeBacking()
+        // Room for everything, so nothing is evicted and nothing can resolve.
+        let cache = Self.makeCache(backing: backing, maxCachedBytes: 1 << 20,
+                                   minStreamBytes: Self.chunk)
+        // Two consecutive reads open the window and speculate ahead.
+        _ = try cache.read(offset: 0, length: Self.chunk)
+        _ = try cache.read(offset: UInt64(Self.chunk), length: Self.chunk)
+
+        let s = cache.stats
+        #expect(s.chunksSpeculated > 0, "the ramp must have speculated for this test to mean anything")
+        #expect(s.chunksSpeculated - s.speculatedUsed > 0,
+                "the old counter calls resident-but-unread speculation waste")
+        #expect(s.resolvedWasted == 0,
+                "nothing has left the cache, so no speculation has been proven wasted")
+        #expect(s.resolvedUsed + s.resolvedWasted == 0)
+    }
+
+    /// And once a speculative chunk is evicted without ever being read, it is
+    /// waste — that is the terminal state the controller acts on.
+    @Test func evictedUntouchedSpeculationResolvesAsWaste() throws {
+        let backing = Self.makeBacking()
+        // One chunk of residency: every new chunk evicts the previous one.
+        let cache = Self.makeCache(backing: backing, maxCachedBytes: Self.chunk,
+                                   minStreamBytes: Self.chunk)
+        _ = try cache.read(offset: 0, length: Self.chunk)
+        _ = try cache.read(offset: UInt64(Self.chunk), length: Self.chunk)
+        // Jump far away repeatedly to push the speculated chunks out.
+        for i in 5 ..< 10 {
+            _ = try cache.read(offset: UInt64(i * Self.chunk), length: 512)
+        }
+
+        let s = cache.stats
+        #expect(s.resolvedWasted > 0, "evicted, never touched — that is waste")
+    }
+
+    /// A speculative chunk a reader did reach is not waste, however long it
+    /// lingers afterwards.
+    @Test func touchedSpeculationResolvesAsUsed() throws {
+        let backing = Self.makeBacking()
+        let cache = Self.makeCache(backing: backing, maxCachedBytes: Self.chunk,
+                                   minStreamBytes: Self.chunk)
+        _ = try cache.read(offset: 0, length: Self.chunk)
+        _ = try cache.read(offset: UInt64(Self.chunk), length: Self.chunk)
+        // Walk into what was speculated, so it is used before being evicted.
+        _ = try cache.read(offset: UInt64(2 * Self.chunk), length: Self.chunk)
+        _ = try cache.read(offset: UInt64(3 * Self.chunk), length: Self.chunk)
+        for i in 20 ..< 25 {
+            _ = try cache.read(offset: UInt64(i * Self.chunk), length: 512)
+        }
+
+        let s = cache.stats
+        #expect(s.resolvedUsed > 0, "speculation that was read must resolve as used, not waste")
+    }
+}

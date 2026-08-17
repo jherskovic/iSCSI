@@ -66,6 +66,24 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         public var readAroundBytes: UInt64 = 0
         /// Deepest speculation window actually opened.
         public var maxDepth = 0
+
+        /// Speculative chunks that left the cache having been read at least
+        /// once, and having never been read at all. Together they are the only
+        /// *settled* verdict on speculation: a chunk still resident and unread
+        /// has not been wasted, it has merely not been wanted yet.
+        ///
+        /// `chunksSpeculated - speculatedUsed` cannot be used to steer depth,
+        /// which is what these exist for. That difference counts everything
+        /// in flight as waste, and a deeper window keeps more in flight, so it
+        /// reports more waste precisely when depth rises — a controller fed
+        /// that number would drive depth to the floor on a workload where
+        /// deep readahead was working perfectly.
+        public var resolvedUsed = 0
+        public var resolvedWasted = 0
+        /// Depth cap currently in force. Constant when a `workloadProfile`
+        /// override pins it; otherwise the controller's live figure, which is
+        /// the only way to see what the loop is doing from a soak.
+        public var currentCap = 0
     }
 
     private final class Entry {
@@ -145,8 +163,18 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         return statsStore
     }
 
+    /// Steers `policy.adaptiveCap` from settled speculation outcomes. nil when
+    /// the target pinned its depth with a `workloadProfile` override.
+    private var depthController: ReadaheadDepthController?
+    /// `DispatchTime` rather than `Date`: monotonic, so a clock adjustment
+    /// cannot make a gap negative or enormous. It also does not advance while
+    /// the machine is asleep, which suits a window that is supposed to measure
+    /// activity — a sleeping volume is the idlest kind there is.
+    private var lastReadNanos: UInt64 = 0
+
     public init(chunkBytes: Int, capacity: UInt64, maxCachedBytes: Int,
                 policy: ReadaheadPolicy, timeout: TimeInterval,
+                adaptiveDepth: Bool = false,
                 fetchSync: @escaping (UInt64, Int) throws -> Data,
                 fetchAsync: @escaping (UInt64, Int, @escaping (Data?) -> Void) -> Void) {
         precondition(chunkBytes > 0)
@@ -157,6 +185,27 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         self.timeout = timeout
         self.fetchSync = fetchSync
         self.fetchAsync = fetchAsync
+        if adaptiveDepth {
+            let c = ReadaheadDepthController(initialCap: policy.chunkCap,
+                                             ceiling: policy.maxSlots)
+            self.policy.adaptiveCap = c.cap
+            self.depthController = c
+        }
+        statsStore.currentCap = self.policy.chunkCap
+    }
+
+    /// Called under `lock` at the top of every read: the controller's clock is
+    /// the read stream itself, so an idle volume schedules nothing and is
+    /// steered by nothing. This is why there is no timer anywhere here.
+    private func noteReadLocked() {
+        guard depthController != nil else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let gap = lastReadNanos == 0 ? 0 : now &- lastReadNanos
+        lastReadNanos = now
+        if depthController!.advance(sinceLastReadNanos: gap) {
+            policy.adaptiveCap = depthController!.cap
+            statsStore.currentCap = policy.chunkCap
+        }
     }
 
     /// Serve `[offset, offset+length)`, from cache when the covering chunks
@@ -172,6 +221,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
 
         // Collect the covering chunks, if every one is at least on its way.
         lock.lock()
+        noteReadLocked()
         var entries: [Entry] = []
         var allPresent = true
         var co = spanStart
@@ -230,7 +280,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
             co = spanStart
             while co < spanEnd {
                 if let e = map[co], case .failed = e.snapshot {
-                    map.removeValue(forKey: co)
+                    removeLocked(co)
                 }
                 co += chunk
             }
@@ -283,7 +333,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         writeGeneration &+= 1
         if length > 0 {
             forEachOverlappingChunkLocked(offset: offset, length: length) { co, e in
-                if case .pending = e.snapshot { map.removeValue(forKey: co) }
+                if case .pending = e.snapshot { removeLocked(co) }
             }
         }
         lock.unlock()
@@ -317,7 +367,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
                     // Speculation issued between willWrite and now raced the
                     // write on the wire; if it has not resolved to usable
                     // bytes yet, its era is unknowable. Drop it.
-                    map.removeValue(forKey: co)
+                    removeLocked(co)
                 }
             }
         }
@@ -332,7 +382,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         writeGeneration &+= 1
         if length > 0 {
             forEachOverlappingChunkLocked(offset: offset, length: length) { co, _ in
-                map.removeValue(forKey: co)
+                removeLocked(co)
             }
         }
         lock.unlock()
@@ -387,11 +437,30 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         }
     }
 
+    /// Remove `key`, settling the verdict on it if it was speculative. Every
+    /// removal goes through here: a chunk leaving the map is the only moment
+    /// its speculation is decided, and a site that removed entries directly
+    /// would silently drop that verdict.
+    @discardableResult
+    private func removeLocked(_ key: UInt64) -> Entry? {
+        guard let e = map.removeValue(forKey: key) else { return nil }
+        if e.speculative {
+            if e.used {
+                statsStore.resolvedUsed += 1
+                depthController?.recordResolved(used: 1, wasted: 0)
+            } else {
+                statsStore.resolvedWasted += 1
+                depthController?.recordResolved(used: 0, wasted: 1)
+            }
+        }
+        return e
+    }
+
     /// Forget everything still pending — for the unanswered path, where the
     /// session is presumed in trouble and nobody should wait on those again.
     private func dropPendingLocked() {
         for (key, e) in map {
-            if case .pending = e.snapshot { map.removeValue(forKey: key) }
+            if case .pending = e.snapshot { removeLocked(key) }
         }
     }
 
@@ -408,7 +477,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
                     coldest = (key, e.lastTouch)
                 }
             }
-            guard let victim = coldest, let removed = map.removeValue(forKey: victim.key) else { break }
+            guard let victim = coldest, let removed = removeLocked(victim.key) else { break }
             total -= removed.length
         }
     }

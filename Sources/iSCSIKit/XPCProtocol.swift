@@ -45,6 +45,16 @@ import Foundation
     /// Geometry. Reply: (blockSize, blockCount).
     func capacity(session: String, reply: @escaping (NSNumber, NSNumber, Error?) -> Void)
 
+    /// Readahead byte budget for this session's target, from its
+    /// `WorkloadProfile`. Reply: bytes.
+    ///
+    /// The FSKit extension builds its `ReadaheadPolicy` at mount, before it has
+    /// seen any TargetRecord — it is handed only a mount URL, and deliberately
+    /// forwards nothing from it (see the note on `DaemonStore.init`). So this
+    /// is keyed on the session handle the daemon already resolved and owns,
+    /// which keeps the lookup on the daemon's side of the trust boundary.
+    func readaheadBudget(session: String, reply: @escaping (NSNumber, Error?) -> Void)
+
     /// Block read. offset/length in bytes, block-aligned. Reply: data.
     func read(session: String, offset: NSNumber, length: NSNumber, reply: @escaping (Data?, Error?) -> Void)
 

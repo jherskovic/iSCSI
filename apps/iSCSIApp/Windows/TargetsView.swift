@@ -355,7 +355,10 @@ struct TargetEditor: View {
             chapUser: chapUser.isEmpty ? nil : chapUser,
             mutualChapUser: mutualChapUser.isEmpty ? nil : mutualChapUser,
             autoAttach: existing?.autoAttach ?? false,
-            flushIntervalSeconds: flushInterval)
+            flushIntervalSeconds: flushInterval,
+            // No UI: readahead depth adapts. An override hand-written into
+            // targets.json is carried through an edit rather than erased by it.
+            workloadProfile: existing?.workloadProfile)
 
         LastPortal.remember(host: record.host, port: record.port)
         Task {

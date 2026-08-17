@@ -48,9 +48,18 @@ public struct ReadaheadPolicy: Sendable {
     /// The unit speculation is issued in.
     public let chunkBytes: Int
 
-    /// Most chunks the budget allows in flight.
+    /// Depth cap chosen by `ReadaheadDepthController`, when one is steering.
+    /// nil leaves the budget in charge, which is what a target with an explicit
+    /// `workloadProfile` override wants.
+    public var adaptiveCap: Int?
+
+    /// Most chunks allowed in flight: the controller's figure when it is
+    /// steering, otherwise whatever the byte budget affords. `maxSlots` bounds
+    /// both — it is a limit on outstanding XPC calls and buffers, so no policy
+    /// may exceed it.
     public var chunkCap: Int {
         guard chunkBytes > 0 else { return 0 }
+        if let adaptiveCap { return max(1, min(maxSlots, adaptiveCap)) }
         return max(1, min(maxSlots, budgetBytes / chunkBytes))
     }
 

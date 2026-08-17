@@ -63,11 +63,20 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
     /// seconds; 0 means the user has declared the target's cache non-volatile
     /// and wants no periodic flush at all. See `FlushPolicy`.
     public var flushIntervalSeconds: Int?
+    /// Pins this LUN's readahead depth, overriding the adaptive controller.
+    ///
+    /// nil — every record, unless someone hand-edited this file — means no
+    /// override: `ReadaheadDepthController` sets the depth from measured waste.
+    /// There is no UI for this and it is not expected to be set; it exists so a
+    /// depth can be held still for debugging or A/B measurement, which is how
+    /// the evidence for removing the setting was gathered in the first place.
+    /// See `WorkloadProfile`.
+    public var workloadProfile: String?
 
     public init(id: String, displayName: String, host: String, port: UInt16 = 3260,
                 targetIQN: String, lun: UInt64 = 0, chapUser: String? = nil,
                 mutualChapUser: String? = nil, autoAttach: Bool = false,
-                flushIntervalSeconds: Int? = nil) {
+                flushIntervalSeconds: Int? = nil, workloadProfile: String? = nil) {
         self.id = id
         self.displayName = displayName
         self.host = host
@@ -78,6 +87,67 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
         self.mutualChapUser = mutualChapUser
         self.autoAttach = autoAttach
         self.flushIntervalSeconds = flushIntervalSeconds
+        self.workloadProfile = workloadProfile
+    }
+}
+
+/// How much speculation a LUN's access pattern justifies.
+///
+/// Readahead only pays on streams, and it stops paying well before it stops
+/// costing. Measured on one array in one session, a soak that is 46%
+/// sequential runs, 21% writes and 17% seeks:
+///
+///     budget   depth   blocks/600s   hit    unused   wasted/read
+///     1 MiB        4       151,643   93.1%    11.1%        0.115x
+///     4 MiB       16       212,710   93.2%    32.4%        0.443x
+///     8 MiB       32       212,033   93.2%    48.8%        0.882x
+///
+/// The hit rate never moves, so depth is not buying residency — only queue
+/// occupancy at the target, where speculation that a write or a seek will throw
+/// away sits ahead of reads that are real. 8 MiB bought nothing over 4 and
+/// wasted twice the bandwidth. A guest booting a VM image is locality without
+/// streams and wastes proportionally more; a media file is the case the deep
+/// window was built for.
+///
+/// These are no longer a user-facing choice. Measurement is why: the throughput
+/// column above moved 2.4x between two consecutive days on identical code, and
+/// 48% within a single morning at a fixed depth, while `unused` reproduced to
+/// the digit. A setting whose options differ only in wasted bandwidth is not a
+/// choice worth offering, so `ReadaheadDepthController` steers depth from that
+/// waste directly and these survive only as a debugging override in
+/// targets.json.
+///
+/// The stored form is the symbolic name rather than the byte count, unlike
+/// `TargetRecord.flushIntervalSeconds` where the number is itself the user's
+/// choice. Here the number is derived from a three-way pick, so storing bytes
+/// would let the file hold values the editor cannot represent.
+public enum WorkloadProfile: String, Sendable {
+    /// Scattered small reads: a database, or a VM image being booted.
+    case randomAccess = "random"
+    /// A middling override. No longer a default — nothing is, since an
+    /// unpinned target is steered by `ReadaheadDepthController`.
+    case mixed = "mixed"
+    /// Long sequential reads: media files, backups, bulk copies.
+    case sequential = "sequential"
+
+    /// Readahead budget. `ReadaheadPolicy` divides this by the chunk size to
+    /// get the depth cap, so at the usual 256 KiB chunk these are depths 2, 8
+    /// and 16.
+    public var readaheadBudgetBytes: Int {
+        switch self {
+        case .randomAccess: return 512 << 10
+        case .mixed: return 2 << 20
+        case .sequential: return 4 << 20
+        }
+    }
+
+    /// The readahead budget a stored `TargetRecord.workloadProfile` pins, or
+    /// nil for no override — which is the normal case, and means
+    /// `ReadaheadDepthController` chooses the depth instead. An unrecognised
+    /// string pins nothing: targets.json is hand-editable, and a typo must not
+    /// silently fix how deeply a volume reads ahead.
+    public static func pinnedBudgetBytes(stored: String?) -> Int? {
+        stored.flatMap(WorkloadProfile.init(rawValue:))?.readaheadBudgetBytes
     }
 }
 

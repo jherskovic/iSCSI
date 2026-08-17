@@ -143,6 +143,37 @@ struct TargetStoreTests {
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
+    /// The workload picker existed for three builds and wrote this field. With
+    /// the picker gone nothing can show or clear a value it left behind, and a
+    /// stale one silently pins that volume's readahead depth forever — which is
+    /// exactly what happened on the test rig: a target still carrying
+    /// "sequential" came up pinned with the controller inert. Clearing on load
+    /// means no volume is steered by a setting nobody can see.
+    @Test("a stale workload profile is cleared when the store loads")
+    func staleWorkloadProfileIsCleared() async throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let golden = """
+            [{"autoAttach":true,"displayName":"NAS","host":"192.168.0.101",
+              "id":"t1","lun":0,"port":3260,
+              "targetIQN":"iqn.2026-08.me.herko:disk0",
+              "workloadProfile":"sequential"}]
+            """
+        try Data(golden.utf8).write(to: url)
+
+        let store = TargetStore(url: url)
+        #expect(await store.all().first?.workloadProfile == nil)
+
+        // And it is gone from disk, not merely from the in-memory copy —
+        // otherwise the next daemon start pins the volume again.
+        let onDisk = try JSONDecoder().decode(
+            [TargetRecord].self, from: try Data(contentsOf: url))
+        #expect(onDisk.first?.workloadProfile == nil)
+        #expect(onDisk.first?.id == "t1", "clearing the field must not disturb the record")
+    }
+
     /// The bug this prevents was found in the field: adding a target from
     /// Discover mints a fresh UUID, so discovering the same portal twice put two
     /// records in the file for one LUN. Both derive the same MountpointTag, so
@@ -279,6 +310,61 @@ struct XPCModelWireTests {
         // The file is hand-editable; a nonsense negative falls back to the
         // safe default rather than becoming a policy.
         #expect(FlushPolicy(intervalSeconds: -5) == .writeThrough)
+    }
+
+    /// The workload profile sets the readahead byte budget, and so the
+    /// speculation depth, per target. Absent must mean `.mixed`, which carries
+    /// the budget the shipping build already used — no installed target may
+    /// change its I/O behaviour merely by being upgraded.
+    @Test("a record without a workload profile decodes as mixed")
+    func workloadProfileAbsentIsMixed() throws {
+        let golden = """
+            {"autoAttach":true,"chapUser":"initiator","displayName":"NAS",
+             "host":"192.168.0.101","id":"t1","lun":0,"port":3260,
+             "targetIQN":"iqn.2026-08.me.herko:disk0"}
+            """
+        let record = try JSONDecoder().decode(TargetRecord.self, from: Data(golden.utf8))
+        #expect(record.workloadProfile == nil)
+        // nil is not a profile — it means nothing is pinned and the depth
+        // controller steers. Only an explicit value overrides it.
+        #expect(WorkloadProfile(rawValue: record.workloadProfile ?? "") == nil)
+    }
+
+    @Test("each workload profile round-trips and maps to its readahead budget")
+    func workloadProfileRoundTrips() throws {
+        var record = TargetRecord(id: "t1", displayName: "NAS", host: "192.168.0.101",
+                                  targetIQN: "iqn.2026-08.me.herko:disk0")
+
+        record.workloadProfile = "random"
+        var decoded = try JSONDecoder().decode(
+            TargetRecord.self, from: JSONEncoder().encode(record))
+        #expect(decoded.workloadProfile == "random")
+        #expect(WorkloadProfile(rawValue: "random") == .randomAccess)
+        #expect(WorkloadProfile.randomAccess.readaheadBudgetBytes == 512 << 10)
+
+        record.workloadProfile = "sequential"
+        decoded = try JSONDecoder().decode(
+            TargetRecord.self, from: JSONEncoder().encode(record))
+        #expect(decoded.workloadProfile == "sequential")
+        #expect(WorkloadProfile(rawValue: "sequential") == .sequential)
+        #expect(WorkloadProfile.sequential.readaheadBudgetBytes == 4 << 20)
+
+        record.workloadProfile = "mixed"
+        decoded = try JSONDecoder().decode(
+            TargetRecord.self, from: JSONEncoder().encode(record))
+        #expect(decoded.workloadProfile == "mixed")
+        #expect(WorkloadProfile(rawValue: "mixed") == .mixed)
+    }
+
+    /// Same reasoning as the negative flush interval: targets.json is
+    /// hand-editable, and a typo must not silently pin a depth. An
+    /// unrecognised value is no override, so the controller keeps steering.
+    @Test("an unrecognised workload profile pins nothing")
+    func workloadProfileUnknownPinsNothing() {
+        #expect(WorkloadProfile.pinnedBudgetBytes(stored: "turbo") == nil)
+        #expect(WorkloadProfile.pinnedBudgetBytes(stored: "") == nil)
+        #expect(WorkloadProfile.pinnedBudgetBytes(stored: nil) == nil)
+        #expect(WorkloadProfile.pinnedBudgetBytes(stored: "sequential") == 4 << 20)
     }
 
     @Test("DaemonInfo decodes from a committed golden payload")
