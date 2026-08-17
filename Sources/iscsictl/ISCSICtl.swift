@@ -196,7 +196,8 @@ struct Verify: AsyncParsableCommand {
             initiatorName: options.initiator,
             sessionType: .normal,
             targetName: target,
-            chap: try options.credentials()
+            chap: try options.credentials(),
+            trace: options.authTrace
         )
         config.desired.offerDigests = true
         let connection = ISCSIConnection(transport: transport, login: config)
@@ -307,7 +308,8 @@ struct WriteBench: AsyncParsableCommand {
             initiatorName: options.initiator,
             sessionType: .normal,
             targetName: target,
-            chap: try options.credentials()
+            chap: try options.credentials(),
+            trace: options.authTrace
         )
         config.desired.offerDigests = true
         let session = ISCSISession(login: config) { try await transport }
@@ -399,7 +401,8 @@ struct ReadBench: AsyncParsableCommand {
             initiatorName: options.initiator,
             sessionType: .normal,
             targetName: target,
-            chap: try options.credentials()
+            chap: try options.credentials(),
+            trace: options.authTrace
         )
         config.desired.offerDigests = true
         let session = ISCSISession(login: config) { try await transport }
@@ -498,7 +501,8 @@ struct Wipe: AsyncParsableCommand {
             initiatorName: options.initiator,
             sessionType: .normal,
             targetName: target,
-            chap: try options.credentials()
+            chap: try options.credentials(),
+            trace: options.authTrace
         )
         let connection = ISCSIConnection(transport: transport, login: config)
         _ = try await connection.login()
