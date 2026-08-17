@@ -39,7 +39,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "0.4.0"
-    CURRENT_PROJECT_VERSION: "23"
+    CURRENT_PROJECT_VERSION: "29"
 
 targets:
   # ---- Container app ----
