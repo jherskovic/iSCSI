@@ -71,11 +71,10 @@ public struct PDUDeframer: Sendable {
     private var buffer = Data()
     /// Bytes at the front of `buffer` already handed out as PDUs.
     ///
-    /// Consuming with `removeFirst` memmoves everything still buffered on every
-    /// single PDU, which is quadratic when one read delivers many PDUs — the
-    /// normal case for a fast link. Advancing an index instead makes consumption
-    /// O(1); the front is reclaimed in one memmove when it grows large enough to
-    /// be worth it.
+    /// Consuming with `removeFirst` on every PDU would be quadratic when one
+    /// read delivers many — the normal case for a fast link. Advancing an index
+    /// instead makes consumption O(1); the front is reclaimed in one copy when
+    /// it grows large enough to be worth it.
     private var consumed = 0
 
     /// Compact once the dead prefix exceeds this, or half the buffer.
@@ -94,12 +93,35 @@ public struct PDUDeframer: Sendable {
     /// Bytes buffered but not yet consumed as a complete PDU.
     public var buffered: Int { buffer.count - consumed }
 
+    /// Reclaim the dead prefix by copying the live tail into a fresh buffer.
+    ///
+    /// **This must not use `removeFirst`, and that is the whole point.** `Data`
+    /// is a slice type: `removeFirst` advances the slice's start and keeps the
+    /// original backing store, so the dead prefix is never released and every
+    /// later `append` reallocs that same store *larger*. The buffer then grows
+    /// by the total number of bytes ever received on the connection.
+    ///
+    /// It is not a slow leak. Reading a file off the LUN grew a daemon's
+    /// resident memory 1:1 with the bytes read — 2 GiB of reads cost 2 GB of
+    /// RSS, and a real copy peaked at 37 GB — with `heap` showing a single live
+    /// allocation and `malloc_history` naming
+    /// `Data.InlineSlice.append(contentsOf:)` underneath this line.
+    /// `InlineSlice` is the tell: that representation exists precisely to hold
+    /// an offset into a larger store.
+    ///
+    /// Building a new `Data` and appending the tail into it forces a copy into
+    /// a fresh allocation and drops the last reference to the old one.
     private mutating func compactIfNeeded() {
         guard consumed > 0 else { return }
-        if consumed >= Self.compactThreshold || consumed * 2 >= buffer.count {
-            buffer.removeFirst(consumed)
-            consumed = 0
+        guard consumed >= Self.compactThreshold || consumed * 2 >= buffer.count else { return }
+        if consumed >= buffer.count {
+            buffer = Data()
+        } else {
+            var fresh = Data(capacity: buffer.count - consumed)
+            fresh.append(contentsOf: buffer[(buffer.startIndex + consumed)...])
+            buffer = fresh
         }
+        consumed = 0
     }
 
     /// Returns the next complete PDU, or nil if more bytes are needed.
