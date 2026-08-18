@@ -109,4 +109,31 @@ struct WriteConcurrencyTests {
         try await device.write(offset: 4096, data: payload)
         #expect(try await device.read(offset: 4096, length: payload.count) == payload)
     }
+
+    /// The fan-out is bounded, and this is what bounds it.
+    ///
+    /// Every chunk of a write holds a copy of its slice from the moment its task
+    /// starts until the command completes, so an unbounded group made a large
+    /// request cost memory proportional to its own size — a 64 MiB write grew
+    /// the process by 109 MiB. A stalled target never answers, so every command
+    /// the initiator was willing to have outstanding is still sitting there to
+    /// be counted.
+    @Test func aLargeWriteKeepsOnlyAWindowInFlight() async throws {
+        // 4 KiB commands, 4 MiB request: 1024 chunks, far more than the window.
+        let (device, target, faultBox, serve) = try await makeStallableDevice(
+            maxTransferBytes: 4096)
+        defer { serve.cancel() }
+
+        faultBox.mutate { $0.stallCommands = true }
+        let writer = Task { try await device.write(offset: 0, data: Data(count: 4 << 20)) }
+        defer { writer.cancel() }
+
+        // Give it every chance to fan out further than it should.
+        _ = await waitForStalledCommands(on: target, atLeast: ISCSIBlockDevice.maxChunksInFlight)
+        try? await Task.sleep(for: .milliseconds(150))
+
+        let inFlight = await target.stalledITTs.count
+        #expect(inFlight == ISCSIBlockDevice.maxChunksInFlight,
+                "a 1024-chunk write put \(inFlight) commands in flight")
+    }
 }

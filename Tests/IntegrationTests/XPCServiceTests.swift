@@ -27,13 +27,14 @@ struct XPCServiceTests {
     /// A daemon core backed by MockTarget over MemoryPipe, plus a TargetStore
     /// in a fresh temp file so nothing leaks between tests.
     private func makeCore(
+        targetConfig: MockTargetConfig = MockTargetConfig(),
         tune: (inout TargetRecord) -> Void = { _ in }
     ) async throws -> (DaemonCore, HarnessBox, TargetStore, TargetRecord) {
         let disk = RAMDisk()
         let harnesses = HarnessBox()
         let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _ in
             let (initiatorSide, targetSide) = MemoryPipe.pair()
-            let target = MockTarget(config: MockTargetConfig(), disk: disk,
+            let target = MockTarget(config: targetConfig, disk: disk,
                                     transport: targetSide)
             harnesses.add(Task { await target.run() })
             return initiatorSide
@@ -107,6 +108,41 @@ struct XPCServiceTests {
         let (handle, error) = await loginResult(service, targetIQN: "iqn.2026-08.test.example:nope")
         #expect(handle == nil)
         #expect(error != nil)
+    }
+
+    /// The gate added when mutual CHAP was switched off. A record saved while
+    /// the fields were still visible still names a mutual user, and the daemon
+    /// must ignore it rather than go on challenging a target that answers
+    /// 0x02/0x01 — with the UI to clear it now gone, a login that insisted on
+    /// mutual would be unfixable from the app.
+    ///
+    /// Reachable only since the keychain grew a backend seam: getting here needs
+    /// a stored initiator secret, which previously meant a real System keychain
+    /// and root.
+    @Test func aStoredMutualUserIsIgnoredWhileMutualIsSwitchedOff() async throws {
+        let fake = FakeKeychain()
+        let previous = KeychainStore.backend
+        KeychainStore.backend = fake
+        defer { KeychainStore.backend = previous }
+
+        // The target requires one-way CHAP and nothing more, which is the
+        // configuration the gate exists to keep working.
+        var targetConfig = MockTargetConfig()
+        targetConfig.requireChap = true
+        targetConfig.chapUser = "initiator-user"
+        targetConfig.chapSecret = "initiator-secret-long"
+        let (core, _harness, store, record) = try await makeCore(targetConfig: targetConfig) {
+            $0.chapUser = "initiator-user"
+            $0.mutualChapUser = "peer-user"      // named, with no secret stored
+        }
+        try KeychainStore.store("initiator-secret-long", for: record.id, kind: .initiator)
+
+        let service = ISCSIXPCService(core: core, targets: store)
+        let (handle, error) = await loginResult(service)
+
+        #expect(CHAP.mutualIsOffered == false, "this test describes the switched-off state")
+        #expect(error == nil, "a stored mutual user must not fail the login while mutual is off")
+        #expect(handle != nil)
     }
 
     // MARK: - Handle scoping

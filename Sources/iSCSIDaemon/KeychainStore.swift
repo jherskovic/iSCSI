@@ -39,6 +39,46 @@ public enum KeychainStore {
         }
     }
 
+    /// Opened per call rather than cached: `SecKeychain` is a CF type and not
+    /// `Sendable`, opening it is cheap, and secrets are touched only when one is
+    /// saved or a login resolves one.
+    ///
+    /// `SecKeychainOpen` is deprecated in favour of the data-protection
+    /// keychain, which is precisely what a system-domain daemon cannot reach.
+    /// There is no non-deprecated way to name a file keychain, so the
+    /// deprecation is acknowledged rather than avoidable.
+    ///
+    /// The build therefore carries one deprecation warning, on the
+    /// `SecKeychainOpen` line below, and it is meant to stay: it marks the one
+    /// place this constraint lives. Do not silence it by annotating the callers
+    /// — that spreads a false "deprecated" onto this type's whole public API —
+    /// and do not silence it by going back to the data-protection keychain,
+    /// which is what did not work.
+    static func systemKeychain() -> SecKeychain? {
+        var keychain: SecKeychain?
+        let status = SecKeychainOpen("/Library/Keychains/System.keychain", &keychain)
+        guard status == errSecSuccess else {
+            DaemonLog.auth("cannot open the System keychain: \(describe(status))")
+            return nil
+        }
+        return keychain
+    }
+
+    /// The three operations this store needs from a keychain.
+    ///
+    /// A seam, not an abstraction for its own sake. Everything below it — which
+    /// keychain, which query keys — is exactly what was wrong for every release
+    /// up to 0.4.3, and it was wrong in a way no test could see: the calls
+    /// returned, the logic was right, and the secret went somewhere the daemon
+    /// could not read. With the Security calls behind this, the logic can be
+    /// tested against a fake and the query construction can be asserted
+    /// directly, which is the assertion that would have caught it.
+    public protocol Backend: Sendable {
+        func store(account: String, service: String, label: String, secret: Data) -> OSStatus
+        func fetch(account: String, service: String) -> (status: OSStatus, secret: Data?)
+        func remove(account: String, service: String) -> OSStatus
+    }
+
     /// RESOLVED 2026-08-17, and the answer is worse than the question was.
     ///
     /// This used to pass `kSecUseDataProtectionKeychain: true`, reasoning that
@@ -67,38 +107,73 @@ public enum KeychainStore {
     /// writing in one process and reading the value back in a later one.
     ///
     /// Nothing was migrated because nothing was ever stored.
-    private static func baseQuery(_ targetID: String, _ kind: Kind = .initiator) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: kind.account(for: targetID),
-        ]
+    public struct SystemKeychain: Backend {
+        public init() {}
+
+        /// The query every operation starts from, exposed so its *shape* can be
+        /// asserted. `kSecUseDataProtectionKeychain` must never appear here.
+        public static func baseQuery(account: String, service: String) -> [String: Any] {
+            [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+            ]
+        }
+
+        /// Searching and adding name the keychain differently: a search takes a
+        /// list, an add takes the one to write into. Passing the wrong key is
+        /// not an error — it silently addresses the default keychain, which for
+        /// a root daemon is root's login keychain, locked at boot.
+        public static func writeQuery(account: String, service: String, label: String,
+                                      keychain: SecKeychain?) -> [String: Any] {
+            var q = baseQuery(account: account, service: service)
+            if let keychain { q[kSecUseKeychain as String] = keychain }
+            q[kSecAttrLabel as String] = label
+            return q
+        }
+
+        public static func searchQuery(account: String, service: String,
+                                       keychain: SecKeychain?) -> [String: Any] {
+            var q = baseQuery(account: account, service: service)
+            if let keychain { q[kSecMatchSearchList as String] = [keychain] }
+            return q
+        }
+
+        public func store(account: String, service: String, label: String,
+                          secret: Data) -> OSStatus {
+            guard let keychain = KeychainStore.systemKeychain() else { return errSecNotAvailable }
+            let deleted = SecItemDelete(
+                Self.searchQuery(account: account, service: service, keychain: keychain) as CFDictionary)
+            var q = Self.writeQuery(account: account, service: service,
+                                    label: label, keychain: keychain)
+            q[kSecValueData as String] = secret
+            let status = SecItemAdd(q as CFDictionary, nil)
+            DaemonLog.auth("keychain write \(account): "
+                           + "SecItemDelete \(KeychainStore.describe(deleted)), "
+                           + "SecItemAdd \(KeychainStore.describe(status))")
+            return status
+        }
+
+        public func fetch(account: String, service: String) -> (status: OSStatus, secret: Data?) {
+            guard let keychain = KeychainStore.systemKeychain() else { return (errSecNotAvailable, nil) }
+            var q = Self.searchQuery(account: account, service: service, keychain: keychain)
+            q[kSecReturnData as String] = true
+            q[kSecMatchLimit as String] = kSecMatchLimitOne
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(q as CFDictionary, &item)
+            return (status, item as? Data)
+        }
+
+        public func remove(account: String, service: String) -> OSStatus {
+            guard let keychain = KeychainStore.systemKeychain() else { return errSecNotAvailable }
+            return SecItemDelete(
+                Self.searchQuery(account: account, service: service, keychain: keychain) as CFDictionary)
+        }
     }
 
-    /// Opened per call rather than cached: `SecKeychain` is a CF type and not
-    /// `Sendable`, opening it is cheap, and secrets are touched only when one is
-    /// saved or a login resolves one.
-    ///
-    /// `SecKeychainOpen` is deprecated in favour of the data-protection
-    /// keychain, which is precisely what a system-domain daemon cannot reach.
-    /// There is no non-deprecated way to name a file keychain, so the
-    /// deprecation is acknowledged rather than avoidable.
-    ///
-    /// The build therefore carries one deprecation warning, on the
-    /// `SecKeychainOpen` line below, and it is meant to stay: it marks the one
-    /// place this constraint lives. Do not silence it by annotating the callers
-    /// — that spreads a false "deprecated" onto this type's whole public API —
-    /// and do not silence it by going back to the data-protection keychain,
-    /// which is what did not work.
-    private static func systemKeychain() -> SecKeychain? {
-        var keychain: SecKeychain?
-        let status = SecKeychainOpen("/Library/Keychains/System.keychain", &keychain)
-        guard status == errSecSuccess else {
-            DaemonLog.auth("cannot open the System keychain: \(describe(status))")
-            return nil
-        }
-        return keychain
-    }
+    /// Swapped by tests, never by the daemon, which is why an unguarded static
+    /// is honest here rather than lazy.
+    nonisolated(unsafe) public static var backend: Backend = SystemKeychain()
 
     /// Which half of a mutual CHAP pair a secret is.
     ///
@@ -112,7 +187,7 @@ public enum KeychainStore {
         /// What the target must prove to us.
         case mutual
 
-        func account(for targetID: String) -> String {
+        public func account(for targetID: String) -> String {
             switch self {
             case .initiator: return targetID
             case .mutual:    return "mutual:" + targetID
@@ -131,59 +206,31 @@ public enum KeychainStore {
     /// whose credentials the user had definitely entered.
     public static func store(_ secret: String, for targetID: String,
                              kind: Kind = .initiator) throws {
-        guard let keychain = systemKeychain() else { throw StoreFailure.noSystemKeychain }
-
-        var query = baseQuery(targetID, kind)
-        // Searching and adding name the keychain differently: a search takes a
-        // list, an add takes the one to write into. Passing the wrong key is
-        // not an error, it just silently addresses the default keychain — which
-        // for a root daemon is root's login keychain, locked at boot.
-        query[kSecMatchSearchList as String] = [keychain]
-        let deleted = SecItemDelete(query as CFDictionary)
-
-        query[kSecMatchSearchList as String] = nil
-        query[kSecUseKeychain as String] = keychain
-        query[kSecValueData as String] = Data(secret.utf8)
-        // No kSecAttrAccessible: that is a data-protection-keychain attribute
-        // and means nothing here. The System keychain's availability comes from
-        // /var/db/SystemKey, which is why it works with no user logged in.
-        query[kSecAttrLabel as String] = kind == .mutual
-            ? "iSCSI Initiator — mutual CHAP secret"
-            : "iSCSI Initiator — CHAP secret"
-
-        let status = SecItemAdd(query as CFDictionary, nil)
-        // Logged here rather than at the call site because `setCHAPSecret` is
-        // `try?` over this function: the status is discarded one frame up, and
-        // what the user is shown instead — "saved but could not be read back" —
-        // describes a symptom two steps downstream of whatever actually went
-        // wrong. This is the only place the real answer exists.
-        DaemonLog.auth("keychain write \(kind) for \(targetID): "
-                       + "SecItemDelete \(describe(deleted)), SecItemAdd \(describe(status))")
+        let status = backend.store(account: kind.account(for: targetID),
+                                   service: service,
+                                   label: kind == .mutual
+                                       ? "iSCSI Initiator — mutual CHAP secret"
+                                       : "iSCSI Initiator — CHAP secret",
+                                   secret: Data(secret.utf8))
+        guard status != errSecNotAvailable else { throw StoreFailure.noSystemKeychain }
         guard status == errSecSuccess else { throw StoreFailure.osStatus(status) }
     }
 
     /// An OSStatus with its name, because `-34018` is unreadable and
     /// `errSecMissingEntitlement` is a diagnosis.
-    private static func describe(_ status: OSStatus) -> String {
+    static func describe(_ status: OSStatus) -> String {
         guard status != errSecSuccess else { return "ok" }
         let text = SecCopyErrorMessageString(status, nil) as String?
         return "\(status) (\(text ?? "no description"))"
     }
 
     public static func chapSecret(for targetID: String, kind: Kind = .initiator) -> String? {
-        guard let keychain = systemKeychain() else { return nil }
-        var query = baseQuery(targetID, kind)
-        query[kSecMatchSearchList as String] = [keychain]
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else {
+        let (status, data) = backend.fetch(account: kind.account(for: targetID), service: service)
+        guard status == errSecSuccess, let data else {
             // Distinguishes the two ways this returns nil, which the caller
             // cannot: "no such item" is an ordinary answer for a target with no
-            // CHAP configured, and anything else is a keychain that is refusing
-            // us. Both arrive at the call site as a bare nil.
+            // CHAP configured, and anything else is a keychain refusing us.
+            // Both arrive at the call site as a bare nil.
             DaemonLog.auth("keychain read \(kind) for \(targetID): \(describe(status))")
             return nil
         }
@@ -191,10 +238,7 @@ public enum KeychainStore {
     }
 
     public static func deleteCHAPSecret(for targetID: String, kind: Kind = .initiator) {
-        guard let keychain = systemKeychain() else { return }
-        var query = baseQuery(targetID, kind)
-        query[kSecMatchSearchList as String] = [keychain]
-        let status = SecItemDelete(query as CFDictionary)
+        let status = backend.remove(account: kind.account(for: targetID), service: service)
         if status != errSecSuccess && status != errSecItemNotFound {
             DaemonLog.auth("keychain delete \(kind) for \(targetID): \(describe(status))")
         }

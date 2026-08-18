@@ -158,50 +158,16 @@ struct ResourceBoundsTests {
     // dedicated process. Four tests that measure something beat five where one
     // reports on the weather.
 
-    // MARK: - A large write costs a window, not a request
-
-    /// The chunks of one write are issued together rather than one round trip
-    /// at a time, and each one holds a copy of its slice until it completes.
-    /// What bounds that today is the CmdSN window, which is incidental — no
-    /// code says so and nothing asserts it. If the bound were ever the request
-    /// size instead, a large file copy would cost memory equal to the file.
-    @Test func aLargeWriteCostsAWindowNotTheWholeRequest() async throws {
-        let disk = RAMDisk(blockSize: 512, capacityBlocks: 300_000)
-        let harness = TargetHarness.start(disk: disk)
-        defer { harness.serveTask.cancel() }
-        let session = ISCSISession(login: standardLogin(), policy: testPolicy(),
-                                   transportFactory: { harness.transport })
-        try await session.activate()
-        let device = ISCSIBlockDevice(session: session, lun: 0, maxTransferBytes: 256 << 10)
-
-        // Asked as a ratio rather than an absolute, deliberately. An earlier
-        // version asserted "a 64 MiB write grows the process by less than N
-        // MiB", which passed alone and failed under --enable-code-coverage —
-        // the configuration CI actually runs. Instrumentation moves the
-        // absolute numbers and leaves the shape alone, so the shape is what
-        // gets asserted: four times the data must not cost four times the
-        // memory.
-        func growth(writing bytes: Int) async throws -> UInt64 {
-            let payload = Data(repeating: 0x5A, count: bytes)
-            // Warm with the same write, so everything downstream that grows
-            // with bytes written — the RAM disk, the MemoryPipe, the payload —
-            // is charged before the baseline and only the initiator's
-            // per-request overhead is left.
-            try await device.write(offset: 0, data: payload)
-            let before = footprint()
-            try await device.write(offset: 0, data: payload)
-            return footprint() &- before
-        }
-
-        let small = try await growth(writing: 8 << 20)     //   32 chunks
-        let large = try await growth(writing: 128 << 20)   // 512 chunks
-
-        // Measured both ways at a 16x size ratio: bounded, 3 MiB and 5 MiB;
-        // unbounded, 9 MiB and 45 MiB. So this passes at 5 against a 19 MiB
-        // limit and fails at 45 against 25 — headroom in both directions, and
-        // the earlier absolute-threshold version of this test had neither.
-        let report = "a 16x larger write cost \(mib(large)) MiB against \(mib(small)) MiB; "
-                   + "peak is scaling with the request instead of the window"
-        #expect(large < small + (16 << 20), "\(report)")
-    }
+    // The bound on a large write's fan-out is asserted in
+    // `WriteConcurrencyTests.aLargeWriteKeepsOnlyAWindowInFlight`, by counting
+    // commands against a stalled target rather than by weighing the process.
+    //
+    // It lived here first and was measured three different ways, each flakier
+    // than the last: an absolute footprint threshold that failed under
+    // --enable-code-coverage, which is what CI runs; a ratio between two request
+    // sizes with slack so wide it passed even unbounded; and a calibrated
+    // version of that ratio which passed alone and failed in a full-suite run.
+    // Process footprint after three hundred other tests is not a quantity worth
+    // asserting on. The number of commands a stalled target was handed is
+    // exact, and it is the property that actually matters.
 }

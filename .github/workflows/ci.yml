@@ -56,6 +56,17 @@ jobs:
           set -o pipefail
           swift test --no-parallel --enable-code-coverage 2>&1 | tee "$RUNNER_TEMP/swift-test.log"
 
+      # Computed on every run, including pull requests, and printed. Only the
+      # push below is main-only. Coverage that is calculated only where it is
+      # published is coverage nobody sees while deciding whether to merge —
+      # and the number moved 88.5% -> 86.6% the day the FSKit extension's data
+      # path became measurable, which is exactly the kind of change worth
+      # seeing on the pull request that causes it.
+      - name: Coverage
+        run: |
+          set -euo pipefail
+          scripts/coverage-badges.sh "$RUNNER_TEMP/swift-test.log" "$RUNNER_TEMP/badges"
+
       # Derived data, not history: one orphan commit holding two shields.io
       # endpoint documents, force-pushed over whatever was there. Main only —
       # a pull request must not be able to move the numbers the README shows,
@@ -73,7 +84,6 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          scripts/coverage-badges.sh "$RUNNER_TEMP/swift-test.log" "$RUNNER_TEMP/badges"
           cd "$RUNNER_TEMP/badges"
           git init -q -b badges
           git config user.name  "github-actions[bot]"
