@@ -1,16 +1,43 @@
 {
-  "fill" : {
-    "linear-gradient" : [
-      "extended-srgb:0.38039,0.33333,0.96078,1.00000",
-      "extended-srgb:0.00000,0.53333,1.00000,1.00000"
-    ]
-  },
+  "fill-specializations" : [
+    {
+      "value" : {
+        "linear-gradient" : [
+          "extended-gray:1.00000,1.00000",
+          "extended-srgb:0.00000,0.53333,1.00000,1.00000"
+        ]
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : {
+        "linear-gradient" : [
+          "display-p3:0.09666,0.22658,0.42025,1.00000",
+          "extended-gray:0.00000,1.00000"
+        ]
+      }
+    }
+  ],
   "groups" : [
     {
       "layers" : [
         {
-          "image-name" : "iSCSIInitiator.png",
-          "name" : "iSCSIInitiator"
+          "blend-mode-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "normal"
+            }
+          ],
+          "glass" : true,
+          "image-name" : "iSCSIInitiator4.png",
+          "name" : "iSCSIInitiator4",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              7.5,
+              53.5
+            ]
+          }
         }
       ],
       "shadow" : {
