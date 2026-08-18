@@ -14,6 +14,12 @@ let package = Package(
         // Xcode target can only link a package *product*. Named ...Kit to keep
         // it distinguishable from the `iscsid` executable that consumes it.
         .library(name: "iSCSIDaemonKit", targets: ["iSCSIDaemon"]),
+        // The FSKit extension's data path, minus the FSKit. Split out of
+        // iSCSIFSExtension.swift so `swift test` can reach it: read-modify-write,
+        // the chunk cache wiring, the ioLock and every XPC call the volume makes
+        // were 600 lines of shipping code inside an Xcode target, which no test
+        // in this package could see.
+        .library(name: "iSCSIVolume", targets: ["iSCSIVolume"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
@@ -40,6 +46,13 @@ let package = Package(
         // a thin XPC/launchd launcher on top.
         .target(
             name: "iSCSIDaemon",
+            dependencies: ["iSCSIKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        // No FSKit dependency, deliberately and verifiably: the extension keeps
+        // everything that conforms to FSKit and imports this for the rest.
+        .target(
+            name: "iSCSIVolume",
             dependencies: ["iSCSIKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
@@ -84,7 +97,7 @@ let package = Package(
         ),
         .testTarget(
             name: "IntegrationTests",
-            dependencies: ["iSCSIKit", "MockTarget", "iSCSIDaemon"],
+            dependencies: ["iSCSIKit", "MockTarget", "iSCSIDaemon", "iSCSIVolume"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

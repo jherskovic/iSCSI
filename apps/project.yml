@@ -181,6 +181,11 @@ targets:
     dependencies:
       - package: iSCSI
         product: iSCSIKit
+      # The volume's data path — LUNStore, BackingStore, DaemonStore — lives in
+      # the package rather than here so the test suite can reach it. What stays
+      # in this target is the part that conforms to FSKit.
+      - package: iSCSI
+        product: iSCSIVolume
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.herko.iSCSIInitiator.fsext

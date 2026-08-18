@@ -15,6 +15,7 @@
 		19AEC47ED3920AE1C239870B /* MenuBarContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B7C2E394D634AD1AF184FFC /* MenuBarContent.swift */; };
 		1A42FB71385B64D8C7B498E1 /* iSCSIFSExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3079D57585D96DD2ADCA8879 /* iSCSIFSExtension.swift */; };
 		1ED426491C5207B50045C36D /* SetupStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3585A0A81F56D11FC7F6743D /* SetupStep.swift */; };
+		26B9537B549DE90F32FE867E /* iSCSIVolume in Frameworks */ = {isa = PBXBuildFile; productRef = E600779795FE67DACAE39AFD /* iSCSIVolume */; };
 		2E1FFE246D597C651BD5C482 /* InstallLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CC1D231F0FFC5DB1C566C42 /* InstallLocation.swift */; };
 		2FCD39A4CA774D55F3735886 /* SessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D39B691CCE7444B689581C /* SessionsView.swift */; };
 		3982D9B9A332FCB9061C3BFA /* iSCSIDext.iig in Sources */ = {isa = PBXBuildFile; fileRef = 3DC08C498B489B3118E2CF64 /* iSCSIDext.iig */; };
@@ -166,6 +167,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7DF0B704FFA3482AABAFE5F3 /* iSCSIKit in Frameworks */,
+				26B9537B549DE90F32FE867E /* iSCSIVolume in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -426,6 +428,7 @@
 			name = iSCSIFSExtension;
 			packageProductDependencies = (
 				1930AC270A5C69BFDB1258AA /* iSCSIKit */,
+				E600779795FE67DACAE39AFD /* iSCSIVolume */,
 			);
 			productName = iSCSIFSExtension;
 			productReference = 0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */;
@@ -932,6 +935,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 346247409A4358FD8A91EE1C /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		E600779795FE67DACAE39AFD /* iSCSIVolume */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = iSCSIVolume;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
