@@ -50,6 +50,11 @@ Real-world tests on the entire stack are, for me, at best 300 MB/sec, which is w
 10-year-old NAS can deliver. True optimization for other conditions will need more users,
 more time, and detailed reports.
 
+A write larger than one SCSI command issues its chunks together rather than one
+round trip at a time, which measured 2.1x faster with Force Unit Access on and
+2.6x with the target caching. That helps large files; the small writes a running
+VM makes are a single command already and are unchanged.
+
 Writes default to Force Unit Access on every command, because FSKit delivers no
 barrier signal and an acknowledged write sitting in a volatile target cache is a
 lie APFS will act on. That costs real throughput (measured 4.5x on my hardware).
@@ -81,7 +86,7 @@ clean macOS 26.6.1 machine with SIP on, no Xcode, no Apple ID and no developer
 account, against a real TrueNAS target: discover → add → attach → copy files →
 detach → re-attach. Full transcript in `docs/acceptance-2026-08-14.md`.
 
-316 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
+326 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
 clean over 100 independent seeds (`scripts/fuzz-campaign.sh`). The protocol
 stack is verified against real hardware, not just the simulator.
 
@@ -201,7 +206,7 @@ Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `apps/project.yml`,
 then push a tag:
 
 ```sh
-git tag v0.3.3 && git push origin v0.3.3
+git tag v0.4.3 && git push origin v0.4.3
 ```
 
 `.github/workflows/release.yml` archives, exports a Developer ID build,
@@ -257,7 +262,8 @@ Sources/
   MockTarget/        scriptable target: protocol engine, volatile write cache,
                      TCP listener (drives both the tests and the simulator)
   iscsi-target-sim/  standalone local target + loopback control socket
-  iscsictl/          control CLI (discover, verify, read-bench, write-bench)
+  iscsictl/          control CLI (discover, verify, read-bench, write-bench,
+                     wipe); --debug traces every PDU and narrates the login
   iscsid/            daemon: owns sessions, vends block I/O over XPC
   iSCSIDaemon/       daemon core, target store, keychain, XPC authorization
   pdu-fuzz/          structure-aware fuzzer
@@ -266,12 +272,14 @@ apps/
   iSCSIFSExtension/  FSKit module presenting the LUN as a file
   iSCSIDext/         DriverKit virtual SCSI HBA (parked, ISCSI_BACKEND_B)
 Tests/
-  iSCSIKitTests/     200 tests
-  IntegrationTests/  116 tests: happy paths, hostile scripts, recovery, TCP
+  iSCSIKitTests/     201 tests
+  IntegrationTests/  125 tests: happy paths, hostile scripts, recovery, TCP
                      loopback, crash consistency, stalled-target resilience,
-                     XPC authorization, handle scoping, target persistence
+                     XPC authorization, handle scoping, target persistence,
+                     authentication tracing, write chunk concurrency
 scripts/
   release.sh         notarized DMG + Sparkle signature + appcast
+  coverage-badges.sh the tests/coverage badges CI pushes to the badges branch
   iscsi-attach.sh    the bash-era attach path, superseded by the app
   bench.py           large-sequential throughput benchmark
   soak.py            small-file / read-modify-write soak
