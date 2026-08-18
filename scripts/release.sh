@@ -84,6 +84,60 @@ VERSION=$(awk '/MARKETING_VERSION:/ {gsub(/"/,"",$2); print $2; exit}' apps/proj
 [ -n "$VERSION" ] || die "could not read MARKETING_VERSION from apps/project.yml"
 echo "  version                $VERSION"
 
+# The app is built against the macOS 26 SDK deliberately: its one macOS 27 API,
+# FSClient.openFileSystemExtensionsSettings(), is reached by selector in
+# FSKitSettingsLink precisely so that stays true, and CI's app job runs on
+# macos-26. Nothing enforced it locally, so a machine with Xcode 26 and an
+# Xcode 27 beta side by side shipped a DMG built against the 27 SDK purely
+# because xcode-select pointed at the beta — quietly, and differing from what CI
+# had checked.
+#
+# An explicit DEVELOPER_DIR always wins. Otherwise: keep whatever xcode-select
+# already points at if it provides a macOS 26 SDK, and only reach for
+# /Applications/Xcode.app when it does not. That ordering matters — CI runners
+# select a correct Xcode by other means and must not be second-guessed by a path
+# that means something else there, while this repo's own Mac has an Xcode 27
+# beta selected and a 26 SDK sitting in the release Xcode next to it.
+sdk_version_of() {  # sdk_version_of <developer-dir or empty for current>
+    if [ -n "${1:-}" ]; then
+        DEVELOPER_DIR="$1" xcrun --sdk macosx --show-sdk-version 2>/dev/null
+    else
+        xcrun --sdk macosx --show-sdk-version 2>/dev/null
+    fi
+}
+
+if [ -z "${DEVELOPER_DIR:-}" ]; then
+    case "$(sdk_version_of '')" in
+        26.*|26) : ;;   # already correct; change nothing
+        *)
+            fallback=/Applications/Xcode.app/Contents/Developer
+            case "$(sdk_version_of "$fallback")" in
+                26.*|26) DEVELOPER_DIR="$fallback" ;;
+            esac
+            ;;
+    esac
+fi
+[ -z "${DEVELOPER_DIR:-}" ] || export DEVELOPER_DIR
+[ -z "${DEVELOPER_DIR:-}" ] || [ -d "$DEVELOPER_DIR" ] \
+    || die "DEVELOPER_DIR does not exist: $DEVELOPER_DIR"
+
+SDK_VERSION=$(sdk_version_of '')
+case "$SDK_VERSION" in
+    26.*|26)
+        echo "  macOS SDK              $SDK_VERSION"
+        echo "  toolchain              ${DEVELOPER_DIR:-$(xcode-select -p) (xcode-select)}"
+        ;;
+    *)
+        die "this builds against the macOS 26 SDK, and ${DEVELOPER_DIR:-$(xcode-select -p)} provides
+${SDK_VERSION:-none}. README.md and CLAUDE.md both state the 26-SDK rule and
+FSKitSettingsLink exists to keep it true, so building against another SDK makes
+the docs wrong and the local artifact differ from what CI verified. Point
+DEVELOPER_DIR at an Xcode carrying a macOS 26 SDK:
+
+    DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer scripts/release.sh"
+        ;;
+esac
+
 security find-identity -v -p codesigning 2>/dev/null \
     | grep -q "Developer ID Application: .*($TEAM_ID)" \
     || die "no 'Developer ID Application' identity for team $TEAM_ID in the keychain"
