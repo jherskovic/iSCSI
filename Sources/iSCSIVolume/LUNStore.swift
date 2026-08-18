@@ -188,7 +188,12 @@ public final class BackingStore: LUNStore {
 /// rather than an unkillable filesystem, which is exactly the failure mode that
 /// made the DriverKit wedge so painful to diagnose.
 public final class DaemonStore: LUNStore {
-    private let connection: NSXPCConnection
+    /// nil when a proxy was injected — see `init(daemon:session:blockSize:byteCount:)`.
+    private let connection: NSXPCConnection?
+    /// Set only by the testing initialiser. Every call site asks `daemon()`
+    /// rather than reaching for the connection, so the two paths differ in one
+    /// place instead of six.
+    private let injectedDaemon: ISCSIDaemonProtocol?
     private let session: String
     private let lock = NSLock()
     /// Serialises read-modify-write so two partial writes to the same block
@@ -436,12 +441,12 @@ public final class DaemonStore: LUNStore {
     /// `mount(8)` — which needs no root — so anything it forwards is effectively
     /// attacker-chosen, and it used to forward the mount URL's user component
     /// straight into a keychain lookup.
-    public init(host: String, port: Int, target: String, lun: UInt64) throws {
-        connection = NSXPCConnection(machServiceName: iscsiDaemonServiceName, options: .privileged)
-        connection.remoteObjectInterface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
-        connection.resume()
+    public convenience init(host: String, port: Int, target: String, lun: UInt64) throws {
+        let xpc = NSXPCConnection(machServiceName: iscsiDaemonServiceName, options: .privileged)
+        xpc.remoteObjectInterface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
+        xpc.resume()
 
-        let proxy = try Self.proxy(connection)
+        let proxy = try Self.proxy(xpc)
 
         // Log in.
         var handle: String?
@@ -454,7 +459,6 @@ public final class DaemonStore: LUNStore {
         }
         if let loginError { throw loginError }
         guard let handle else { throw POSIXError(.EIO) }
-        session = handle
 
         // Learn geometry.
         var blockSize: NSNumber = 0
@@ -480,9 +484,6 @@ public final class DaemonStore: LUNStore {
         guard bs > 0, count > 0 else { throw POSIXError(.EIO) }
         let (product, overflowed) = bs.multipliedReportingOverflow(by: count)
         guard !overflowed, product > 0 else { throw POSIXError(.EIO) }
-        byteCount = product
-        aligner = BlockAligner(blockSize: bs, capacity: byteCount)
-        self.blockSize = blockSize.uint64Value
 
         // Built last: the fetch closures need `self`, which only exists once
         // every stored property above is set. `weak` breaks the cycle the
@@ -508,6 +509,27 @@ public final class DaemonStore: LUNStore {
         }
         let pinned = budgetReply.intValue > 0
         let budgetBytes = pinned ? budgetReply.intValue : Self.readaheadBytes
+        self.init(connection: xpc, injectedDaemon: nil, session: handle,
+                  blockSize: bs, byteCount: product,
+                  budgetBytes: budgetBytes, pinned: pinned)
+    }
+
+    /// Everything that assigns stored state, shared by both initialisers.
+    ///
+    /// The split exists so the store can be built around an injected daemon.
+    /// Before it, `init` opened its own `NSXPCConnection` to a privileged mach
+    /// service, which meant the read-modify-write path, the cache patching and
+    /// the ioLock that orders them could not be reached by a test at all — the
+    /// most consequential code in the volume and the least examined.
+    private init(connection: NSXPCConnection?, injectedDaemon: ISCSIDaemonProtocol?,
+                 session: String, blockSize bs: UInt64, byteCount: UInt64,
+                 budgetBytes: Int, pinned: Bool) {
+        self.connection = connection
+        self.injectedDaemon = injectedDaemon
+        self.session = session
+        self.byteCount = byteCount
+        self.blockSize = bs
+        self.aligner = BlockAligner(blockSize: bs, capacity: byteCount)
 
         let chunk = Self.chunkBytes(forBlockSize: Int(bs))
         cache = PrefetchChunkCache(
@@ -525,7 +547,7 @@ public final class DaemonStore: LUNStore {
                 return try self.rawRead(offset: offset, length: length)
             },
             fetchAsync: { [weak self] offset, length, done in
-                guard let self, let proxy = try? Self.proxy(self.connection) else {
+                guard let self, let proxy = try? self.daemon() else {
                     done(nil)
                     return
                 }
@@ -535,14 +557,36 @@ public final class DaemonStore: LUNStore {
                 }
             })
 
-        fsLog.log("DaemonStore session=\(handle, privacy: .public) size=\(self.byteCount) blockSize=\(blockSize.uint64Value) chunk=\(chunk)")
+        fsLog.log("DaemonStore session=\(session, privacy: .public) size=\(self.byteCount) blockSize=\(bs) chunk=\(chunk)")
     }
 
+    /// Build a store around an already-established daemon, for tests.
+    ///
+    /// Takes the geometry rather than asking for it, so a fake daemon only has
+    /// to answer `read`, `write` and `flush` — the three calls the data path
+    /// actually makes once a volume is mounted.
+    public convenience init(daemon: ISCSIDaemonProtocol, session: String,
+                            blockSize: UInt64, byteCount: UInt64,
+                            readaheadBudgetBytes: Int? = nil) {
+        self.init(connection: nil, injectedDaemon: daemon, session: session,
+                  blockSize: blockSize, byteCount: byteCount,
+                  budgetBytes: readaheadBudgetBytes ?? Self.readaheadBytes,
+                  pinned: readaheadBudgetBytes != nil)
+    }
+
+
     deinit {
-        if let proxy = try? Self.proxy(connection) {
+        if let proxy = try? daemon() {
             try? Self.blocking { done in proxy.logout(session: self.session) { _ in done() } }
         }
-        connection.invalidate()
+        connection?.invalidate()
+    }
+
+    /// The daemon, however this store was given one.
+    private func daemon() throws -> ISCSIDaemonProtocol {
+        if let injectedDaemon { return injectedDaemon }
+        guard let connection else { throw POSIXError(.EIO) }
+        return try Self.proxy(connection)
     }
 
     private static func proxy(_ connection: NSXPCConnection) throws -> ISCSIDaemonProtocol {
@@ -569,7 +613,7 @@ public final class DaemonStore: LUNStore {
     /// Reads exactly `[offset, offset+length)` where both are already
     /// block-aligned. Every aligned access funnels through here.
     private func rawRead(offset: UInt64, length: Int) throws -> Data {
-        let proxy = try Self.proxy(connection)
+        let proxy = try daemon()
         var data: Data?
         var err: Error?
         try daemonCall { done in
@@ -584,7 +628,7 @@ public final class DaemonStore: LUNStore {
     }
 
     private func rawWrite(offset: UInt64, data: Data) throws {
-        let proxy = try Self.proxy(connection)
+        let proxy = try daemon()
         var err: Error?
         try daemonCall { done in
             proxy.write(session: session, offset: NSNumber(value: offset), data: data) { e in
@@ -667,7 +711,7 @@ public final class DaemonStore: LUNStore {
     /// docs/backend-a-fskit-notes.md), so this only runs on final close — which
     /// is why the target should also be configured write-through.
     public func flush() throws {
-        let proxy = try Self.proxy(connection)
+        let proxy = try daemon()
         var err: Error?
         try daemonCall { done in
             proxy.flush(session: session) { e in err = e; done() }
