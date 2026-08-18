@@ -6,6 +6,13 @@
 #   scripts/release.sh --skip-notarize signed DMG only — for iterating on THIS
 #                                      SCRIPT and nothing else.
 #
+# appcast.xml is written if and only if --publish is passed, and a run without
+# it asserts at the end that the file is byte-identical to how it found it. The
+# feed is a promise that a specific file exists at a URL; writing it before the
+# release exists means every user who checks in between gets a failed download,
+# and writing it for a build that is never published means the next person to
+# `git add -A` publishes that lie for them. This used to be a printed warning.
+#
 # Never install --skip-notarize output on a test machine. macOS behaves
 # differently around notarization, so results from an unnotarized build do not
 # predict the shipping one, and a build that is not what you think it is costs
@@ -190,6 +197,12 @@ fi
 if [ -n "$(git status --porcelain)" ]; then
     printf '\033[33m  warning: working tree is dirty; the DMG will not match any commit\033[0m\n'
 fi
+
+# The feed is only ever written under --publish, and this is how that stops
+# being a promise. Recorded against the file as found rather than against git,
+# so a working copy that was already modified for unrelated reasons does not
+# read as a violation.
+APPCAST_BEFORE=$(shasum -a 256 appcast.xml 2>/dev/null | awk '{print $1}')
 
 # ----------------------------------------------------- 1. generate + drift gate
 say "regenerating the Xcode project"
@@ -536,6 +549,25 @@ signature in the appcast covers $ED_LEN. Sparkle would download that file and
 reject it — or fail outright on a 404 — and would say nothing useful about why.
 The release is published; the feed has NOT been updated, so no user sees this."
         echo "  ok  $ASSET_URL serves $SERVED bytes"
+
+        # Last, and only here. This used to sit outside the --publish block and
+        # ran on every notarized build, leaving a rewritten feed in the working
+        # tree with a printed warning not to commit it. That warning was read by
+        # nobody and the file was committed twice: once advertising a length and
+        # signature that did not match the DMG already published under that
+        # version, which makes Sparkle download the real file, check it against
+        # the wrong signature, and refuse the update for every installed copy.
+        #
+        # Nothing consumed the local write in the first place. CI does not: the
+        # appcast-commit step checks out origin/main fresh and re-derives the
+        # entry from release-metadata.env, because a detached tag checkout has a
+        # stale feed. So on a developer machine it was read by no one and was
+        # only ever a way to break the feed by accident.
+        say "updating the appcast"
+        scripts/update-appcast.py \
+            --version "$VERSION" --build "$BUILD_NUMBER" \
+            --signature "$ED_SIG" --length "$ED_LEN" --url "$ASSET_URL" \
+            --min-system "$MIN_SYSTEM"
     fi
 
     # Everything needed to write the feed entry, as data. CI builds from a tag
@@ -551,12 +583,6 @@ ED_LENGTH='$ED_LEN'
 ASSET_URL='$ASSET_URL'
 MIN_SYSTEM='$MIN_SYSTEM'
 EOF
-
-    say "updating the appcast"
-    scripts/update-appcast.py \
-        --version "$VERSION" --build "$BUILD_NUMBER" \
-        --signature "$ED_SIG" --length "$ED_LEN" --url "$ASSET_URL" \
-        --min-system "$MIN_SYSTEM"
 fi
 
 # ------------------------------------------------ 11. unregister what we built
@@ -596,11 +622,30 @@ say "done"
 echo "  $DMG"
 ls -lh "$DMG" | awk '{print "  " $5}'
 echo
+# The other half of the guarantee made at the top: say it held, or refuse to
+# exit quietly having broken it. A run that has not published must not have
+# touched the feed, and asserting that is worth more than the warning this used
+# to print — which was ignored twice, once expensively.
+if [ "$PUBLISH" -eq 0 ]; then
+    APPCAST_AFTER=$(shasum -a 256 appcast.xml 2>/dev/null | awk '{print $1}')
+    if [ "$APPCAST_AFTER" != "$APPCAST_BEFORE" ]; then
+        die "appcast.xml changed during a run that did not publish anything.
+Restore it (git checkout -- appcast.xml) before committing: a feed entry naming
+a release that does not exist is a failed download for everyone who checks in
+between. This is a bug in this script — the feed is written only under
+--publish."
+    fi
+    echo "  appcast.xml untouched, as it should be without --publish"
+fi
+
 if [ "$SKIP_NOTARIZE" -eq 0 ] && [ "$PUBLISH" -eq 0 ]; then
-    echo "The appcast now points at a URL that does not exist yet. Publish before"
-    echo "committing it, or re-run with --publish to do both in the right order:"
+    echo "Not published, so the feed is unchanged and advertises nothing new."
+    echo "To publish this build, re-run with --publish — it creates the release,"
+    echo "verifies the URL really serves these bytes, and only then writes the"
+    echo "feed. Doing it by hand needs that same order:"
     echo
     echo "    gh release create v$VERSION --title $VERSION --generate-notes \"$DMG\""
+    echo "    scripts/update-appcast.py --version $VERSION --build $BUILD_NUMBER ..."
     echo "    git commit -m 'Release $VERSION' appcast.xml"
     echo
 fi
