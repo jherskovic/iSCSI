@@ -86,9 +86,16 @@ clean macOS 26.6.1 machine with SIP on, no Xcode, no Apple ID and no developer
 account, against a real TrueNAS target: discover → add → attach → copy files →
 detach → re-attach. Full transcript in `docs/acceptance-2026-08-14.md`.
 
-326 tests pass (unit + integration + real-TCP-loopback); the PDU fuzzer runs
-clean over 100 independent seeds (`scripts/fuzz-campaign.sh`). The protocol
-stack is verified against real hardware, not just the simulator.
+368 tests pass (unit + integration + real-TCP-loopback) at 87.1% line
+coverage; the PDU fuzzer runs clean over 100 independent seeds
+(`scripts/fuzz-campaign.sh`). The protocol stack is verified against real
+hardware, not just the simulator.
+
+Some of those tests measure the process rather than its output, which is
+deliberate: the two worst bugs found in this codebase were a receive buffer
+that kept every byte a connection ever read, and secrets written to a keychain
+the daemon cannot reach. Both ran their lines correctly and produced correct
+results.
 
 What the app does today:
 
@@ -266,6 +273,9 @@ Sources/
                      wipe); --debug traces every PDU and narrates the login
   iscsid/            daemon: owns sessions, vends block I/O over XPC
   iSCSIDaemon/       daemon core, target store, keychain, XPC authorization
+  iSCSIVolume/       the volume's data path: LUNStore, the local BackingStore
+                     and DaemonStore (RMW, chunk cache, ioLock). Split out of
+                     the FSKit extension so the tests can reach it
   pdu-fuzz/          structure-aware fuzzer
 apps/
   iSCSIApp/          the app: setup machine, menu bar, windows, attach path
@@ -273,10 +283,12 @@ apps/
   iSCSIDext/         DriverKit virtual SCSI HBA (parked, ISCSI_BACKEND_B)
 Tests/
   iSCSIKitTests/     201 tests
-  IntegrationTests/  125 tests: happy paths, hostile scripts, recovery, TCP
+  IntegrationTests/  167 tests: happy paths, hostile scripts, recovery, TCP
                      loopback, crash consistency, stalled-target resilience,
                      XPC authorization, handle scoping, target persistence,
-                     authentication tracing, write chunk concurrency
+                     authentication tracing, write chunk concurrency, the
+                     volume's read-modify-write and cache paths, keychain
+                     query shape, and resource bounds
 scripts/
   release.sh         notarized DMG + Sparkle signature + appcast
   coverage-badges.sh the tests/coverage badges CI pushes to the badges branch
