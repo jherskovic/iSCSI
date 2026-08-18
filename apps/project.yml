@@ -38,8 +38,8 @@ settings:
     # entitlement request to Apple — see docs/entitlements.md.
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.4.2"
-    CURRENT_PROJECT_VERSION: "32"
+    MARKETING_VERSION: "0.4.3"
+    CURRENT_PROJECT_VERSION: "33"
 
 targets:
   # ---- Container app ----
