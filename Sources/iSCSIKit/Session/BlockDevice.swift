@@ -328,16 +328,40 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
             return
         }
 
+        // Bounded, and the bound is the point. Adding every chunk at once let a
+        // large request hold a copy of most of itself: a 64 MiB write grew the
+        // process by 109 MiB beyond its payload, so a file copy cost memory
+        // proportional to the file. A stalled-target probe suggested the CmdSN
+        // window already capped this at 64 commands; it does not, because that
+        // probe measured a target that never answers, and with one that does
+        // the tasks churn while their allocations do not come back.
+        //
+        // `maxChunksInFlight` chunks is what the 2.1-2.6x measurement actually
+        // used — 1 MiB requests split four ways — so the depth that was shown to
+        // help is kept and the unbounded tail is not.
         try await withThrowingTaskGroup(of: Void.self) { group in
-            for chunk in plan {
+            var next = 0
+            func addNext() {
+                let chunk = plan[next]
+                next += 1
                 group.addTask { [self] in
                     try await writeChunk(lba: chunk.lba,
                                          payload: Data(data[chunk.bytes]), blockSize: bs)
                 }
             }
-            try await group.waitForAll()
+            while next < min(Self.maxChunksInFlight, plan.count) { addNext() }
+            while try await group.next() != nil {
+                if next < plan.count { addNext() }
+            }
         }
     }
+
+    /// How many commands one request may have outstanding.
+    ///
+    /// Eight rather than four so a request larger than the measured case still
+    /// gains something, and not unbounded because peak memory is the cost:
+    /// this caps a single request at eight chunk copies regardless of its size.
+    static let maxChunksInFlight = 8
 
     /// One WRITE(16). On failure the group cancels its siblings, so which chunks
     /// reached the medium is indeterminate — as it already was, since a partial
