@@ -115,6 +115,12 @@ LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Bac
   I/O out of it.
 - **`iSCSIDaemon` is the daemon core as a library**; `iscsid` is a thin
   XPC/launchd launcher on top, so the interesting logic is testable.
+- **`iSCSIVolume` is the FSKit extension's data path without the FSKit** —
+  `LUNStore`, `BackingStore`, `DaemonStore`, and with them read-modify-write,
+  the chunk cache and the `ioLock` that pins cache-patch order to device order.
+  It lives in the package rather than the Xcode target so `swift test` can
+  reach it; what stays in the extension is what conforms to FSKit. Keep new
+  FSKit types out of this target — that separation is what makes it testable.
 - **`XPCModels` cross as `Codable` DTOs encoded to `Data`**, not
   NSSecureCoding. `ISCSIError` is one error domain, and sense bytes plus
   recovery text survive the XPC boundary intact.

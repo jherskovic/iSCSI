@@ -4,7 +4,7 @@ Things known to be untested, unexplained, or deferred, with what is known about
 each and how to attack it. Ordered by what a failure would cost, not by how
 interesting it is.
 
-Current as of 0.4.1 (build 31), 2026-08-17.
+Current as of 0.4.4 (build 34), 2026-08-18.
 
 ---
 
