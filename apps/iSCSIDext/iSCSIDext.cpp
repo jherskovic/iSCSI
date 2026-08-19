@@ -352,7 +352,16 @@ IMPL(iSCSIDext, UserInitializeController)
     ok &= SetConstraint(constraints, kIOMaximumSegmentByteCountWriteKey, kISCSIMaxSegmentByteCount, 32);
     ok &= SetConstraint(constraints, kIOMinimumSegmentAlignmentByteCountKey, 1, 32);
     ok &= SetConstraint(constraints, kIOMaximumSegmentAddressableBitCountKey, 64, 32);
-    ok &= SetConstraint(constraints, kIOMinimumHBADataAlignmentMaskKey, 1, 64);
+    // The alignment MASK is all-ones for "any byte address is fine", the same
+    // convention as an address mask — NOT the alignment quantum. This was 1,
+    // which claims data may only touch bit 0 of the address space; measured
+    // consequence (2026-08-19, macOS 26.6.2): during the mount checkpoint,
+    // IOBreaker::getBreakSize computed 35 zero-byte stage sizes per run in
+    // IOBlockStorageServices' completion path, orphaning those requests
+    // in-kernel — no completion, no error — and wedging the volume and then
+    // the box. On 26.6.1 the same zero-progress case failed loudly instead
+    // (kIOReturnIOError, actual=0). docs/backend-b-reinvestigation.md, part 2.
+    ok &= SetConstraint(constraints, kIOMinimumHBADataAlignmentMaskKey, 0xFFFFFFFFFFFFFFFFULL, 64);
     if (!ok) {
         Log("UserInitializeController: failed to populate constraints");
         OSSafeReleaseNULL(constraints);
@@ -1088,7 +1097,9 @@ IMPL(iSCSIDext, UserProcessParallelTask)
             Log("UserGetDataBuffer failed: 0x%x", bret);
         }
     }
-    Log("task: target=%llu op=0x%02x len=%llu buf=%s",
+    // %{public}s: os_log redacts %s as <private>, which hid exactly this
+    // ok/none discriminator through an entire day of wedge diagnosis.
+    Log("task: target=%llu op=0x%02x len=%llu buf=%{public}s",
         parallelRequest.fTargetID, op, avail, buf ? "ok" : "none");
     // Only LUN 0 exists on this target.
     const bool lunZero = (parallelRequest.fLogicalUnitBytes[1] == 0);
@@ -1258,7 +1269,14 @@ IMPL(iSCSIDext, UserProcessParallelTask)
             resp.fSenseLength = MakeSense(resp.fSenseBuffer, 0x05, 0x21, 0x00); // LBA out of range
             break;
         }
-        if (length > avail) length = avail; // honour the mapped segment
+        if (length > avail) {
+            // This clamp used to be silent, which made "TRUNCATED-TRANSFERS=0"
+            // look like proof no transfer was ever shortened. It is a separate
+            // clamp from the segment-mapping one above and needs its own noise.
+            Log("scratch clamp: op=0x%02x lba=%llu cdb wants %llu, mapping allows %llu",
+                op, lba, length, avail);
+            length = avail;
+        }
         if (buf && length && ivars->scratch) {
             if (isWrite) memcpy(ivars->scratch + offset, buf, (size_t)length);
             else         memcpy(buf, ivars->scratch + offset, (size_t)length);
@@ -1285,7 +1303,12 @@ IMPL(iSCSIDext, UserProcessParallelTask)
             break;
         }
         uint64_t length = (uint64_t)blocks * kLUNBlockSize;
-        if (length > avail) length = avail;
+        if (length > avail) {
+            // Same silent clamp as the scratch path; same reason to log it.
+            Log("park clamp: op=0x%02x lba=%llu cdb wants %llu, mapping allows %llu",
+                op, lba, length, avail);
+            length = avail;
+        }
         deferred = ParkTaskForDaemon(
             parallelRequest, completion,
             isWrite ? kISCSIDirectionWrite : kISCSIDirectionRead,

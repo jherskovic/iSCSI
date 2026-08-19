@@ -81,6 +81,12 @@ targets:
       - package: Sparkle
       - target: iSCSIFSExtension
         embed: true
+      # INVESTIGATION BRANCH ONLY (driverkit-wedge-reinvestigation): the dext
+      # is embedded so vm-deploy-dext.sh can activate it. Never merge this to
+      # a release branch — the approval-gated DriverKit entitlements make
+      # every Developer ID export fail at profile resolution.
+      - target: iSCSIDext
+        embed: true
       # Contents/MacOS/iscsid. It used to be installed by hand to
       # /usr/local/libexec, which put the one root-privileged binary in the
       # product outside the signed bundle and outside notarization. Inside the
