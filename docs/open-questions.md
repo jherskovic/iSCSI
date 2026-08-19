@@ -330,7 +330,13 @@ reads serve page cache, and nothing lands on the device. `F_FULLFSYNC` is the
 two-second canary (returns EIO). The constraint space is a closed trilemma —
 wedge (segcount=1), silent loss (segcount=32), newfs-poison (byte-count
 caps) — so **Backend B stays parked pending Apple**, now with reproducers
-for every leg. Untested: macOS 27 (beta VM exists). Full record:
+for every leg.
+
+**macOS 27 confirms there is nothing to wait for in this release** (tested
+2026-08-19 on a 27.0 beta, 26A5416b): both legs reproduce identically — same
+zero-break argument tuple, same whole-machine hang, same `F_FULLFSYNC` EIO,
+same exact 16 KiB boundary — and the `SCSIControllerDriverKit` API surface is
+byte-identical to 25.5, so FB23814092's opt-in has not shipped. Full record:
 `docs/backend-b-reinvestigation.md` parts 2–5.
 
 ## 9. Deferred
