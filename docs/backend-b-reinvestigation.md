@@ -507,5 +507,15 @@ now documents precisely why, with reproducers for each leg.
 
 - macOS 27 (a beta VM now exists at 192.168.0.51): whether either leg of the
   trilemma changed. The whole rig deploys there unmodified in principle.
-- Whether FB23814092's promised opt-in shipped in any 26.x/27 SDK
-  (`SCSIControllerDriverKit` headers are worth a diff against 25.x).
+- ~~Whether FB23814092's promised opt-in shipped in any 26.x/27 SDK~~ —
+  **answered, no.** The `SCSIControllerDriverKit` API surface in
+  DriverKit27.0.sdk (Xcode-beta) is byte-identical to DriverKit25.5.sdk:
+  identical method surface, identical `#define` key set, identical
+  constants. Only the documentation grew (an Overview/Entitlements/Matching
+  block). Note what that block says about matching criteria — it specifies
+  `IOProviderClass: IOPCIDevice` "(for PCI controllers)" as the minimum
+  personality set, with no mention of a hardware-less provider. Our
+  `IOUserService`-on-a-bootstrap-nub arrangement remains undocumented and
+  unsanctioned, which is context worth having when Apple reads the FB.
+  So on macOS 27 the *API* is unchanged; whether the *kernel* changed either
+  trilemma leg is still untested and needs the VM.

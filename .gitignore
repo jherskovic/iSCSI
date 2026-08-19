@@ -1,4 +1,8 @@
 .build/
+# Checking that BOTH ISCSI_BACKEND_B states compile needs a separate build
+# path (SwiftPM otherwise hands back a cached result that proves nothing), so
+# ignore the whole family, not just .build/.
+.build-*/
 .swiftpm/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
