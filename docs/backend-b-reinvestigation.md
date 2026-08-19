@@ -257,3 +257,85 @@ linked-but-unverified.
 - `os_log` `%s` redaction (`<private>`) hid the dext's `buf=ok/none`
   discriminator all session. Instrument with `%{public}s` for diagnostics.
 - The dext's dtrace `execname` is `me.herko.iSCSIIn` (16-char cap).
+
+
+---
+
+# Part 3: fixed — and the fix is the segment count (2026-08-19)
+
+## The two experiments
+
+**v28 — alignment mask all-ones (the part-2 candidate): no effect.** The 35
+zero-breaks reproduced exactly, with an identical argument tuple. The mask is
+not an input to the break-size math at all. (The all-ones value is kept — it
+is the documented convention and the literal `1` was wrong — but it fixed
+nothing measurable.)
+
+What settled the argument decoding was pulling `IOBlockStorageDriver.cpp`
+from apple-oss-distributions. `IOBreaker::getBreakSize`'s real signature is
+
+    (maxBlockCount, maxByteCount, maxSegmentCount, maxSegmentByteCount,
+     minSegmentAlignmentByteCount, maxSegmentWidthByteCount,
+     requestBlockSize, buffer, bufferOffset)
+
+and the observed tuple decodes cleanly with **no misparse anywhere**:
+blockCount=65535, byteCount=∞, segmentCount=1 (ours), segmentByteCount=65536
+(ours), alignment=1 (ours), width=∞, blockSize=512. Every value is exactly
+what we advertise.
+
+**The zero is inherent geometry, not a bad value.** With one segment allowed,
+a break is the buffer's current physical run truncated down to a block
+multiple. When a stage boundary lands where the next physical run is shorter
+than one 512-byte block, the truncation floors to zero — and 26.6.2's
+`getNextStage` orphans the request instead of failing it. Our
+`maxSegmentCount = 1` (adopted for FB23814092) is what makes the case
+reachable.
+
+**v29 — `maxSegmentCount = 32` (and `maxTransferSize = 32 × 64 KiB`): fixed.**
+A break may now span physical runs, so a sub-block run is absorbed and the
+zero case is unreachable. Measured, against the full probe ladder that
+previously wedged at the first step:
+
+    newfs, mount, first access, second access, write, read-back,
+    raw read, dkflush --write, unmount     — all complete in ~1 s
+    IOBreaker zero-size breaks             — 0   (was 35, deterministic)
+    dext truncations / clamps / buffer-map failures — 0
+    reproduced on a second boot            — yes
+
+## Why FB23814092 did not bite
+
+The old reconnaissance said multi-segment tasks are rejected before a
+software controller sees them. With 32 segments advertised, **every task
+still arrived ≤ 16 KiB in a single physical run** (largest observed
+`len=16384`, zero truncation logs): the family stages block-cache I/O at page
+granularity anyway, so the rejection path is not even provoked by this
+workload. Whether larger transfers (the daemon-backed iSCSI path, readahead)
+trip it is an open measurement, not settled here.
+
+## Scope, stated precisely
+
+- Fixed and verified: the scratch-disk (RAM-backed, 512-byte, daemon-less)
+  APFS wedge on macOS 26.6.2, two boots.
+- Untested with v29: the iSCSI-backed 4Kn path (daemon + target), larger
+  transfers, sustained load, and macOS 27.
+- The 26.6.1 wedge remains linked-but-unverified: the rig moved to 26.6.2
+  mid-investigation. The 26.6.1 signature (zero-progress stage completing
+  `kIOReturnIOError actual=0`) is the same mechanism failing loudly rather
+  than orphaning, which is consistent but no longer testable here.
+- Apple still owes a fix regardless: a zero-size break in
+  `IOBlockStorageServices::AsyncReadWriteComplete`'s staging loop should fail
+  the request (as 26.6.1 did), never orphan it. The FB draft
+  (`docs/feedback-virtual-scsi-wedge.md`) needs rewriting around this
+  mechanism before filing — its "controller is provably healthy" section
+  survives, its reproducer section should name the zero-break trigger.
+
+## Deploy-path gotchas fixed on this branch
+
+- `vm-deploy-dext.sh` now builds the app with
+  `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) ISCSI_BACKEND_B'` — the
+  activation call is compiled out otherwise, and the symptom is a clean
+  build, a bundle containing the new dext, and systemextensionsctl showing
+  the old version forever.
+- The app auto-activates the dext again (`.task { dext.activate() }` under
+  `ISCSI_BACKEND_B`): activation had no remaining call site after the parking
+  cleanup, so plain launch requested nothing.

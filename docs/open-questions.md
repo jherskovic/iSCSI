@@ -309,11 +309,23 @@ writes to the same block 0 succeed at every size from 512 B to 64 KiB, and
 driver, in the `IOBreaker` path we are on because we advertise a maximum
 segment count of 1.
 
-Leading hypothesis: `WriteCacheState = Yes`, which RMB=0 bought us when the
-flush gap was closed, turns on a barrier path our controller does not satisfy.
-An identical-geometry `hdiutil` RAM disk passes, but it is a DiskImages device
-rather than a SCSI controller, so that control does not isolate RMB. The
-single-variable test — our own device built both ways — is the next experiment.
+**SOLVED on macOS 26.6.2 (2026-08-19), same day.** Root cause: with our
+advertised `maxSegmentCount = 1` (the FB23814092 workaround), IOBreaker's
+stage size — the current physical run truncated to a block multiple — floors
+to ZERO when a stage boundary lands where the buffer's next physical run is
+shorter than one block. 26.6.1 failed that request loudly
+(`kIOReturnIOError actual=0` — the newfs EIO above); 26.6.2 orphans it
+in-kernel — no completion, no error — and everything queues behind the dead
+request, including every process spawn via sandbox's `vnode_getattr`.
+
+Fix (dext build 29): advertise `maxSegmentCount = 32`, so a break can span
+runs and the zero case is unreachable. Full probe ladder passes on two boots;
+zero-size breaks went 35 → 0. The earlier WriteCacheState hypothesis was
+wrong — RMB=0 only made the checkpoint (and thus the geometry) reachable.
+Still open: the iSCSI-backed 4Kn path with v29, large transfers vs
+FB23814092's rejection, macOS 27, and whether the 26.6.1-era wedge was the
+same orphaning (plausible, no longer testable). Full record:
+`docs/backend-b-reinvestigation.md`.
 
 ## 9. Deferred
 

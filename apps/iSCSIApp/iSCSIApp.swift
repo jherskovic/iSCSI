@@ -14,11 +14,21 @@ import SwiftUI
 @main
 struct ISCSIInitiatorApp: App {
     @StateObject private var model = AppModel()
+#if ISCSI_BACKEND_B
+    // Activation must be requested by the app that embeds the dext, and it is
+    // requested nowhere else: launching the app without this line builds a
+    // bundle containing the new dext while systemextensionsctl keeps showing
+    // the old one forever. vm-deploy-dext.sh depends on plain launch sufficing.
+    @StateObject private var dext = ExtensionController()
+#endif
 
     var body: some Scene {
         Window("iSCSI Initiator", id: "main") {
             MainWindow(model: model)
                 .frame(minWidth: 760, minHeight: 480)
+#if ISCSI_BACKEND_B
+                .task { dext.activate() }
+#endif
         }
         .commands {
             CommandGroup(after: .toolbar) {

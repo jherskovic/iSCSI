@@ -346,8 +346,18 @@ IMPL(iSCSIDext, UserInitializeController)
     // segment and let IOBreaker split larger requests. maxTransferSize must be
     // >= segmentCount * segmentByteCount.
     bool ok = true;
-    ok &= SetConstraint(constraints, kIOMaximumSegmentCountReadKey, 1, 32);
-    ok &= SetConstraint(constraints, kIOMaximumSegmentCountWriteKey, 1, 32);
+    // Segment count 1 is what makes the wedge reachable: IOBreaker's break is
+    // the current physical run truncated to a block multiple, so a stage
+    // boundary landing where the next run is shorter than one block computes a
+    // ZERO-byte break — and macOS 26.6.2's getNextStage orphans that request
+    // instead of failing it (26.6.1 failed it with kIOReturnIOError). With
+    // more segments allowed, a break can span runs and absorb a sub-block
+    // tail, so the zero case is unreachable. The cost being probed here is
+    // FB23814092: the framework may reject multi-segment tasks against a
+    // software controller before the dext sees them — which is loud (errors,
+    // truncation logs), unlike the wedge.
+    ok &= SetConstraint(constraints, kIOMaximumSegmentCountReadKey, 32, 32);
+    ok &= SetConstraint(constraints, kIOMaximumSegmentCountWriteKey, 32, 32);
     ok &= SetConstraint(constraints, kIOMaximumSegmentByteCountReadKey, kISCSIMaxSegmentByteCount, 32);
     ok &= SetConstraint(constraints, kIOMaximumSegmentByteCountWriteKey, kISCSIMaxSegmentByteCount, 32);
     ok &= SetConstraint(constraints, kIOMinimumSegmentAlignmentByteCountKey, 1, 32);
@@ -399,9 +409,9 @@ kern_return_t
 IMPL(iSCSIDext, UserGetDMASpecification)
 {
     // Must agree with the constraints reported in UserInitializeController:
-    // maxTransferSize >= maxSegmentCount * maxSegmentByteCount. We advertise a
-    // single segment, so the two are equal.
-    *maxTransferSize = kISCSIMaxSegmentByteCount;
+    // maxTransferSize >= maxSegmentCount * maxSegmentByteCount. 32 segments
+    // of 64 KiB — see the zero-break rationale at the constraints.
+    *maxTransferSize = 32ULL * kISCSIMaxSegmentByteCount;
     *alignment       = 1;   // byte-aligned; no hardware DMA engine behind us
     *numAddressBits  = 64;  // full 64-bit addressing (software controller)
     *segmentType     = kDMAOutputSegmentHost64;

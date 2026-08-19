@@ -26,6 +26,10 @@
 # The dance (why it looks like this):
 #  - CFBundleVersion must be bumped in apps/iSCSIDext/Info.plist BEFORE this
 #    script, or sysextd silently keeps the old dext running.
+#  - The app must be built WITH ISCSI_BACKEND_B, or ExtensionController's
+#    activation call is compiled out and launching the app requests nothing --
+#    the symptom is a clean build, a bundle containing the new dext, and
+#    systemextensionsctl forever showing the old version.
 #  - The app must LAUNCH to request activation (OSSystemExtensionRequest).
 #  - An always-matched virtual dext only actually swaps at boot, so we reboot
 #    after activation; if the new version still isn't active (activation
@@ -83,7 +87,7 @@ echo "== build app (dext) + daemon on VM"
 # registration of the embedded FSKit extension, and the enablement entry is then
 # pruned at the next boot. See docs/backend-a-fskit-notes.md:552-569.
 ssh -o BatchMode=yes "$VM" "security unlock-keychain -p '$PASS' ~/Library/Keychains/login.keychain-db >/dev/null 2>&1;
-  cd ~/iSCSI/apps && xcodebuild -project iSCSIInitiator.xcodeproj -scheme 'iSCSI Initiator' -configuration Debug build 2>&1 | grep -E 'BUILD (SUCCEEDED|FAILED)' &&
+  cd ~/iSCSI/apps && xcodebuild -project iSCSIInitiator.xcodeproj -scheme 'iSCSI Initiator' -configuration Debug build SWIFT_ACTIVE_COMPILATION_CONDITIONS='\$(inherited) ISCSI_BACKEND_B' 2>&1 | grep -E 'BUILD (SUCCEEDED|FAILED)' &&
   cd ~/iSCSI && swift build -c release 2>&1 | tail -1 &&
   mkdir -p '/Applications/iSCSI Initiator.app' &&
   rsync -a --delete $DD/'iSCSI Initiator.app'/ '/Applications/iSCSI Initiator.app'/"
