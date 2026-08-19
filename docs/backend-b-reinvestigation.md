@@ -145,3 +145,115 @@ and it needs a rebuild — bump `CFBundleVersion`, or you will debug build 27.
   not run.
 - RMB=1 vs RMB=0 on our own device, the single-variable version of the table
   above.
+
+
+---
+
+# Part 2: macOS 26.6.2 — the mechanism found (2026-08-19, same day)
+
+The VM was updated to 26.6.2 (25G83) mid-investigation. The failure moved, and
+the move is what cracked it open.
+
+## How the symptom moved
+
+| | 26.6.1 (25G76) | 26.6.2 (25G83) |
+|---|---|---|
+| `newfs_apfs` on our device | EIO, 5/5 (that boot) | succeeds |
+| `mount_apfs` | — | succeeds |
+| first access after mount | (26.6.1: completed) | **blocks forever** |
+| everything after | — | blocks; box degrades to the familiar pileup |
+| APFS on an hdiutil RAM disk | works | works (verified clean-boot, same OS) |
+
+The wedge now arms at **mount**: mount_apfs's own checkpoint is the last I/O
+the device ever serves (its tail is SYNCHRONIZE CACHE + one 4 KiB write —
+the same signature the 26.6.1 architecture notes recorded for the first
+access). Immediately after mount returns, even fork/exec of new processes
+stalls — one victim stack runs `sandbox match_rootless → vnode_getattr →
+apfs_vnop_getattr → … → buf_biowait`, i.e. every process spawn does a sandbox
+getattr against the wedged volume, which is why the whole box dies.
+
+## The mechanism, captured
+
+Chain of instruments, each validated healthy-first (all in `scripts/dtrace/`):
+
+1. **The dext is healthy and idle through the wedge.** TEST UNIT READY
+   arrives every 3 s and is answered, all through the wedge; watchdog stats
+   stay clean. The docs' "the dext itself is stuck" hypothesis is **refuted**
+   on this OS. (The recurring `WaitForTask → kIOReturnBadArgument` errors are
+   the LUNRescan/Ping path's normal signature — they fire on healthy boots
+   too, and are NOT a wedge signal.)
+2. **Victims park in `buf_biowait ← nx_buf_bread`** — an APFS btree-node
+   read against the device vnode that never completes (off-CPU stack capture,
+   `wedge-owner.d`). The victim's read never becomes a SCSI command.
+3. **No live loop.** During the standing wedge the storage stack is silent;
+   the earlier-suspected "retry storm" was the mount burst itself
+   (`wedge-loop.d` per-tick rates: storm during newfs/mount, then zero).
+4. **The swallow, with a stack** (`wedge-zero.d`): during the mount
+   checkpoint, exactly **35 calls (reproducible across runs) to
+   `IOBreaker::getBreakSize` return 0**, all in the dext's kernel RPC
+   context, on this stack:
+
+       IOBreaker::getNextStage()
+       ← IOBlockStorageServices::AsyncReadWriteComplete
+       ← IOSCSIBlockCommandsDevice::AsyncReadWriteCompletion
+       ← … ← IOUserSCSIParallelInterfaceController::UserCompleteParallelTask
+
+   A request broken into stages completes a stage through our dext; the
+   breaker computes the NEXT stage's size as zero and cannot advance. On
+   26.6.1 that case completed the request with `kIOReturnIOError actual=0`
+   (the newfs EIO of Part 1). On 26.6.2 nothing is completed — **the request
+   is orphaned in-kernel**, and its issuer waits in `buf_biowait` forever.
+
+   RETRACTED mid-session reading, recorded on purpose: "the dext receives an
+   empty buffer and completes GOOD with 0 bytes." The stack supersedes it —
+   the zero-size stage is never dispatched; the dext never sees any of this.
+
+5. **Calibration:** in the same runs, the same call site returned ~16 KiB
+   break sizes 198 times with the same constraint arguments. So the zero is
+   geometry-dependent (specific stage offsets/buffers), not a constant
+   misconfiguration of every read. The raw argument slots captured by dtrace
+   were not decoded with confidence; do not build on any per-slot reading.
+
+## The one aberrant thing we report
+
+`iSCSIDext.cpp:355` sets `kIOMinimumHBADataAlignmentMaskKey = 1`. Family
+convention for byte-aligned data is an all-ones mask; a literal 1 is
+near-certainly wrong regardless of OS, and it is the only eccentric value in
+our constraint set (the registry confirms the rest publish exactly as
+intended: segment count 1, segment bytes 65536, block counts 65535).
+
+**Fix experiment (single variable):** change the mask to
+`0xFFFFFFFFFFFFFFFF`, rebuild (bump `CFBundleVersion`!), and re-run with
+`wedge-zero.d` armed. Success = zero ZERO lines AND first access, second
+access, raw read, `dkflush --write`, unmount all pass AND a second boot
+repeats it (this bug has per-boot history). If zeros persist, the next single
+variable is `alignment = 1` in `UserGetDMASpecification`; after that, stop
+and re-diagnose.
+
+Scope guard: this does **not** claim to solve the documented 26.6.1 wedge.
+The signature match (checkpoint tail, then silence) makes the same orphaning
+plausible there, but 26.6.1 is no longer testable on this rig —
+linked-but-unverified.
+
+## Instruments added in part 2 (all in `scripts/dtrace/`)
+
+- `wedge-owner.d` — every thread's last off-CPU stack keyed by thread
+  pointer; victims that park on turnstiles (invisible to `sched:::sleep`)
+  show up here.
+- `wedge-depth.d` — entry/return ladder from `nx_buf_bread` down to
+  `executeRequest`. Lesson learned: deblock/breakUp/IOMedia read/write leak
+  +1 per call (missing fbt returns), so balances scale with traffic and
+  cannot name a stuck function; rates and stacks can.
+- `wedge-loop.d` — per-tick rates + `getBreakSize` return distribution.
+- `wedge-zero.d` — full argument set + stack for every zero-size break.
+
+## Method notes (26.6.2 additions)
+
+- The wedge now arms so early that a probe process may fail to even spawn:
+  the trigger's `lsprobe` never issued one syscall. Arm tracers BEFORE
+  `newfs`, and treat mount itself as the dangerous step.
+- `sched:::sleep` misses turnstile parks entirely; `sched:::off-cpu` with
+  `stack()` keyed by `(uint64_t)curthread` is the reliable park-site capture.
+- `os_log` `%s` redaction (`<private>`) hid the dext's `buf=ok/none`
+  discriminator all session. Instrument with `%{public}s` for diagnostics.
+- The dext's dtrace `execname` is `me.herko.iSCSIIn` (16-char cap).

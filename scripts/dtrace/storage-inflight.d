@@ -52,12 +52,10 @@ fbt:com.apple.iokit.IOSCSIBlockCommandsDevice::entry,
 fbt:com.apple.iokit.IOSCSIParallelFamily::entry,
 fbt:mach_kernel:*IOUserServer*:entry,
 fbt:mach_kernel:*IOUserClient*:entry
-/execname == $$1/
+/execname == $$1 || execname == "mount_apfs" || execname == "newfs_apfs"/
 {
-	@bal[probemod, probefunc] = sum(1);
+	@bal[execname, probemod, probefunc] = sum(1);
 	@calls[probefunc] = count();
-	self->depth++;
-	@last[probefunc] = max(timestamp);
 }
 
 fbt:com.apple.iokit.IOStorageFamily::return,
@@ -66,17 +64,16 @@ fbt:com.apple.iokit.IOSCSIBlockCommandsDevice::return,
 fbt:com.apple.iokit.IOSCSIParallelFamily::return,
 fbt:mach_kernel:*IOUserServer*:return,
 fbt:mach_kernel:*IOUserClient*:return
-/execname == $$1/
+/execname == $$1 || execname == "mount_apfs" || execname == "newfs_apfs"/
 {
-	@bal[probemod, probefunc] = sum(-1);
-	self->depth--;
+	@bal[execname, probemod, probefunc] = sum(-1);
 }
 
 /* Where the trigger actually parks.  This is the direct answer, and it needs
  * no symbolication of kernel.release.vmapple: kext frames print
  * module-qualified and C++ names demangle with c++filt on the host. */
 sched:::sleep
-/execname == $$1/
+/execname == $$1 || execname == "mount_apfs"/
 {
 	@stk[stack(28)] = count();
 }
@@ -93,8 +90,8 @@ tick-5sec
 {
 	ticks++;
 	printf("\nMARK ===== TICK %d =====\n", ticks);
-	printf("MARK -- trigger in-flight balance: module func balance --\n");
-	printa("BAL %s %s %@d\n", @bal);
+	printf("MARK -- in-flight balance: exec module func balance --\n");
+	printa("BAL %s %s %s %@d\n", @bal);
 	printf("MARK -- trigger calls this tick (proves the trace is live) --\n");
 	printa("HOT %s %@d\n", @calls);
 	clear(@calls);
