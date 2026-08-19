@@ -292,6 +292,29 @@ Nothing downstream misbehaves, but a teardown that trips the recovery machinery
 several times in milliseconds is either wasted work or a sign the teardown order
 is wrong, and the death latch counts consecutive failures.
 
+## 8c. Backend B: the scratch reproducer no longer reaches the wedge
+
+Reopened 2026-08-19 on branch `driverkit-wedge-reinvestigation`; full record in
+`docs/backend-b-reinvestigation.md`.
+
+On dext build 27, `newfs_apfs` on the scratch disk now fails deterministically
+(5/5) with `failed to write superblock to block 0: 5`, so the format-mount-touch
+reproducer stops before it can wedge. That error is recorded in item "Still open
+#2" as *nondeterministic* and as something `newfs_apfs` on a bare whole device
+*does not* hit; both halves are false on this build.
+
+The dext answers all 315 tasks cleanly, truncation counters are zero, raw `dd`
+writes to the same block 0 succeed at every size from 512 B to 64 KiB, and
+`dkflush --write` passes all three ioctls. The EIO is manufactured above the
+driver, in the `IOBreaker` path we are on because we advertise a maximum
+segment count of 1.
+
+Leading hypothesis: `WriteCacheState = Yes`, which RMB=0 bought us when the
+flush gap was closed, turns on a barrier path our controller does not satisfy.
+An identical-geometry `hdiutil` RAM disk passes, but it is a DiskImages device
+rather than a SCSI controller, so that control does not isolate RMB. The
+single-variable test — our own device built both ways — is the next experiment.
+
 ## 9. Deferred
 
 - **Detach offers to eject** (built 2026-08-16, untested in the UI): Detach on
