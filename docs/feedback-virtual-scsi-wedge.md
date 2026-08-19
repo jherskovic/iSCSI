@@ -9,9 +9,10 @@ IOBreaker stage orphans the request (whole-system hang), and the only
 advertisement that avoids it silently loses user data
 
 **Area:** Storage / DriverKit (`SCSIControllerDriverKit`)
-**Platform:** macOS 26.6.1 (25G76), 26.6.2 (25G83), Apple Silicon VM
-(UTM / Apple Virtualization), SIP off. API surface confirmed unchanged in the
-macOS 27 SDK.
+**Platform:** Apple Silicon VM (UTM / Apple Virtualization), SIP off.
+Defect 1 measured on both macOS 26.6.1 (25G76) and 26.6.2 (25G83), with
+different outcomes on each — see below. Defect 2 measured on 26.6.2 only.
+API surface confirmed unchanged in the macOS 27 SDK.
 
 > **Rewritten 2026-08-19.** The previous draft reported "APFS wedges the block
 > layer" with the controller exonerated but no mechanism. The mechanism is now
@@ -76,7 +77,9 @@ machine.
 ### The mechanism, captured
 
 During the mount checkpoint, `IOBreaker::getBreakSize` returns **0** — 35
-times per run, reproducibly — on this stack:
+times per run, reproducibly (measured in the RAM-scratch configuration above,
+512-byte blocks; the count is a property of that geometry, not a universal
+figure) — on this stack:
 
 ```
 IOBreaker::getNextStage()
@@ -163,6 +166,16 @@ zeros, or whatever the extents held before.
 because `fcopyfile` surfaces the same error the pageout path swallows, which
 is a useful contrast — the identical bytes written with `dd` "succeed" and are
 lost.
+
+**Version scope, stated precisely.** Everything in this section was measured
+on 26.6.2. On 26.6.1 the same >16 KiB rejection surfaced *loudly* through the
+synchronous write path — `IOStorageSyncer::wait` and `dkreadwritecompletion`
+both returned `kIOReturnIOError` and `newfs_apfs` failed visibly at its
+superblock write. Whether the asynchronous cluster-pageout path also
+swallowed the error on 26.6.1, or whether the swallowing is itself new in
+26.6.2, is **untested** — the test rig was updated mid-investigation and
+26.6.1 is no longer available on it. If the swallowing is also new, then both
+defects in this report regressed in a single point release.
 
 ### What we measured
 
