@@ -88,7 +88,7 @@ echo "== build app (dext) + daemon on VM"
 # pruned at the next boot. See docs/backend-a-fskit-notes.md:552-569.
 ssh -o BatchMode=yes "$VM" "security unlock-keychain -p '$PASS' ~/Library/Keychains/login.keychain-db >/dev/null 2>&1;
   cd ~/iSCSI/apps && xcodebuild -project iSCSIInitiator.xcodeproj -scheme 'iSCSI Initiator' -configuration Debug build SWIFT_ACTIVE_COMPILATION_CONDITIONS='\$(inherited) ISCSI_BACKEND_B' 2>&1 | grep -E 'BUILD (SUCCEEDED|FAILED)' &&
-  cd ~/iSCSI && swift build -c release 2>&1 | tail -1 &&
+  cd ~/iSCSI && swift build -c release -Xswiftc -DISCSI_BACKEND_B 2>&1 | tail -1 &&
   mkdir -p '/Applications/iSCSI Initiator.app' &&
   rsync -a --delete $DD/'iSCSI Initiator.app'/ '/Applications/iSCSI Initiator.app'/"
 

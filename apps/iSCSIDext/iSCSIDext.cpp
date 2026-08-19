@@ -42,7 +42,7 @@
 // serve a RAM buffer from inside the dext, removing the daemon, the network,
 // the iSCSI target and the 4Kn block size in one step. If APFS wedges on that
 // too, the bug is in our SCSI emulation and the reproducer becomes tiny.
-#define ISCSI_DEXT_SCRATCH_DISK 1
+#define ISCSI_DEXT_SCRATCH_DISK 0
 
 // DIAGNOSTIC BUILD, not a shipping mode. Present the LUN as a FIXED disk
 // (RMB=0) that is ready from the moment the controller starts, with geometry

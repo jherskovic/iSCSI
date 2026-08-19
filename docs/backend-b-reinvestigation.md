@@ -387,3 +387,107 @@ whole option space: pre-chop and wedge, or don't and EIO). That ceiling is
 Apple's to lift (FB23814092's promised software-backend opt-in). Next
 experiments, in order: the iSCSI-backed 4Kn daemon path on v31, throughput
 against the 16 KiB/task economics, macOS 27.
+
+
+---
+
+# Part 5: the daemon path, and the trilemma (2026-08-19, evening)
+
+Part 3's "fixed" needs its asterisk written large. The wedge is gone, but on
+the same geometry v29 **silently loses file data**, and the constraint space
+admits no configuration that avoids both. This part is the record of how that
+was established, including the two days of false corruption leads.
+
+## The daemon path came up — and looked perfect
+
+`iscsictl dext-attach` against the on-VM `iscsi-target-sim` (4096-byte
+blocks, 1 GiB, volatile cache honouring FUA): disk appears, newfs, mount, the
+full probe ladder passes, 1 GiB block-stamped round-trip through the buffered
+device verifies **bit-exact** (112 MB/s write, 10.5 MB/s read). The transport
+— dext, shared ring, datamover, iSCSI, sim — is correct for everything that
+reaches it.
+
+## Then files lost their contents
+
+Writing real files and remounting produced what looked like corruption, and
+chased through every layer it is NOT corruption — nothing in the stack ever
+wrote a wrong byte anywhere. The finding:
+
+**Cluster pageouts larger than one page (16 KiB) fail with EIO before
+reaching the dext, and macOS swallows the failure.** The write path returns
+success, `sync` returns success, reads return the data (from page cache), and
+nothing is on the device. Only `fcntl(F_FULLFSYNC)` — and `fcopyfile`, which
+is why `cp` failed while `dd` "worked" — surfaces the EIO. The two-second
+canary:
+
+    fd = open(file on volume); write 30 MB; fcntl(fd, F_FULLFSYNC)
+    -> EIO on v29's constraints
+
+Established by tracing every write at the datamover (`ISCSI_TRACE_TASKS=1`,
+LBA + CRC32C per op): a clean-room run (fresh boot, fresh sim, virgin
+filesystem) writing 90 MB of files generated 270 MiB of write traffic — all
+of it metadata churn confined to LBAs 0–24,600. **The file data never became
+SCSI writes at all.** Small metadata writes (4–16 KiB, buf-layer) succeed,
+which is why the filesystem's structure is durable while file contents are
+not, and why the probe ladder — whose writes are tiny — passed everything.
+
+Independent confirmation from an innocent bystander: `mds_stores` (Spotlight,
+indexing the volume unasked) logs streams of "Previous write error" against
+it.
+
+## The false leads, recorded because they cost hours
+
+- **"Exactly 31,675 bytes differ in every file"** — an artifact of `cmp`,
+  whose mmap-based reads themselves fault against the same >16 KiB pagein
+  ceiling. The number was bit-identical across different random files, which
+  is impossible for a real content comparison; that impossibility was the
+  tell. On this device, **cmp/mmap-based tools are unreliable witnesses.**
+- **Reads through the filesystem are unreliable witnesses too**: after
+  remount they served page cache over never-written extents (looking
+  correct), and after `purge` they returned zeros. Positive and negative
+  results flip-flopped until raw-device reads and the datamover trace became
+  the only accepted evidence.
+- **"newfs under a live container"** — a real harness hazard on this rig
+  (`diskutil apfs deleteContainer` is itself broken by the large-write EIO),
+  but exonerated by the clean-room run reproducing the loss with no prior
+  container.
+- The APSB-magic bytes inside file extents that launched the corruption
+  theory were stale cache over unwritten extents, not misdirected writes.
+
+## The trilemma
+
+All three constraint families were built, deployed, and measured (builds
+27–32). Against the DriverKit DMA path's hard rule — one physical run per
+task, FB23814092, unchanged on macOS 26.6.2 — they exhaust the space:
+
+| advertisement | breaker behaviour | outcome |
+|---|---|---|
+| `segmentCount=1` (v27) | pre-chops everything to single runs | zero-byte stage at sub-block runs → **orphaned request, whole-box wedge** (26.6.2) or EIO (26.6.1) |
+| `segmentCount=32` (v29/31/32) | passes multi-run stages | DMA rejects >1 run pre-dispatch → pageout EIO swallowed → **silent file-data loss** |
+| byte-count caps (v30) | consumed but unpublished | breaks even `newfs` (superblock EIO) — **poison** |
+
+There is no fourth option an advertisement can express: a stage must be
+simultaneously never-zero and single-run, and at a sub-block physical run
+those requirements contradict. **Backend B cannot be made safe on current
+macOS from our side.** It needs Apple's software-backend opt-in
+(FB23814092) or the zero-break orphan fix — ideally both; this investigation
+now documents precisely why, with reproducers for each leg.
+
+## What v1-era conclusions survive
+
+- The parking decision was right, and stays. The flag stays off.
+- The wedge mechanism (part 2) and the fix knowledge (part 3) are real and
+  keep their value: any future revival starts at `segcount=32` + this page.
+- The FB draft must now make three claims, each with a reproducer: the
+  zero-break orphan (wedge), the one-run rejection (silent loss through the
+  pageout path — the strongest claim: **a stock macOS API path loses user
+  data with no error surfaced anywhere**), and the byte-count-key poisoning.
+- New canaries for any future run: `wedge-zero.d` (any ZERO line = wedge leg
+  is back) and the F_FULLFSYNC one-liner (EIO = loss leg is back).
+
+## Still untested
+
+- macOS 27 (a beta VM now exists at 192.168.0.51): whether either leg of the
+  trilemma changed. The whole rig deploys there unmodified in principle.
+- Whether FB23814092's promised opt-in shipped in any 26.x/27 SDK
+  (`SCSIControllerDriverKit` headers are worth a diff against 25.x).

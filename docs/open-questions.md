@@ -320,12 +320,18 @@ request, including every process spawn via sandbox's `vnode_getattr`.
 
 Fix (dext build 29): advertise `maxSegmentCount = 32`, so a break can span
 runs and the zero case is unreachable. Full probe ladder passes on two boots;
-zero-size breaks went 35 → 0. The earlier WriteCacheState hypothesis was
-wrong — RMB=0 only made the checkpoint (and thus the geometry) reachable.
-Still open: the iSCSI-backed 4Kn path with v29, large transfers vs
-FB23814092's rejection, macOS 27, and whether the 26.6.1-era wedge was the
-same orphaning (plausible, no longer testable). Full record:
-`docs/backend-b-reinvestigation.md`.
+zero-size breaks went 35 → 0.
+
+**But the fix trades the wedge for silent data loss** (same day, evening):
+with 32 segments advertised, cluster pageouts >16 KiB reach the DriverKit
+DMA path as multi-run stages, which it hard-rejects (FB23814092, one physical
+run per task) — and macOS swallows pageout EIO, so file writes "succeed",
+reads serve page cache, and nothing lands on the device. `F_FULLFSYNC` is the
+two-second canary (returns EIO). The constraint space is a closed trilemma —
+wedge (segcount=1), silent loss (segcount=32), newfs-poison (byte-count
+caps) — so **Backend B stays parked pending Apple**, now with reproducers
+for every leg. Untested: macOS 27 (beta VM exists). Full record:
+`docs/backend-b-reinvestigation.md` parts 2–5.
 
 ## 9. Deferred
 
