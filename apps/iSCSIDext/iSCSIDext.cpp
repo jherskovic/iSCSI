@@ -358,6 +358,14 @@ IMPL(iSCSIDext, UserInitializeController)
     // truncation logs), unlike the wedge.
     ok &= SetConstraint(constraints, kIOMaximumSegmentCountReadKey, 32, 32);
     ok &= SetConstraint(constraints, kIOMaximumSegmentCountWriteKey, 32, 32);
+    // Do NOT add kIOMaximumByteCount{Read,Write}Key here. Tried (build 30) to
+    // win back raw I/O >16 KiB, which the DMA path rejects pre-dispatch
+    // (FB23814092: one physical run per task, and a >16 KiB user buffer spans
+    // pages). The family strips the keys from what it publishes — no registry
+    // trace — but still consumes them, and with them set newfs_apfs failed
+    // its wipefs pass with EIO on a clean boot, where this exact
+    // configuration minus the keys passes. Raw I/O >16 KiB failing loudly is
+    // the acceptable cost; a formatted volume failing is not.
     ok &= SetConstraint(constraints, kIOMaximumSegmentByteCountReadKey, kISCSIMaxSegmentByteCount, 32);
     ok &= SetConstraint(constraints, kIOMaximumSegmentByteCountWriteKey, kISCSIMaxSegmentByteCount, 32);
     ok &= SetConstraint(constraints, kIOMinimumSegmentAlignmentByteCountKey, 1, 32);

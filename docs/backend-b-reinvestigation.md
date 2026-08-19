@@ -339,3 +339,51 @@ trip it is an open measurement, not settled here.
 - The app auto-activates the dext again (`.task { dext.activate() }` under
   `ISCSI_BACKEND_B`): activation had no remaining call site after the parking
   cleanup, so plain launch requested nothing.
+
+
+---
+
+# Part 4: the envelope, mapped (builds 30–31)
+
+## The raw-I/O ceiling v29 exposed
+
+With 32 segments advertised, raw character-device I/O fails at exactly one
+page: `dd` against `/dev/rdiskN` works at 16384 bytes and returns EIO
+instantly at 32768 — the request never reaches the dext. This is FB23814092
+in its native unit (one physical run per task; its "~4 KB per task" was
+Intel's page size, this is Apple Silicon's 16 KiB). v27 masked it: with
+`segmentCount = 1` advertised, the block layer's breaker pre-chopped raw I/O
+into single-run stages — which is also what made the zero-break wedge
+reachable. One advertisement cannot fix both; the DMA path's one-run rule is
+the hard wall.
+
+Consequences measured on v29/v31:
+- The filesystem path is unaffected (block-cache I/O stages ≤16 KiB anyway):
+  newfs, mount, use, unmount all pass, content verified — 1 MiB through the
+  buffered device round-trips bit-exact.
+- Raw `dd` above 16 KiB fails loudly. `diskutil apfs deleteContainer`'s wipe
+  pass hits it (error -69825 after an otherwise-successful erase — on v27
+  the same command wedged the whole box, so this is still a strict upgrade).
+- A burst of failed large raw writes can leave the media stale (subsequent
+  I/O returns 0 bytes instantly) — the old "Still open #2" re-probe
+  fragility, pre-existing, cleared by reboot.
+
+## Build 30: do not try to cap the byte count — measured, reverted
+
+Adding `kIOMaximumByteCount{Read,Write} = 16384` to the constraints dict was
+the obvious way to force ≤16 KiB staging for raw I/O too. The family strips
+the keys from everything it publishes (no registry trace on any node) — but
+still consumes them: with the keys set, `newfs_apfs` fails its wipefs pass
+with EIO on a clean boot, deterministically, where the identical
+configuration without them (v29/v31) passes. Reverted; the comment in
+`UserInitializeController` records it.
+
+## Where this leaves Backend B
+
+Build 31 = build 29's constraint set, re-validated end to end. The wedge
+that parked Backend B is fixed; the residual limitation is raw I/O >16 KiB
+failing loudly, which no constraint setting removes (builds 27–31 span the
+whole option space: pre-chop and wedge, or don't and EIO). That ceiling is
+Apple's to lift (FB23814092's promised software-backend opt-in). Next
+experiments, in order: the iSCSI-backed 4Kn daemon path on v31, throughput
+against the 16 KiB/task economics, macOS 27.
