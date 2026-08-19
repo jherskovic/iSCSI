@@ -414,7 +414,13 @@ chased through every layer it is NOT corruption — nothing in the stack ever
 wrote a wrong byte anywhere. The finding:
 
 **Cluster pageouts larger than one page (16 KiB) fail with EIO before
-reaching the dext, and macOS swallows the failure.** The write path returns
+reaching the dext, and macOS swallows the failure.** (Measured boundary:
+≤16 KiB per task passes, >16 KiB is rejected pre-dispatch. "One physical run
+per task" is the presumed mechanism from the FB23814092 reconnaissance, with
+one unexplained survivor: the buffer geometry that produced 35 zero-breaks
+passed cleanly under v29, which a strict one-run rule forbids unless
+`UserGetDataBuffer` bounces kernel buffers. State the measured boundary, not
+the mechanism, anywhere it matters.) The write path returns
 success, `sync` returns success, reads return the data (from page cache), and
 nothing is on the device. Only `fcntl(F_FULLFSYNC)` — and `fcopyfile`, which
 is why `cp` failed while `dd` "worked" — surfaces the EIO. The two-second
@@ -466,9 +472,13 @@ task, FB23814092, unchanged on macOS 26.6.2 — they exhaust the space:
 | `segmentCount=32` (v29/31/32) | passes multi-run stages | DMA rejects >1 run pre-dispatch → pageout EIO swallowed → **silent file-data loss** |
 | byte-count caps (v30) | consumed but unpublished | breaks even `newfs` (superblock EIO) — **poison** |
 
-There is no fourth option an advertisement can express: a stage must be
-simultaneously never-zero and single-run, and at a sub-block physical run
-those requirements contradict. **Backend B cannot be made safe on current
+No tried advertisement escapes it: a stage must be simultaneously never-zero
+and small enough for the DMA path, and at a sub-block physical run those
+requirements contradict. One knob was never tried: `maxTransferSize = 16384`
+(varied up to 2 MiB, never down), which could in principle force ≤one-page
+tasks everywhere — but even if it works it lands back on the ~16 KiB/task
+throughput ceiling that made Backend B uneconomic in the first place. Queued
+for the macOS 27 session. **Backend B cannot be made safe on current
 macOS from our side.** It needs Apple's software-backend opt-in
 (FB23814092) or the zero-break orphan fix — ideally both; this investigation
 now documents precisely why, with reproducers for each leg.
@@ -483,7 +493,15 @@ now documents precisely why, with reproducers for each leg.
   pageout path — the strongest claim: **a stock macOS API path loses user
   data with no error surfaced anywhere**), and the byte-count-key poisoning.
 - New canaries for any future run: `wedge-zero.d` (any ZERO line = wedge leg
-  is back) and the F_FULLFSYNC one-liner (EIO = loss leg is back).
+  is back) and the F_FULLFSYNC one-liner (EIO = loss leg is back). The
+  one-liner is the canary — `validate.sh` never gained that stage, and its
+  small writes are exactly what the loss leg does NOT catch.
+- Reproducer note: the committed tree now has `ISCSI_DEXT_SCRATCH_DISK 0`
+  (daemon mode, build 32). The part-2 wedge reproducer needs it flipped back
+  to 1 — and the wedge leg additionally needs `maxSegmentCount` returned
+  to 1, since the committed constraints are the v29 set.
+- The v30 "poison" leg rests on two failing boots against one exact-config
+  passing baseline — adequate here, too thin to lean on in the FB filing.
 
 ## Still untested
 
