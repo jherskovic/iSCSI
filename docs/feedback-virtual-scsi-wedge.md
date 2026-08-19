@@ -12,7 +12,8 @@ advertisement that avoids it silently loses user data
 **Platform:** Apple Silicon VM (UTM / Apple Virtualization), SIP off.
 Defect 1 measured on both macOS 26.6.1 (25G76) and 26.6.2 (25G83), with
 different outcomes on each — see below. Defect 2 measured on 26.6.2 only.
-API surface confirmed unchanged in the macOS 27 SDK.
+Both defects re-confirmed on macOS 27.0 beta (26A5416b), unchanged; API
+surface also unchanged in the macOS 27 SDK.
 
 > **Rewritten 2026-08-19.** The previous draft reported "APFS wedges the block
 > layer" with the controller exonerated but no mechanism. The mechanism is now
@@ -246,7 +247,10 @@ driver-side per-operation trace are trustworthy witnesses.
 - The software-backend opt-in signalled in FB23814092. The
   `SCSIControllerDriverKit` API surface in the macOS 27 SDK is byte-identical
   to 25.5 (same methods, same keys, same constants), so as of that SDK it has
-  not shipped.
+  not shipped — and both defects above reproduce identically on a macOS 27.0
+  beta (26A5416b): the same zero-size breaks with the same argument tuple and
+  the same whole-machine hang, the same `F_FULLFSYNC` EIO with the same exact
+  16 KiB boundary.
 
 ## Note on the configuration
 

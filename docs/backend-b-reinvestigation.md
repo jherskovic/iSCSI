@@ -503,10 +503,54 @@ now documents precisely why, with reproducers for each leg.
 - The v30 "poison" leg rests on two failing boots against one exact-config
   passing baseline — adequate here, too thin to lean on in the FB filing.
 
+## macOS 27: nothing changed — both legs reproduce (2026-08-19)
+
+Tested on a macOS 27.0 beta VM (build 26A5416b, kernel xnu-13432.1.9,
+`RELEASE_ARM64_VMAPPLE`) at 192.168.0.51, with the dext built on the 26.6.2
+box against the DriverKit 25.5 SDK and the app bundle copied over.
+
+| | macOS 26.6.2 | macOS 27.0 beta |
+|---|---|---|
+| zero-size breaks per run (`segcount=1`, scratch) | 35 | **33** |
+| first access after mount | blocks forever | **blocks forever** |
+| second access, raw read | block | **block** |
+| `F_FULLFSYNC` after 30 MB (`segcount=32`) | EIO | **EIO** |
+| `cp` onto the volume | `fcopyfile` EIO | **`fcopyfile` EIO** |
+| content across unmount/remount | lost | **lost** |
+| raw write ladder | 16 KiB ok, 32 KiB EIO | **16 KiB ok, 32 KiB EIO** |
+| `SCSIControllerDriverKit` API surface | — | **byte-identical to 25.5** |
+
+The zero-break argument tuple is character-for-character the same
+(`maxBlkR=65535 maxByteW=65536 maxSegR=1 maxSegByte=512`), and the 16 KiB
+boundary is exact on both. The count differing 35 → 33 is buffer geometry,
+not a behaviour change.
+
+**So the trilemma survives macOS 27 intact.** Both defects, and the DMA
+limitation underneath them, are unchanged from 26.6.2 through the current 27
+beta, and the API offers nothing new to work with.
+
+### Deployment findings for macOS 27 (worth keeping)
+
+- **Neither `systemextensionsctl developer on` nor disabling Gatekeeper was
+  needed.** With SIP off plus `boot-args=amfi_get_out_of_my_way=0x1`, an
+  Apple-Development-signed dext copied in from another machine activated and
+  ran. Both of those commands also *cannot* be run over ssh — they fail with
+  `AuthorizationCreate failed: no user interaction was possible` and a
+  System-Settings prompt respectively — so not needing them matters.
+- A dext built against the **DriverKit 25.5 SDK runs on macOS 27** unchanged;
+  no rebuild against the 27 SDK was required.
+- `open` on an already-running app does **not** re-request activation (the
+  request is made from the app's launch-time `.task`). Kill the app first, or
+  sysextd logs only `list` calls and the staged version never advances —
+  which looks exactly like a refused upgrade.
+- The `IOSCSIParallelFamily` kext still is not loaded at boot on 27;
+  `kmutil load -b com.apple.iokit.IOSCSIParallelFamily` is still required
+  each boot.
+
 ## Still untested
 
-- macOS 27 (a beta VM now exists at 192.168.0.51): whether either leg of the
-  trilemma changed. The whole rig deploys there unmodified in principle.
+- Whether the *pageout swallowing* specifically (as opposed to the >16 KiB
+  rejection) predates 26.6.2 — see the Feedback draft's version-scope note.
 - ~~Whether FB23814092's promised opt-in shipped in any 26.x/27 SDK~~ —
   **answered, no.** The `SCSIControllerDriverKit` API surface in
   DriverKit27.0.sdk (Xcode-beta) is byte-identical to DriverKit25.5.sdk:
