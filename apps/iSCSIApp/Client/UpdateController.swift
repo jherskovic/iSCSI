@@ -4,25 +4,14 @@
 //
 //  **An update replaces the app bundle. If a LUN is attached when that happens,
 //  the FSKit extension serving it is replaced underneath a live filesystem.**
-//  That is not an inconvenience, it is data loss — a volume the user is writing
-//  to loses the process answering its reads and writes.
+//  That is not an inconvenience, it is data loss.
 //
 //  So installation is postponed while anything is attached, and automatic
-//  installation is off entirely. The cost is that updates land later; the
-//  alternative is an app that can corrupt a volume overnight while nobody is
-//  watching, which is not a trade worth making for a faster update cadence.
+//  installation is off entirely. The cost is that updates land later.
 //
 //  Nothing here handles the *post*-update repair. It does not need to: replacing
 //  the bundle drops the extension's registration, and the setup machine
 //  re-checks every condition on every launch — a Sparkle relaunch is a launch.
-//  Verified in the field when 0.1.3 landed over 0.1.2 and the Register button
-//  fixed exactly that. See docs/daemon-registration.md.
-//
-//  Postponing correctly is only half the job. The first field report of this
-//  working was "clicking Install and Relaunch does nothing" — which is exactly
-//  what refusing looks like from the outside, and is indistinguishable from a
-//  broken updater. Sparkle's own window closes and its UI has nothing more to
-//  say, so anything the user learns has to come from here.
 //
 
 import AppKit

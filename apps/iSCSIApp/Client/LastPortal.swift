@@ -6,10 +6,6 @@
 //  address again, and an iSCSI portal address is the kind of thing people look
 //  up rather than remember.
 //
-//  UserDefaults rather than the daemon's TargetStore: this is a UI convenience
-//  belonging to whoever is sitting at the machine, not configuration the daemon
-//  needs, and it must not end up in a file that boot-time code reads.
-//
 
 import Foundation
 

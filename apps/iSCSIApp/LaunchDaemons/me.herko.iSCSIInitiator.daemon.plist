@@ -3,10 +3,6 @@
 <!--
   The LaunchDaemon for iscsid, registered by SMAppService.daemon(plistName:).
 
-  This replaces two files that had drifted apart — packaging/ and
-  apps/Resources/ each had one, disagreeing about Program vs ProgramArguments
-  and about log paths, and both hardcoding /usr/local/libexec/iscsid. There is
-  now exactly one, it lives in the bundle, and CI asserts that.
 
   Three rules this file has to obey, each of which fails silently if broken:
 

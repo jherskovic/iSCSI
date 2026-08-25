@@ -25,10 +25,7 @@ struct ISCSIInitiatorApp: App {
                 Button("Refresh") { Task { await model.refresh() } }
                     .keyboardShortcut("r")
             }
-            // Directly under "About iSCSI Initiator", which is where every Mac
-            // app puts this and therefore the first place anyone looks. It used
-            // to exist only in the menu bar popover, so a user with the window
-            // open had to go hunting in the status bar for it.
+
             CommandGroup(after: .appInfo) {
                 AppMenuUpdatesItem(updates: model.updates)
             }
@@ -57,10 +54,7 @@ struct MainWindow: View {
     @ObservedObject var model: AppModel
     @State private var section: Section? = .targets
     @State private var isUninstalling = false
-    /// Auto-selection happens once per window, never again. Re-running it on
-    /// every foreground would yank the user off whatever they were reading
-    /// each time they switched apps — which is exactly when they are most
-    /// likely to be reading something.
+    /// Auto-selection happens once per window, never again. 
     @State private var hasChosenLanding = false
 
     enum Section: String, CaseIterable, Identifiable {

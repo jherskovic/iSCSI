@@ -2,17 +2,10 @@
 //  AppModel.swift
 //  The state the whole app renders, and the only place that mutates it.
 //
-//  Two rules worth stating because they are easy to erode:
-//
 //  Nothing here polls. Every refresh is triggered by something that actually
 //  happened — a user action, returning to the foreground, or an operation
 //  completing. A 2-second timer would be wrong nearly every time it fired and
 //  would keep a root daemon's XPC service busy for a machine sitting idle.
-//
-//  Nothing here is gated on optimism. `isReady` comes from the setup checks, and
-//  the Connect affordances are disabled until they pass, because an attach that
-//  fails for a missing prerequisite produces an error about mounting when the
-//  actual problem is that a background service was never approved.
 //
 
 import Combine
@@ -107,8 +100,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Refreshing
-
     /// The one entry point. Called at launch and on every return to the
     /// foreground, because all of this can change without the app being told:
     /// the user can eject in Finder, the daemon can be denied in System
@@ -116,8 +107,6 @@ final class AppModel: ObservableObject {
     func refresh() async {
         await setup.checkAll()
         guard setup.isReady else {
-            // Without a daemon there is nothing to ask, and asking produces
-            // errors that describe the symptom rather than the cause.
             sessions = []
             return
         }
@@ -129,8 +118,6 @@ final class AppModel: ObservableObject {
             present(error, doing: "Reading your targets")
         }
     }
-
-    // MARK: - Targets
 
     func save(_ target: TargetRecord, secret: String?, mutualSecret: String? = nil) async {
         do {
@@ -175,20 +162,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Attach / detach
-
     func attach(_ target: TargetRecord) async {
         busy.insert(target.id)
         defer { busy.remove(target.id) }
         do {
             // Check reachability and credentials before mounting, without
             // holding a session.
-            //
-            // It cannot be a login/logout pair from here: handles belong to the
-            // XPC connection that created them, and this client opens a fresh
-            // connection per call, so the logout would arrive on a connection
-            // that does not own the handle and be refused. That leaked one
-            // session per attach. testConnection does both inside the daemon.
             //
             // Worth doing at all because it is the only place a wrong secret or
             // an unreachable portal is reported as itself. Once the mount is
@@ -247,8 +226,6 @@ final class AppModel: ObservableObject {
         guard let path = row.volumePath else { return }
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
     }
-
-    // MARK: - Errors
 
     /// Keeps the recovery suggestion the daemon attached. That text is the
     /// difference between "check the CHAP secret for this target" and a user

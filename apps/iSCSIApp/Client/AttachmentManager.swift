@@ -7,8 +7,8 @@
 //  deliberately, including the mountpoint tag, so mounts made by the bash era
 //  are still recognised by this code.
 //
-//  It lives in the app rather than the daemon because the whole path turned out
-//  to be unprivileged and user-context: `mount -F` resolves the module through
+//  It lives in the app rather than the daemon because the whole path is
+//  unprivileged and user-context: `mount -F` resolves the module through
 //  the *user's* fskit_agent — a root daemon's lookup goes to fskitd, which holds
 //  no third-party modules — and neither the mount nor `hdiutil attach` needs
 //  root. Measured; see the R2 section of docs/backend-a-fskit-notes.md.
@@ -25,7 +25,6 @@ import iSCSIKit
 
 struct Attachment: Identifiable, Equatable, Sendable {
     var id: String { tag }
-    /// sha256(portal|target|lun) truncated — see `MountpointTag`.
     let tag: String
     let targetID: String
     /// Where the FSKit volume is mounted; the LUN appears inside as lun0.img.
@@ -116,12 +115,6 @@ final class AttachmentManager: ObservableObject {
         }
     }
 
-    // No deinit removing the observer. Swift 6 forbids a nonisolated deinit
-    // touching main-actor state, and there is nothing to clean up in practice:
-    // this object lives for the life of the app, and the closure holds self
-    // weakly, so were it ever deallocated the observer would fire into nothing
-    // rather than resurrect it.
-
     /// A volume we put there has gone. Take down what is left underneath it.
     private func volumeDisappeared(at path: String) {
         guard let orphan = attachments.first(where: { $0.volumePaths.contains(path) })
@@ -140,7 +133,6 @@ final class AttachmentManager: ObservableObject {
             .appendingPathComponent(tag)
     }
 
-    // MARK: - Attach
 
     func attach(_ target: TargetRecordView) async throws -> Attachment {
         let portal = MountpointTag.portal(host: target.host, port: target.port)
@@ -229,7 +221,6 @@ final class AttachmentManager: ObservableObject {
         return attachment
     }
 
-    // MARK: - Detach
 
     /// Innermost first: the filesystem, then the raw device, then the FSKit
     /// volume that was serving the file underneath it. Detaching the outer
@@ -268,9 +259,7 @@ final class AttachmentManager: ObservableObject {
     /// Rebuild the list from what is actually mounted.
     ///
     /// Runs at launch and whenever the app returns to the foreground, because
-    /// the user can eject in Finder and nothing tells us. The plan had the
-    /// daemon reconciling this across restarts; app-side it is simply the same
-    /// every-launch check the setup machine already does.
+    /// the user can eject in Finder and nothing tells us.
     func reconcile(targets: [TargetRecordView]) {
         var found: [Attachment] = []
         for target in targets {
@@ -334,8 +323,7 @@ final class AttachmentManager: ObservableObject {
     /// Asks hdiutil, not `mount | grep <device>`. APFS mounts a *synthesized*
     /// container with a different disk number — disk8 becomes disk9s1 — so
     /// matching on the device number reports "not mounted" for a perfectly
-    /// healthy volume. The bash version learned this the hard way and the
-    /// comment survives at iscsi-attach.sh:77.
+    /// healthy volume. 
     private static func mountPoints(ofDevice device: String) -> [String] {
         guard let result = try? run("/usr/bin/hdiutil", ["info", "-plist"]),
               result.status == 0,
@@ -358,10 +346,7 @@ final class AttachmentManager: ObservableObject {
     }
 
     /// Parse `hdiutil attach -plist`.
-    ///
-    /// The bash version used `awk 'NR==1'` on human-readable output, which is
-    /// whitespace- and locale-dependent and silently wrong the moment hdiutil
-    /// reorders a column.
+
     private static func parseAttachPlist(_ data: Data) -> (device: String?, volumes: [String]) {
         guard let plist = try? PropertyListSerialization.propertyList(
             from: data, format: nil) as? [String: Any],
