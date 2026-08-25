@@ -3,13 +3,9 @@ import Foundation
 import Network
 import iSCSIKit
 
-/// A TCP listener that serves one `MockTarget` per accepted connection.
-///
-/// Two jobs. In tests it binds an ephemeral port so the initiator drives a real
-/// `NetworkTransport` over an actual socket instead of the in-memory pipe. In
-/// the standalone simulator it binds a fixed port and stays up for hours, which
-/// is why it tracks live connections: `drop` has to be able to reach out and
-/// kill them.
+/// A TCP listener serving one `MockTarget` per accepted connection: an
+/// ephemeral port for socket-level tests, a fixed port for the standalone
+/// simulator. Tracks live connections so `drop` can kill them.
 public actor MockTargetServer {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "mocktarget.listener")

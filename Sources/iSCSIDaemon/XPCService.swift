@@ -17,18 +17,11 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 
     private let targets: TargetStore
 
-    /// Handles created on *this* connection.
-    ///
-    /// The registry in DaemonCore is one flat namespace of "s1", "s2", … shared
-    /// by every client, so any connected process could log out, read from, or
-    /// write to a session it did not open, by guessing a two-character string.
-    /// The code-signing requirement means only our own app and extension can
-    /// connect, which makes it a correctness bug rather than a way in — but both
-    /// of those are connected at the same time, so it is reachable in normal
-    /// operation rather than theoretical.
-    ///
-    /// A lock rather than an actor: this is consulted on every read and write,
-    /// and the object is created per connection so contention is nil.
+    /// Handles created on *this* connection. DaemonCore's registry is one
+    /// flat namespace shared by every client, so without this check any
+    /// connected process could use a session it did not open — and the app
+    /// and extension are connected at the same time. A lock, not an actor:
+    /// consulted on every read/write, per-connection so contention is nil.
     private let owned = OSAllocatedUnfairLock(initialState: Set<String>())
 
     public init(core: DaemonCore, targets: TargetStore = TargetStore()) {
@@ -36,12 +29,9 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         self.targets = targets
     }
 
-    /// Readahead budget per owned handle, resolved once at login.
-    ///
-    /// Resolved at login rather than looked up on demand for the same reason
-    /// `FlushPolicy` is: a session's policy should not change under it because
-    /// the user edited the target while it was attached. Editing takes effect
-    /// on the next attach, which is what the editor says.
+    /// Readahead budget per owned handle, resolved once at login (like
+    /// `FlushPolicy`): editing a target takes effect on the next attach, not
+    /// under a live session.
     private let budgets = OSAllocatedUnfairLock(initialState: [String: Int]())
 
     private func claim(_ handle: String, readaheadBudget: Int) {
@@ -78,24 +68,14 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
-    /// Resolve a portal to the target the user configured, and to the credentials
-    /// that belong to *that* target.
-    ///
-    /// This is the whole of the authorization model for login, so it is worth
-    /// being explicit about what each step prevents.
-    ///
-    /// - Refusing an unknown portal means the daemon will only ever authenticate
-    ///   to targets the user set up. Previously any caller could name any host,
-    ///   which mattered because `mount(8)` needs no root: an unprivileged user
-    ///   could mount `iscsi://any-host/any-iqn/0` and borrow the machine's
-    ///   initiator identity for a LUN that was ACL'd to this host.
-    /// - Taking the CHAP identity from the record, keyed by the record's id,
-    ///   means a client cannot choose which stored secret is spent, nor where it
-    ///   is sent.
-    /// - Throwing when a configured username has no secret is the fail-closed
-    ///   half. A nil credential is not a neutral value here: it makes
-    ///   `LoginStateMachine.start()` offer `AuthMethod=None`, so "we could not
-    ///   find the secret" used to mean "log in with no authentication at all".
+    /// Resolve a portal to the configured target and *that* target's
+    /// credentials — the whole authorization model for login:
+    /// - an unknown portal is refused, so the daemon only authenticates to
+    ///   targets the user set up (`mount(8)` needs no root);
+    /// - the CHAP identity comes from the record, so a client cannot choose
+    ///   which stored secret is spent or where it goes;
+    /// - a configured username with no secret throws, because a nil credential
+    ///   makes `LoginStateMachine.start()` offer `AuthMethod=None`.
     private func credentials(host: String, port: UInt16, targetIQN: String, lun: UInt64)
         async throws -> (record: TargetRecord, chap: CHAP.Credentials?) {
         guard let record = await targets.record(host: host, port: port,
@@ -110,18 +90,10 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
             throw DaemonAuthError.secretMissing(user: user, target: record.displayName)
         }
         var chap = CHAP.Credentials(name: user, secret: secret)
-        // Mutual CHAP if — and only if — the user configured both halves. A
-        // mutual username with no stored secret is a half-finished setup, and
-        // silently continuing one-way would leave the target unauthenticated
-        // while the UI implied otherwise.
-        //
-        // Gated on CHAP.mutualIsOffered, which is currently false — see the
-        // note there. This is the half that matters for a record saved while it
-        // was still on: the UI can be hidden, but a stored mutual user would
-        // otherwise keep making us challenge a target that answers 0x02/0x01,
-        // and with the fields gone there would be nothing to clear it with. The
-        // record and the keychain item are left alone, so turning the flag back
-        // on restores the setup exactly.
+        // Mutual CHAP only when both halves are configured — a mutual user
+        // with no secret throws rather than silently going one-way. Gated on
+        // CHAP.mutualIsOffered (see the note there); the record and keychain
+        // item are left intact so re-enabling the flag restores the setup.
         if CHAP.mutualIsOffered, let mutualUser = record.mutualChapUser, !mutualUser.isEmpty {
             guard let mutualSecret = KeychainStore.chapSecret(for: record.id, kind: .mutual) else {
                 throw DaemonAuthError.mutualSecretMissing(user: mutualUser,
@@ -187,10 +159,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 
     public func readaheadBudget(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
         if let denied = checkOwned(session) { reply(0, denied); return }
-        // Resolved at login, so this cannot fail for an owned handle. 0 means
-        // nothing is pinned and the extension should adapt, which is also the
-        // right answer if an entry were somehow missing: failing the call would
-        // fail a mount over a tuning parameter.
+        // 0 means nothing pinned, adapt — also the right answer for a missing
+        // entry; failing a mount over a tuning parameter would be worse.
         let bytes = budgets.withLock { $0[session] } ?? 0
         reply(NSNumber(value: bytes), nil)
     }
@@ -226,15 +196,13 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
-    /// Deliberately synchronous and stateless: it must answer even when the
-    /// session engine is wedged, because "the daemon is alive but its sessions
-    /// are stuck" and "the daemon is not running" need different instructions
-    /// and this is the call that tells them apart.
+    /// Synchronous and stateless on purpose: it must answer even when the
+    /// session engine is wedged — this call is what tells "daemon alive but
+    /// stuck" apart from "daemon not running".
     public func daemonInfo(reply: @escaping (Data?, Error?) -> Void) {
-        // Bundle.main for an executable inside <app>/Contents/MacOS resolves to
-        // the containing .app, so the daemon reports the version of the app it
-        // shipped with — exactly what the version-mismatch check needs. Running
-        // loose from `swift run` there is no Info.plist, hence "dev".
+        // Bundle.main inside <app>/Contents/MacOS resolves to the containing
+        // .app, so this reports the shipping app's version; loose `swift run`
+        // has no Info.plist, hence "dev".
         let info = Bundle.main.infoDictionary
         let relaxed: Bool
         #if DEBUG
@@ -256,22 +224,18 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     }
 
     public func refreshFSKitEnablement(reply: @escaping (Error?) -> Void) {
-        // killall, not `launchctl kickstart -k`. SIP forbids launchctl job
-        // control on Apple's daemons — "150: Operation not permitted while
-        // System Integrity Protection is engaged" — while signalling a process
-        // as root is allowed, and launchd respawns it on demand. Measured, see
-        // docs/backend-a-fskit-notes.md.
-        //
-        // The argument list is a literal. Nothing from the client reaches it.
+        // killall, not `launchctl kickstart -k`: SIP forbids launchctl job
+        // control on Apple's daemons, while signalling as root is allowed and
+        // launchd respawns on demand (docs/backend-a-fskit-notes.md). The
+        // argument list is a literal; nothing from the client reaches it.
         let killall = Process()
         killall.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
         killall.arguments = ["fskitd"]
         do {
             try killall.run()
             killall.waitUntilExit()
-            // killall exits 1 when nothing matched. That is not a failure here:
-            // fskitd is on-demand, so "not running" means the next mount starts
-            // a fresh one that reads the file we just wrote — which is the goal.
+            // Exit 1 (nothing matched) is fine: fskitd is on-demand, and the
+            // next mount starts a fresh one that reads the new file.
             DaemonLog.lifecycle("refreshFSKitEnablement: killall fskitd exited "
                                 + "\(killall.terminationStatus)")
             reply(nil)
@@ -314,10 +278,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         Task {
             do {
                 try await targets.delete(id: id)
-                // Remove the secrets with the target they belonged to — both
-                // halves. Leaving an orphaned keychain item behind means a later
-                // target that reuses the id silently inherits someone else's
-                // credentials.
+                // Both secret halves go with the target: an orphaned keychain
+                // item would be inherited by a later target reusing the id.
                 KeychainStore.deleteAllSecrets(for: id)
                 box.value(nil)
             } catch {
@@ -370,16 +332,11 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             do {
-                // The credentials actually reach DaemonCore here. The older
-                // discover() accepted a chapUser and dropped it on the floor,
-                // which made an authenticated portal undiscoverable from the app.
-                //
-                // Unlike login, this legitimately takes a secret from the caller:
-                // discovery happens before a target is saved, so there is no
-                // record to resolve against and nothing to look up. It is
-                // validated on the way through, so a too-short secret is refused
-                // here rather than turning into an "authentication failure" from
-                // the portal that says nothing about why.
+                // Unlike login, this legitimately takes a secret from the
+                // caller: discovery happens before a target is saved, so there
+                // is no record to resolve against. Validated here so a bad
+                // secret fails with a reason, not the portal's bare
+                // "authentication failure".
                 let chap: CHAP.Credentials? = try {
                     guard let chapUser, let chapSecret else { return nil }
                     return try CHAP.Credentials.validated(name: chapUser, secret: chapSecret)
@@ -411,25 +368,19 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             do {
-                // Same resolution as login, deliberately. This is the call the
-                // UI makes to answer "are these credentials right?", so if it
-                // resolved credentials any differently from the real thing it
-                // would be validating something the user never runs. It used to:
-                // both used a lookup that always missed, so this reported
-                // success for a session that had authenticated with nothing.
+                // Same credential resolution as login, deliberately: this is
+                // the UI's "are these credentials right?" probe, and resolving
+                // any differently would validate something the user never runs.
                 let (_, chap) = try await self.credentials(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value)
-                // Unlike `login`, the record's flush policy is deliberately not
-                // passed: a probe reads one capacity and logs out, so it stays
-                // write-through rather than spinning up a flush timer for a
-                // session that lives milliseconds.
+                // No flush policy: a probe lives milliseconds and stays
+                // write-through rather than spinning up a flush timer.
                 let handle = try await core.login(
                     host: host, port: port.uint16Value, targetIQN: targetIQN,
                     lun: lun.uint64Value, chap: chap)
-                // Always close it, including when reading the capacity fails.
-                // A probe that leaves a session behind is worse than no probe:
-                // it costs the target a connection for every failed attempt.
+                // Always close, even when reading the capacity fails: a probe
+                // must not leave a session behind.
                 defer { Task { try? await self.core.logout(handle) } }
 
                 let (blockSize, blockCount) = try await core.capacity(handle)
@@ -446,10 +397,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     public func removeAllData(reply: @escaping (Error?) -> Void) {
         let box = SendableBox(reply)
         Task {
-            // Secrets first, and one per target rather than a blanket wipe: the
-            // list of what to delete lives in the file we are about to remove,
-            // so doing it the other way round leaves keychain items nothing
-            // knows the names of.
+            // Secrets first: the list of what to delete lives in the file we
+            // are about to remove.
             for target in await targets.all() {
                 KeychainStore.deleteAllSecrets(for: target.id)
             }
@@ -484,9 +433,8 @@ public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unch
     }
 
     public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        // Before resume(), and before anything is exported. Once the connection
-        // is resumed the peer can start calling, so a check made afterwards is
-        // a race it can win.
+        // Before resume() and before anything is exported: once resumed the
+        // peer can start calling, so a later check is a race it can win.
         guard ClientAuthorization.authorize(connection) else { return false }
 
         let iface = NSXPCInterface(with: ISCSIDaemonProtocol.self)

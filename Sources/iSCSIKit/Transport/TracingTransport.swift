@@ -53,21 +53,10 @@ public final class TracingTransport: ConnectionTransport, @unchecked Sendable {
         }
     }
 
-    /// Keys whose values must never reach a log.
-    ///
-    /// Login-phase PDUs are text PDUs and digests are off during login, so this
-    /// decoder used to print the whole CHAP exchange verbatim in both
-    /// directions. `CHAP_R` is not the secret, but it is `MD5(id ‖ secret ‖
-    /// challenge)`, and it was printed next to the `CHAP_I` and `CHAP_C` that
-    /// complete the triple — which is the entire input an offline cracker needs.
-    ///
-    /// The realistic path was not an attacker on the machine. It was a user
-    /// hitting a login problem, being told to run with `--debug`, and attaching
-    /// the output to a bug report.
-    ///
-    /// Redaction lives here rather than at call sites because this type is
-    /// `public` and reusable, and a redaction rule that each caller has to
-    /// remember is one that some caller will not.
+    /// Keys whose values must never reach a log: `CHAP_R` beside `CHAP_I` and
+    /// `CHAP_C` is the full input for an offline attack on the secret, and the
+    /// realistic leak is a `--debug` trace pasted into a bug report. Redaction
+    /// lives here, not at call sites, so no caller can forget it.
     private static let sensitiveKeys: Set<String> = [
         "CHAP_R", "CHAP_C", "CHAP_N", "CHAP_I", "CHAP_A",
     ]

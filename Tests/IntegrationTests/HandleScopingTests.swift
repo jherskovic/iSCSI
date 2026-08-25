@@ -1,15 +1,10 @@
 //
 //  HandleScopingTests.swift
 //
-//  DaemonCore's handle namespace is one flat map of "s1", "s2", … shared by
-//  every client. Without per-connection ownership, any connected process could
-//  log out, read from, or write to a session it never opened by guessing a
-//  two-character string.
-//
-//  The code-signing requirement keeps strangers out, so this is a correctness
-//  bug rather than a way in — but the app and the FSKit extension are both
-//  connected at the same time in normal operation, and the extension's session
-//  is the one carrying the user's filesystem.
+//  DaemonCore's handle namespace is one flat map shared by every client;
+//  without per-connection ownership, any connected process could reach a
+//  session it never opened — and the extension's session is the one
+//  carrying the user's filesystem.
 //
 
 import Foundation
@@ -21,17 +16,13 @@ import MockTarget
 @Suite("Per-connection session ownership")
 struct HandleScopingTests {
 
-    /// Two services over one core is exactly the shipping arrangement: the
-    /// listener delegate builds a fresh ISCSIXPCService per connection, and the
-    /// app and the extension each get their own.
-    /// Same harness shape as DaemonCoreTests: a MemoryPipe per connection with
-    /// a MockTarget on the far end, all sharing one RAMDisk.
+    /// Two services over one core is the shipping arrangement: one fresh
+    /// ISCSIXPCService per XPC connection.
     private static let targetIQN = "iqn.2026-08.test.example:disk0"
 
-    /// The daemon now resolves credentials from its own saved records and
-    /// refuses portals it has none for, so every service in these tests needs a
-    /// store that knows about the mock target. A temp file, not the default
-    /// `/Library/Application Support` path.
+    /// Login resolves credentials from saved records and refuses unknown
+    /// portals, so the store must know the mock target. Temp file, not
+    /// `/Library/Application Support`.
     private func makeCore() async throws -> (DaemonCore, HarnessBox, TargetStore) {
         let disk = RAMDisk()
         let harnesses = HarnessBox()
@@ -97,8 +88,7 @@ struct HandleScopingTests {
         #expect(result.1 != nil, "reading someone else's LUN must be refused")
     }
 
-    /// The whole-LUN overwrite. This is the one that made the missing check
-    /// worth fixing rather than noting.
+    /// The whole-LUN overwrite.
     @Test("a stranger cannot write to a session it did not open")
     func writeIsScoped() async throws {
         let (core, _harness, store) = try await makeCore()
@@ -166,10 +156,9 @@ struct HandleScopingTests {
     }
 }
 
-/// The design conflict that produced a leak in the field, pinned so it cannot
-/// come back: handles are owned by the connection that created them, and the
-/// app's client opens a connection per call. A login/logout pair from that
-/// client therefore cannot work, and `testConnection` exists because of it.
+/// Pinned design conflict: handles are owned by their creating connection,
+/// and the app's client opens a connection per call — so a login/logout pair
+/// from the app cannot work, and `testConnection` exists because of it.
 @Suite("Probing without holding a session")
 struct TestConnectionTests {
 
@@ -188,10 +177,8 @@ struct TestConnectionTests {
         return (core, harnesses)
     }
 
-    /// A store in a temp directory holding one target, because login and
-    /// testConnection now resolve credentials from the daemon's own records and
-    /// refuse a portal they have never been told about. Also keeps the tests off
-    /// `/Library/Application Support`, which the default initialiser would use.
+    /// A temp-directory store holding one target; login and testConnection
+    /// refuse portals the daemon has no record of.
     private func makeStore(containing record: TargetRecord?) async throws -> (TargetStore, URL) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -224,8 +211,8 @@ struct TestConnectionTests {
         #expect(info.blockSize != nil)
         #expect((info.blockCount ?? 0) > 0)
 
-        // The whole point. A probe that leaves a session behind costs the target
-        // a connection for every attach, and every failed attempt.
+        // A probe that leaves a session behind costs the target a connection
+        // per attach attempt.
         try await Task.sleep(for: .milliseconds(200))
         #expect(await core.sessionHandles().isEmpty,
                 "testConnection must not leave a session open")
@@ -277,10 +264,9 @@ struct TestConnectionTests {
     @Test("a configured target whose CHAP secret is missing fails instead of logging in unauthenticated")
     func missingSecretFailsClosed() async throws {
         let (core, _harness) = makeCore()
-        // A CHAP username with no keychain item behind it. This used to resolve
-        // to nil credentials, which is not "no preference" but an instruction to
-        // offer AuthMethod=None — so the session came up unauthenticated and
-        // everything above it reported success.
+        // A CHAP username with no keychain item behind it must error: nil
+        // credentials mean "offer AuthMethod=None", an unauthenticated session
+        // that reports success.
         var authenticated = probeRecord()
         authenticated.chapUser = "backup"
         let (store, dir) = try await makeStore(containing: authenticated)

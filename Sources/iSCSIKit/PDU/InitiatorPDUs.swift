@@ -362,7 +362,7 @@ public struct ISID: Sendable, Equatable, Hashable {
     public var bytes: Data // exactly 6
 
     public init() {
-        // T=01b (IANA OUI format is 00b; 01b = "random" per RFC 7143 §10.12.5 layout).
+        // 0x80 = T=10b ("Random" format, RFC 7143 §11.12.5); B/C random, D qualifier.
         bytes = Data([0x80, 0, 0, 0, 0, 0])
     }
 

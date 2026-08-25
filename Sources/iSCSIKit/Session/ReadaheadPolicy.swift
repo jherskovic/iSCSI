@@ -1,49 +1,28 @@
 import Foundation
 
 /// Decides how far to read ahead of a stream, earning depth instead of
-/// assuming it.
+/// assuming it: nothing until a run covers `minStreamBytes` of consecutive
+/// reads, then 2, 4, 8, ... chunks up to the slot cap and byte budget. An
+/// out-of-sequence read resets the ramp; a write (`reset()`) forgets the
+/// stream — speculative reads cannot be recalled once queued at the target,
+/// so a short burst must speculate nothing.
 ///
-/// The readahead window used to open at full depth as soon as two consecutive
-/// reads were consecutive. That is the right shape for a benchmark and the
-/// wrong shape for a VM image: guest I/O is short sequential bursts that jump,
-/// and every jump strands the whole window in flight — speculative reads that
-/// cannot be recalled, queued at the target in front of the I/O that is real.
-/// Worse, a write invalidated the window without resetting the stream, so the
-/// read after the write re-issued the same ranges a second time.
+/// Depth is counted in fixed-size *chunks*, not caller requests: a budget
+/// divided by request size opened hundreds of slots for tiny requests and
+/// pinned huge ones at depth 1.
 ///
-/// So depth is earned exponentially, and only after a run has proven itself
-/// for `minStreamBytes` of consecutive reads: then 2 chunks, 4, 8, ... up to
-/// whichever comes first of the slot cap and the byte budget. A short burst
-/// speculates nothing at all, while a genuinely sequential stream reaches
-/// full depth within a handful of reads past the gate. Any out-of-sequence
-/// read resets the ramp and the gate; a write (`reset()`) forgets the stream
-/// entirely.
-///
-/// Depth is counted in fixed-size *chunks* (`chunkBytes`), not in caller
-/// requests. Speculation is issued chunk-wise by `PrefetchChunkCache`, and a
-/// budget divided by the caller's request size was wrong in both directions:
-/// tiny requests opened hundreds of slots, huge ones pinned depth at 1.
-///
-/// Pure state, no locking — the caller serialises access. It lives here, like
-/// `BlockAligner`, so the arithmetic can be tested without a mounted volume
-/// and a live target.
+/// Pure state, no locking — the caller serialises access; testable without a
+/// mounted volume.
 public struct ReadaheadPolicy: Sendable {
     /// Most bytes of speculation in flight.
     public let budgetBytes: Int
     /// Most chunks in flight, however small the chunks are configured. Each
     /// is an outstanding daemon call and a buffer.
     public let maxSlots: Int
-    /// Consecutive bytes a run must cover before the first speculation.
-    ///
-    /// The gate is in bytes, not requests, for the same reason the budget is:
-    /// "two consecutive reads" is 512 KiB of evidence when a benchmark streams
-    /// in 256 KiB pieces and 32 KiB of evidence when a VM guest reads in
-    /// 16 KiB pieces. Measured under a real VM, the 32 KiB kind was wrong
-    /// essentially always — a 12-minute window of interleaved 16 KiB reads and
-    /// writes wasted 100% of what it speculated, because two small reads
-    /// between writes kept re-opening a window the next write threw away. A
-    /// byte threshold makes small requests earn proportionally more proof
-    /// while leaving large-request streams exactly as fast to trigger.
+    /// Consecutive bytes a run must cover before the first speculation. In
+    /// bytes, not requests: "two consecutive reads" is strong evidence from a
+    /// 256 KiB streamer and none at all from a guest's 16 KiB reads, so small
+    /// requests must earn proportionally more proof.
     public let minStreamBytes: Int
     /// The unit speculation is issued in.
     public let chunkBytes: Int

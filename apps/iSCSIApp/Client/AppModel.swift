@@ -22,9 +22,8 @@ final class AppModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
 
     init() {
-        // The updater asks this before replacing the bundle. Answering it from
-        // live state rather than a cached flag matters: the window between
-        // "downloaded" and "installing" is exactly when someone attaches.
+        // Answered from live state: the window between "downloaded" and
+        // "installing" is exactly when someone attaches.
         updates.isAnythingAttached = { [weak attachments] in
             attachments?.attachments.contains(where: \.isFullyAttached) ?? false
         }
@@ -37,23 +36,15 @@ final class AppModel: ObservableObject {
         updates.detachEverything = { [weak self] in
             guard let self else { return }
             for row in rows where row.isAttached {
-                // The user already said "Detach and Install"; stopping here to
-                // ask again would silently stall the update.
+                // "Detach and Install" was the consent; asking again stalls.
                 await detach(row.target, ejectingMounted: true)
             }
         }
 
-        // A postponed update is released by the last volume going away — however
-        // it goes away. Watching the attachment list covers pressing Detach,
-        // ejecting in Finder, and anything added later, where a call placed in
-        // detach() covers only the first: a Finder eject is handled inside
-        // AttachmentManager and never passes through this type at all.
-        //
-        // Deferred a runloop turn on purpose. @Published fires on willSet, so a
-        // sink that ran synchronously would ask "is anything attached?" while
-        // the property still holds the old list, conclude yes, and leave the
-        // update stuck — the exact bug this is here to fix, reintroduced in a
-        // form that looks correct.
+        // Watching the attachment list covers every way a volume goes away,
+        // Finder ejects included. Deferred a runloop turn on purpose:
+        // @Published fires on willSet, so a synchronous sink would see the old
+        // list and leave the update stuck.
         attachments.$attachments
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
@@ -68,12 +59,10 @@ final class AppModel: ObservableObject {
     /// refuse a second click without a modal.
     @Published private(set) var busy: Set<String> = []
     @Published var lastError: PresentableError?
-    /// Set when Detach was pressed on a target whose volume is still mounted:
-    /// the UI asks before ejecting, because the layers below will fall back to
-    /// a force-eject and a mounted volume can have live writers (a running VM,
-    /// most likely). Explicitly-labelled eject paths — the menu bar's Eject
-    /// and Detach All, the updater's detach-and-install — skip the question;
-    /// their click *is* the consent.
+    /// Set when Detach was pressed while the volume is still mounted: the UI
+    /// asks first, because the layers below fall back to force-eject and a
+    /// mounted volume can have live writers. Explicitly-labelled eject paths
+    /// skip the question — their click is the consent.
     @Published var pendingDetach: TargetRecord?
 
     var isReady: Bool { setup.isReady }
@@ -121,16 +110,12 @@ final class AppModel: ObservableObject {
 
     func save(_ target: TargetRecord, secret: String?, mutualSecret: String? = nil) async {
         do {
-            // Use the id the daemon actually stored under. Adding a target
-            // that already exists keeps the existing record's id, so filing the
-            // secret under the id we sent would put it somewhere nothing looks.
+            // Use the id the daemon stored under: re-adding an existing
+            // target keeps the old record's id.
             let stored = try await DaemonConnection.saveTarget(target)
-            // Secrets go in their own calls and never into targets.json.
-            //
-            // Clearing a user name clears its secret with it. Otherwise the
-            // secret outlives the username that gave it meaning, and re-adding
-            // the same name later silently resurrects a credential the user
-            // believes they removed.
+            // Secrets go in their own calls, never into targets.json; and
+            // clearing a user name clears its secret, or re-adding the name
+            // later silently resurrects a removed credential.
             if let secret, !secret.isEmpty {
                 try await DaemonConnection.setCHAPSecret(targetID: stored.id, secret: secret)
             } else if target.chapUser == nil {
@@ -149,8 +134,8 @@ final class AppModel: ObservableObject {
     }
 
     func delete(_ target: TargetRecord) async {
-        // Detach first: deleting a target whose volume is mounted would leave a
-        // volume in Finder that nothing in the app can see or take down.
+        // Detach first, or the mounted volume outlives anything that can
+        // take it down.
         if let attachment = attachments.attachments.first(where: { $0.targetID == target.id }) {
             try? await attachments.detach(tag: attachment.tag)
         }
@@ -166,14 +151,10 @@ final class AppModel: ObservableObject {
         busy.insert(target.id)
         defer { busy.remove(target.id) }
         do {
-            // Check reachability and credentials before mounting, without
-            // holding a session.
-            //
-            // Worth doing at all because it is the only place a wrong secret or
-            // an unreachable portal is reported as itself. Once the mount is
-            // performing the login, the same failure surfaces as "mount: Unable
-            // to invoke task", which sends the user to the filesystem extension
-            // instead of to their password.
+            // Check reachability and credentials before mounting: the only
+            // place a wrong secret or unreachable portal is reported as
+            // itself — during the mount it surfaces as "mount: Unable to
+            // invoke task".
             _ = try await DaemonConnection.testConnection(
                 host: target.host, port: target.port, targetIQN: target.targetIQN,
                 lun: target.lun)
@@ -181,10 +162,8 @@ final class AppModel: ObservableObject {
             let attachment = try await attachments.attach(target)
             sessions = try await DaemonConnection.sessions()
 
-            // Attached, but with nothing on it. A brand-new LUN always looks
-            // like this, so it is a normal outcome rather than a failure — and
-            // saying so beats an error dialog about a disk that is, in fact,
-            // right there and ready to format.
+            // Attached with nothing on it: how every brand-new LUN looks — a
+            // normal outcome, not a failure.
             if !attachment.isFullyAttached, let device = attachment.device {
                 lastError = PresentableError(
                     title: "“\(target.displayName)” is connected but not formatted",
@@ -208,15 +187,12 @@ final class AppModel: ObservableObject {
             return
         }
         do {
-            // Unmounting is what closes the session: the extension logs out in
-            // deactivateVolume. The app owns no session of its own to close —
-            // see the note in attach().
+            // Unmounting is what closes the session: the extension logs out
+            // in deactivateVolume; the app owns no session of its own.
             try await attachments.detach(tag: attachment.tag)
             sessions = try await DaemonConnection.sessions()
-            // No installPendingUpdateIfReady() here. The sink in init() sees the
-            // attachment list change and handles this path and the Finder-eject
-            // path with one mechanism; calling it here as well would work, and
-            // would quietly suggest that this is the only path that needs it.
+            // No installPendingUpdateIfReady() here: the sink in init() covers
+            // this path and Finder ejects with one mechanism.
         } catch {
             present(error, doing: "Detaching “\(target.displayName)”")
         }

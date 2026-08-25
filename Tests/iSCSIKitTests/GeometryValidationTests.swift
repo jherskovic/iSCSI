@@ -2,12 +2,8 @@
 //  GeometryValidationTests.swift
 //  Regression tests for the READ CAPACITY(16) parser.
 //
-//  Every case below aborted the process before `geometry(fromReadCapacity16:)`
-//  existed — not "returned a wrong answer", but killed a root daemon with one
-//  reply. Swift's `+` and `*` trap on overflow, and the four lines this parser
-//  replaced used the trapping operators on numbers taken straight off the wire.
-//  They are unit tests rather than integration tests because the parser is pure,
-//  which is also what finally made this surface fuzzable.
+//  Every case below once killed a root daemon with a single reply: Swift's
+//  `+` and `*` trap on overflow, and these are numbers straight off the wire.
 //
 
 import Foundation

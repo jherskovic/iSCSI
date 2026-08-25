@@ -1,16 +1,10 @@
 //
 //  KeychainStoreTests.swift
 //
-//  Every release up to 0.4.3 discarded every CHAP secret a user entered, and
-//  nothing caught it. The calls returned, the logic was right, the error path
-//  was exercised — the secret simply went to a keychain a system-domain daemon
-//  cannot reach. `setCHAPSecret` is `try?` over `store`, so the real status
-//  never surfaced, and the user saw "saved but could not be read back", which
-//  describes a symptom two steps downstream of the cause.
-//
-//  The first suite below is the one that would have caught it, and it needs no
-//  keychain, no daemon and no root: it asserts the *shape* of the query. The
-//  second tests the logic against a fake, which is what the backend seam is for.
+//  The failure mode here is silent: a secret stored to a keychain the
+//  system-domain daemon cannot reach still returns success-shaped calls.
+//  The first suite asserts the *shape* of the query (no keychain, no root);
+//  the second tests the logic against a fake via the backend seam.
 //
 
 import Foundation

@@ -37,14 +37,11 @@ public struct PDUSerializer: Sendable {
             out.append(raw.data)
             if padLen > 0 { out.append(Data(count: padLen)) }
             if digests.dataDigest {
-                // Digest the segment and its padding as a chain rather than
-                // building `raw.data + padding` first: that concatenation
-                // allocated and copied the entire data segment — up to a
-                // megabyte per PDU — purely to compute four bytes.
+                // Chained over segment then pad: concatenating first copied
+                // the whole data segment just to compute four bytes.
                 var crc = CRC32C.initial
                 crc = raw.data.withUnsafeBytes { CRC32C.update(crc, $0) }
                 if padLen > 0 {
-                    // At most 3 bytes of zero padding.
                     let pad = [UInt8](repeating: 0, count: padLen)
                     crc = pad.withUnsafeBytes { CRC32C.update(crc, $0) }
                 }
@@ -69,12 +66,9 @@ public struct PDUDeframer: Sendable {
     public var maxDataSegmentLength: Int
 
     private var buffer = Data()
-    /// Bytes at the front of `buffer` already handed out as PDUs.
-    ///
-    /// Consuming with `removeFirst` on every PDU would be quadratic when one
-    /// read delivers many — the normal case for a fast link. Advancing an index
-    /// instead makes consumption O(1); the front is reclaimed in one copy when
-    /// it grows large enough to be worth it.
+    /// Bytes at the front of `buffer` already handed out as PDUs. Consuming
+    /// via `removeFirst` per PDU would be quadratic; an index is O(1), and the
+    /// front is reclaimed in one copy once large enough.
     private var consumed = 0
 
     /// Compact once the dead prefix exceeds this, or half the buffer.
@@ -95,22 +89,10 @@ public struct PDUDeframer: Sendable {
 
     /// Reclaim the dead prefix by copying the live tail into a fresh buffer.
     ///
-    /// **This must not use `removeFirst`, and that is the whole point.** `Data`
-    /// is a slice type: `removeFirst` advances the slice's start and keeps the
-    /// original backing store, so the dead prefix is never released and every
-    /// later `append` reallocs that same store *larger*. The buffer then grows
-    /// by the total number of bytes ever received on the connection.
-    ///
-    /// It is not a slow leak. Reading a file off the LUN grew a daemon's
-    /// resident memory 1:1 with the bytes read — 2 GiB of reads cost 2 GB of
-    /// RSS, and a real copy peaked at 37 GB — with `heap` showing a single live
-    /// allocation and `malloc_history` naming
-    /// `Data.InlineSlice.append(contentsOf:)` underneath this line.
-    /// `InlineSlice` is the tell: that representation exists precisely to hold
-    /// an offset into a larger store.
-    ///
-    /// Building a new `Data` and appending the tail into it forces a copy into
-    /// a fresh allocation and drops the last reference to the old one.
+    /// **Must not use `removeFirst`**: `Data` is a slice type, so that keeps
+    /// the original backing store and RSS grows 1:1 with every byte ever
+    /// received on the connection. A fresh `Data` forces a real copy and
+    /// drops the last reference to the old store.
     private mutating func compactIfNeeded() {
         guard consumed > 0 else { return }
         guard consumed >= Self.compactThreshold || consumed * 2 >= buffer.count else { return }

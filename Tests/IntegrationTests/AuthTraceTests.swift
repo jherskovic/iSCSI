@@ -7,11 +7,9 @@ import Testing
 /// the initiator was *trying* to do — one-way or mutual, as whom, and how far it
 /// got before the target said no.
 ///
-/// The second suite here is the one that matters most. A trace sink is wired to
-/// `os.Logger` in the daemon, so anything written to it is persisted, survives a
-/// crash, and outlives the connection. `CHAP_R` is MD5 over the secret with an
-/// id and challenge the peer chose, so a logged response is an offline attack
-/// handed to whoever reads the log. "We were careful" is not a mechanism.
+/// The second suite matters most: the daemon wires the sink to `os.Logger`,
+/// so anything written outlives the connection — and a logged `CHAP_R` is an
+/// offline attack on the secret handed to whoever reads the log.
 @Suite("Authentication trace")
 struct AuthTraceTests {
     /// Collects trace lines from whatever actor the login is running on.

@@ -1,16 +1,10 @@
 import Foundation
 import Network
 
-/// A line-protocol control socket, loopback only.
-///
-/// One command per line, one line of response. Deliberately dumb so a shell
-/// script or a Python test can drive it without a client library:
-///
-///     printf 'crash\n' | nc 127.0.0.1 3261
-///
-/// Binding to loopback is the whole of the access control, which is right for
-/// a test fixture whose entire purpose is to corrupt data on demand — this must
-/// never be reachable from the network the target serves.
+/// A line-protocol control socket (`printf 'crash\n' | nc 127.0.0.1 3261`),
+/// dumb enough for shell scripts. Binding to loopback is the whole of the
+/// access control: a fixture that corrupts data on demand must never be
+/// reachable from the network the target serves.
 actor ControlChannel {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "targetsim.control")

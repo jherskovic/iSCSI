@@ -4,14 +4,10 @@ import Foundation
 import iSCSIDaemon
 import iSCSIKit
 
-/// A secret from a file or the environment, in that order.
-///
-/// Never from `argv`: on macOS `ps -axww` shows any local user the full command
-/// line of every process, so a secret passed as an option is published to the
-/// whole machine for the lifetime of the command and then left in shell history.
-///
+/// A secret from a file or the environment — never from `argv`, which
+/// `ps -axww` publishes to every local user (and shell history keeps).
 /// Trailing whitespace is stripped so `echo secret > file` does the obvious
-/// thing rather than silently appending a newline to the secret.
+/// thing.
 func readSecret(file: String?, env: String, label: String) throws -> String {
     if let file {
         guard let contents = try? String(contentsOfFile: file, encoding: .utf8) else {
@@ -26,10 +22,8 @@ func readSecret(file: String?, env: String, label: String) throws -> String {
     throw ValidationError("no \(label): pass \(flag) or set $\(env)")
 }
 
-// iscsictl — control CLI. In Phase 4 the read-only protocol operations
-// (discover, verify) run directly against a target over TCP. The login/attach
-// operations that manage a persistent session are handled by the daemon
-// (later in Phase 4) via XPC; here they are exposed as direct one-shots too.
+// iscsictl — control CLI: protocol operations run directly against a target
+// over TCP as one-shots, independent of the daemon.
 
 @main
 struct ISCSICtl: AsyncParsableCommand {
@@ -84,18 +78,11 @@ struct GlobalOptions: ParsableArguments {
     @Flag(help: "Trace every PDU on the wire to stderr.")
     var debug = false
 
-    /// Credentials, or nil when no CHAP user was given.
-    ///
-    /// Throws rather than substituting an empty secret. It used to end in
-    /// `?? ""`, so forgetting the secret — or running under `sudo`/launchd,
-    /// which strips the environment — produced a complete CHAP exchange over
-    /// `MD5(id ‖ "" ‖ challenge)`. That is not a failed login; it is a
-    /// successful one that tells the peer the secret is empty.
-    ///
-    /// There is deliberately no `--chap-secret`. `argv` is world-readable on
-    /// macOS: `ps -axww` shows any user the full command line of every process,
-    /// so a secret passed that way is published to the whole machine for the
-    /// lifetime of the command, and left in shell history afterwards.
+    /// Credentials, or nil when no CHAP user was given. Throws rather than
+    /// substituting an empty secret — a missing secret (e.g. `sudo` stripping
+    /// the environment) would otherwise produce a well-formed exchange over
+    /// `MD5(id ‖ "" ‖ challenge)`. Deliberately no `--chap-secret` option:
+    /// see `readSecret`.
     func credentials() throws -> CHAP.Credentials? {
         guard let user = chapUser else { return nil }
         let secret = try readSecret(file: chapSecretFile,
@@ -110,10 +97,9 @@ struct GlobalOptions: ParsableArguments {
                                               mutualSecret: mutual)
     }
 
-    /// The login exchange's own narration, alongside the PDU trace and under
-    /// the same flag. The PDU trace shows what crossed the wire with every CHAP
-    /// value redacted; this says what we were trying to do with it, which is
-    /// the half that a redacted trace cannot show.
+    /// The login exchange's narration, under the same flag as the PDU trace:
+    /// the trace shows what crossed the wire (CHAP values redacted), this says
+    /// what we were trying to do with it.
     var authTrace: (@Sendable (String) -> Void)? {
         guard debug else { return nil }
         let label = host
@@ -219,10 +205,8 @@ struct Verify: AsyncParsableCommand {
         }
 
         // A fresh nexus answers its first non-INQUIRY command with UNIT
-        // ATTENTION; absorb it. Guessing a block size is not an option: the
-        // 512 fallback that used to be here made every CDB against a 4Kn LUN
-        // describe 8× more data than the write carried — block-aligned sizes
-        // degenerated into short I/O, odd sizes got CHECK CONDITION.
+        // ATTENTION; absorb it. Never guess the block size: a 512 fallback
+        // against a 4Kn LUN makes every CDB describe 8× the data carried.
         var capacity = SCSITaskResult(status: 0x02)
         for _ in 0 ..< 3 {
             capacity = try await connection.execute(SCSITask(
@@ -273,19 +257,9 @@ struct Verify: AsyncParsableCommand {
 
 // MARK: wipe
 
-/// Raw sequential read straight over iSCSI, with no FSKit extension, no
-/// DiskImages and no filesystem in the path.
-///
-/// Exists to answer one question honestly: when the end-to-end number is
-/// disappointing, is that our stack or the transport? Comparing this against
-/// the same read through a mounted volume separates the two, and prevents
-/// optimising layers that were never the cost.
-/// Writes are the direction that matters for tuning: reads were already at the
-/// transport ceiling, while writes are set by how the target commits them and
-/// by how much data can be sent unsolicited. Neither could be measured cleanly
-/// against the NAS — its ceiling hid our overhead, and its negotiation
-/// parameters were not ours to change. Against `iscsi-target-sim` on loopback
-/// both open up.
+/// Raw sequential I/O straight over iSCSI — no FSKit, no DiskImages, no
+/// filesystem — so a disappointing end-to-end number can be split into "our
+/// stack" versus "the transport".
 struct WriteBench: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "write-bench",
@@ -550,11 +524,8 @@ struct Wipe: AsyncParsableCommand {
         let capacity = try await checked(SCSITask(
             lun: lunAddress, cdb: CDB.readCapacity16(), direction: .read(expectedLength: 32)
         ))
-        // Same validated parse as the daemon, rather than a second hand-rolled
-        // copy. The copy that used to be here had both of the bugs the shared
-        // one now prevents: a trapping `lastLBA + 1`, and an unchecked block
-        // size that reached the `(256 * 1024) / blockSize` below — a division by
-        // zero, since this path never goes through `ISCSIBlockDevice.validate`.
+        // The daemon's validated parse, which guards the trapping
+        // `lastLBA + 1` and the division by an unchecked zero block size.
         let (blockSize, blockCount) = try ISCSIBlockDevice
             .geometry(fromReadCapacity16: capacity.data)
         print("LUN: \(blockCount) x \(blockSize)-byte blocks")
@@ -598,14 +569,10 @@ struct Wipe: AsyncParsableCommand {
 
 // MARK: dext-attach
 
-/// Read the dext's task counters straight out of the driver.
-///
-/// This exists because os_log cannot answer the question that matters when the
-/// device wedges: the watchdog's log heartbeat stops, `log show` itself hangs,
-/// and a forced power-off loses the whole window because logd never flushed it.
-/// Bare ssh keeps working during a wedge, so this is the channel that still
-/// says whether every task we were handed was completed — and whether the
-/// dext's own watchdog thread is still running.
+/// Read the dext's task counters straight out of the driver. During a wedge
+/// `log show` hangs and logd loses the window, but bare ssh keeps working —
+/// this is the channel that still answers "was every task completed" and
+/// "is the dext watchdog alive".
 #if ISCSI_BACKEND_B  // Backend B, parked — see DextBridge.swift
 struct DextStatsCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -704,18 +671,11 @@ struct DextAttach: AsyncParsableCommand {
     @Flag(help: "Trace every PDU on the wire to stderr.")
     var debug = false
 
-    /// Credentials, or nil when no CHAP user was given.
-    ///
-    /// Throws rather than substituting an empty secret. It used to end in
-    /// `?? ""`, so forgetting the secret — or running under `sudo`/launchd,
-    /// which strips the environment — produced a complete CHAP exchange over
-    /// `MD5(id ‖ "" ‖ challenge)`. That is not a failed login; it is a
-    /// successful one that tells the peer the secret is empty.
-    ///
-    /// There is deliberately no `--chap-secret`. `argv` is world-readable on
-    /// macOS: `ps -axww` shows any user the full command line of every process,
-    /// so a secret passed that way is published to the whole machine for the
-    /// lifetime of the command, and left in shell history afterwards.
+    /// Credentials, or nil when no CHAP user was given. Throws rather than
+    /// substituting an empty secret — a missing secret (e.g. `sudo` stripping
+    /// the environment) would otherwise produce a well-formed exchange over
+    /// `MD5(id ‖ "" ‖ challenge)`. Deliberately no `--chap-secret` option:
+    /// see `readSecret`.
     func credentials() throws -> CHAP.Credentials? {
         guard let user = chapUser else { return nil }
         let secret = try readSecret(file: chapSecretFile,

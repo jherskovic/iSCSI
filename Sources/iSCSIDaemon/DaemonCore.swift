@@ -69,9 +69,8 @@ public actor DaemonCore {
         chap: CHAP.Credentials? = nil,
         flushPolicy: FlushPolicy? = nil
     ) async throws -> String {
-        // A record's stored policy wins when the caller resolved one; nil is
-        // a record-less login (iscsictl direct), which keeps following the
-        // process-wide ISCSI_WRITE_THROUGH default.
+        // A record's stored policy wins; nil is a record-less login
+        // (iscsictl direct), which follows the ISCSI_WRITE_THROUGH default.
         let durability = flushPolicy ?? (writeThrough ? FlushPolicy.writeThrough : FlushPolicy.never)
         var config = LoginConfig(
             initiatorName: initiatorName,
@@ -80,11 +79,9 @@ public actor DaemonCore {
             chap: chap,
             trace: Self.authTrace
         )
-        // Once credentials have been resolved, using them is not optional. A nil
-        // `chap` further down means "offer AuthMethod=None", so anything that
-        // dropped them between here and the login would downgrade the session
-        // silently rather than fail. Cheap to assert, and the failure it guards
-        // against is invisible from every layer above.
+        // Resolved credentials must be used: a nil `chap` downstream means
+        // "offer AuthMethod=None", so dropping them would silently downgrade
+        // the session rather than fail.
         config.requiresAuthentication = chap != nil
         config.desired.offerDigests = true
         let factory = transportFactory
@@ -92,22 +89,17 @@ public actor DaemonCore {
             try await factory(host, port)
         }
         try await session.activate()
-        // Write-through by default. Backend A receives no barrier signal from
-        // FSKit, so the daemon cannot know when a filesystem above the disk
-        // image wanted a flush; if the target caches writes volatilely, an
-        // acknowledged write can be lost on power failure while APFS believes
-        // its barrier was honoured. FUA costs throughput and buys crash
-        // consistency, which is the right trade for a network disk. It is a
-        // no-op when the target's write cache is already disabled.
+        // Write-through by default: FSKit delivers no barrier signal, so a
+        // volatile target cache can lose an acknowledged write APFS believes
+        // was barriered. FUA trades throughput for crash consistency; it is a
+        // no-op when the target's cache is already disabled.
         let device = ISCSIBlockDevice(session: session, lun: lun,
                                       writeThrough: durability == .writeThrough)
         _ = try await device.readCapacity() // fail fast if the LUN is bad
 
-        // Report the target's cache policy once per session: if WCE is set and
-        // we are not writing through, durability depends on flushes we never
-        // receive.
-        // Built in pieces on purpose: the Swift type checker chokes on this as
-        // one interpolated expression.
+        // Log the cache policy once per session: WCE set without
+        // write-through means durability depends on flushes we never receive.
+        // Built in pieces — the type checker chokes on one interpolation.
         let wce = try? await device.writeCacheEnabled()
         let cacheLabel: String
         switch wce {
@@ -125,11 +117,9 @@ public actor DaemonCore {
         line += ": write cache " + cacheLabel + ", " + policyLabel
         DaemonLog.session(line)
 
-        // Route recovery events into the unified log. Without this a session
-        // can drop, rebuild itself five times and give up, leaving nothing
-        // behind but the original login banner and an I/O that never returns —
-        // which is exactly what happened on 2026-08-15 and could not be
-        // diagnosed afterwards.
+        // Route recovery events into the unified log; otherwise a session can
+        // drop, rebuild, and give up with nothing behind but the login banner
+        // and an I/O that never returns.
         let logTarget = targetIQN
         await session.setEventHandler { event in
             switch event {
@@ -222,10 +212,6 @@ public actor DaemonCore {
     }
 
     /// Every live session with everything the diagnostics pane needs.
-    ///
-    /// All of this already existed inside the actor and none of it had ever
-    /// crossed XPC, so a report could say "it felt slow" but never
-    /// "firstBurstLength negotiated down to 64 KiB and it recovered four times".
     public func sessionDetails() async -> [SessionInfo] {
         var out: [SessionInfo] = []
         for (handle, entry) in sessions {
@@ -252,15 +238,11 @@ public actor DaemonCore {
         return out.sorted { $0.handle < $1.handle }
     }
 
-    /// REPORT LUNS against an established session.
-    ///
-    /// The first caller of `CDB.reportLuns`, which has been implemented and
-    /// unused since the SCSI layer was written. Without it the GUI can only
-    /// offer a LUN number typed from memory.
+    /// REPORT LUNS against an established session, for the GUI's LUN picker.
     public func reportLUNs(_ handle: String) async throws -> [LUNInfo] {
         guard let entry = sessions[handle] else { throw SessionError.notActive }
-        // Addressed to LUN 0: REPORT LUNS is answered by the target, not by a
-        // particular logical unit, and LUN 0 is the one guaranteed to exist.
+        // LUN 0: REPORT LUNS is answered by the target, and LUN 0 is the one
+        // guaranteed to exist.
         let result = try await entry.session.executeChecked(
             SCSITask(lun: 0, cdb: CDB.reportLuns(), direction: .read(expectedLength: 1024)))
 

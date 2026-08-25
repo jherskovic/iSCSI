@@ -1,22 +1,10 @@
 //
 //  DaemonLog.swift
-//  Where iscsid's diagnostics go once it lives inside a signed app bundle.
-//
-//  It used to write to stderr and the LaunchDaemon plist redirected that to
-//  /var/log/iscsid.err. That stops being an option when the plist ships inside
-//  Contents/Library/LaunchDaemons of a signed bundle: the file is covered by the
-//  code signature, so the log destination can no longer be changed without
-//  breaking the signature, and third-party software has no business owning a
-//  path in /var/log anyway.
-//
-//  os.Logger instead. It survives a crash, it is timestamped and interleaved
-//  with fskitd/launchd/DiskArbitration — which is exactly the correlation every
-//  interesting failure in this project has needed — and `log show --predicate
-//  'subsystem == "me.herko.iSCSIInitiator"'` gets it all back.
-//
-//  stderr is kept in parallel. Under launchd it goes nowhere and costs nothing;
-//  run `swift run iscsid` in a terminal and you still see output, which is the
-//  dev loop.
+//  iscsid's diagnostics: os.Logger, interleaved with fskitd/launchd/
+//  DiskArbitration and retrievable via
+//  `log show --predicate 'subsystem == "me.herko.iSCSIInitiator"'`.
+//  stderr is echoed in parallel — free under launchd, and it is the
+//  `swift run iscsid` dev loop.
 //
 
 import Foundation
@@ -30,20 +18,14 @@ public enum DaemonLog {
     private static let dextLog = Logger(subsystem: subsystem, category: "dext")
     #endif
     private static let lifecycleLog = Logger(subsystem: subsystem, category: "lifecycle")
-    /// Login negotiation, CHAP, and the keychain that holds its secrets. Its own
-    /// category because these are the questions asked while a user is standing
-    /// in front of a failing dialog, and `--predicate 'category == "auth"'`
-    /// beats reading a session log for them.
+    /// Login negotiation, CHAP, and its keychain; its own category so
+    /// `--predicate 'category == "auth"'` answers the failing-dialog questions.
     private static let authLog = Logger(subsystem: subsystem, category: "auth")
 
-    /// Messages here are marked `.public`. os.Logger redacts interpolated
-    /// strings by default, and a log full of `<private>` is the reason the FSKit
-    /// enablement bug took days instead of hours to characterise.
-    ///
-    /// The tradeoff is explicit: target IQNs, hostnames and LUN numbers are
-    /// diagnostics on the user's own machine and are logged. **CHAP secrets and
-    /// key material must never be passed to any of these.** There is no
-    /// redaction to fall back on once a string reaches here.
+    /// Everything here is `.public` (os.Logger redacts interpolation by
+    /// default, and a log of `<private>` diagnoses nothing). IQNs, hostnames,
+    /// and LUN numbers are fine; **CHAP secrets and key material must never
+    /// reach these** — there is no redaction to fall back on.
     public static func lifecycle(_ message: String) {
         lifecycleLog.notice("\(message, privacy: .public)")
         echo(message)
@@ -61,10 +43,9 @@ public enum DaemonLog {
     }
     #endif
 
-    /// Authentication diagnostics. Subject to the same rule as everything else
-    /// here, and it matters more on this path than on any other: **no secret,
-    /// no CHAP_R, no challenge bytes.** User names and byte counts are the
-    /// budget. `LoginConfig.trace` states the reasoning in full.
+    /// Authentication diagnostics: **no secret, no CHAP_R, no challenge
+    /// bytes** — names and byte counts only (`LoginConfig.trace` has the
+    /// contract).
     public static func auth(_ message: String) {
         authLog.notice("\(message, privacy: .public)")
         echo("iscsid: \(message)")

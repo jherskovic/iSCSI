@@ -2,27 +2,23 @@
 import Foundation
 import Security
 
-/// CHAP secrets, held by the daemon so they never transit XPC on the way out.
+/// CHAP secrets, held by the daemon.
 ///
-/// Keyed by **target id**, not by CHAP username. Two targets can legitimately
-/// use the same username with different secrets, and keying by username meant
-/// the second one silently overwrote the first.
+/// Keyed by **target id**, not CHAP username: two targets can share a username
+/// with different secrets.
 ///
-/// Secrets travel *into* this store and never back out over XPC. The daemon
-/// reads them itself when it logs in; there is no `getSecret` on the protocol,
-/// so a client that is later compromised cannot read back what an earlier
-/// trusted one saved.
+/// Secrets travel *into* this store and never back out over XPC — there is no
+/// `getSecret` on the protocol, so a compromised client cannot read back what
+/// an earlier trusted one saved.
 public enum KeychainStore {
     private static let service = "me.herko.iSCSIInitiator.chap"
 
     public enum StoreFailure: Error, LocalizedError {
         case osStatus(OSStatus)
-        /// Written without error, but not readable afterwards. Worth its own
-        /// case because it is the shape the boot-time problem takes.
+        /// Written without error, but not readable afterwards.
         case notPersisted
-        /// The System keychain would not open. Distinct from a refused write:
-        /// there is nowhere to write *to*, and no amount of retrying or
-        /// re-entering the secret will change it.
+        /// The System keychain would not open: there is nowhere to write *to*,
+        /// and retrying or re-entering the secret will not change that.
         case noSystemKeychain
 
         public var errorDescription: String? {
@@ -39,21 +35,13 @@ public enum KeychainStore {
         }
     }
 
-    /// Opened per call rather than cached: `SecKeychain` is a CF type and not
-    /// `Sendable`, opening it is cheap, and secrets are touched only when one is
-    /// saved or a login resolves one.
+    /// Opened per call: `SecKeychain` is not `Sendable` and opening is cheap.
     ///
     /// `SecKeychainOpen` is deprecated in favour of the data-protection
-    /// keychain, which is precisely what a system-domain daemon cannot reach.
-    /// There is no non-deprecated way to name a file keychain, so the
-    /// deprecation is acknowledged rather than avoidable.
-    ///
-    /// The build therefore carries one deprecation warning, on the
-    /// `SecKeychainOpen` line below, and it is meant to stay: it marks the one
-    /// place this constraint lives. Do not silence it by annotating the callers
-    /// — that spreads a false "deprecated" onto this type's whole public API —
-    /// and do not silence it by going back to the data-protection keychain,
-    /// which is what did not work.
+    /// keychain — precisely what a system-domain daemon cannot reach (see
+    /// `SystemKeychain`) — and there is no non-deprecated way to name a file
+    /// keychain. The one deprecation warning below is deliberate; do not
+    /// silence it, and do not go back to the data-protection keychain.
     static func systemKeychain() -> SecKeychain? {
         var keychain: SecKeychain?
         let status = SecKeychainOpen("/Library/Keychains/System.keychain", &keychain)
@@ -64,49 +52,23 @@ public enum KeychainStore {
         return keychain
     }
 
-    /// The three operations this store needs from a keychain.
-    ///
-    /// A seam, not an abstraction for its own sake. Everything below it — which
-    /// keychain, which query keys — is exactly what was wrong for every release
-    /// up to 0.4.3, and it was wrong in a way no test could see: the calls
-    /// returned, the logic was right, and the secret went somewhere the daemon
-    /// could not read. With the Security calls behind this, the logic can be
-    /// tested against a fake and the query construction can be asserted
-    /// directly, which is the assertion that would have caught it.
+    /// The three operations this store needs from a keychain. A seam so the
+    /// logic can run against a fake and the query construction — the part that
+    /// once sent secrets somewhere the daemon could not read — can be asserted
+    /// directly.
     public protocol Backend: Sendable {
         func store(account: String, service: String, label: String, secret: Data) -> OSStatus
         func fetch(account: String, service: String) -> (status: OSStatus, secret: Data?)
         func remove(account: String, service: String) -> OSStatus
     }
 
-    /// RESOLVED 2026-08-17, and the answer is worse than the question was.
-    ///
-    /// This used to pass `kSecUseDataProtectionKeychain: true`, reasoning that
-    /// otherwise a root daemon's item lands in root's login keychain, which is
-    /// locked at boot. The open question was whether a daemon could read such an
-    /// item back *before any user logs in*.
-    ///
-    /// It cannot read or write one at all, at any time. The data-protection
-    /// keychain is served by `secd`, which is a **per-user agent**. `iscsid` is
-    /// a LaunchDaemon in the system domain, where `com.apple.securityd.xpc` is
-    /// not in the bootstrap namespace, so every call failed:
-    ///
-    ///     Failed to talk to secd after 4 attempts.
-    ///     error:[-25291] … com.apple.securityd.xpc … Connection invalid —
-    ///       Connection init failed at lookup with error 3 - No such process
-    ///     keychain write initiator for …: SecItemDelete -25291, SecItemAdd -25291
-    ///
-    /// `-25291` is `errSecNotAvailable`. Every CHAP secret ever entered was
-    /// silently discarded — `setCHAPSecret` is `try?` over `store`, so the user
-    /// saw only "saved but could not be read back", which is what the read-back
-    /// check reports when there is nothing to read.
-    ///
-    /// The System keychain is what a system-domain daemon is meant to use: it is
-    /// served by the system `securityd`, is unlocked at boot from
-    /// `/var/db/SystemKey`, and needs no user session. Verified as root by
-    /// writing in one process and reading the value back in a later one.
-    ///
-    /// Nothing was migrated because nothing was ever stored.
+    /// The System keychain, and it must be: the data-protection keychain
+    /// (`kSecUseDataProtectionKeychain`) is served by `secd`, a **per-user
+    /// agent**, and `iscsid` is a system-domain LaunchDaemon with no
+    /// `com.apple.securityd.xpc` in its bootstrap namespace — every call
+    /// returns `-25291` (`errSecNotAvailable`) and no secret is ever stored.
+    /// The System keychain is served by the system `securityd`, unlocked at
+    /// boot from `/var/db/SystemKey`, and needs no user session.
     public struct SystemKeychain: Backend {
         public init() {}
 
@@ -120,10 +82,10 @@ public enum KeychainStore {
             ]
         }
 
-        /// Searching and adding name the keychain differently: a search takes a
-        /// list, an add takes the one to write into. Passing the wrong key is
-        /// not an error — it silently addresses the default keychain, which for
-        /// a root daemon is root's login keychain, locked at boot.
+        /// Searching and adding name the keychain differently (a search takes
+        /// a list, an add takes one). The wrong key is not an error — it
+        /// silently addresses the default keychain, which for a root daemon is
+        /// root's login keychain, locked at boot.
         public static func writeQuery(account: String, service: String, label: String,
                                       keychain: SecKeychain?) -> [String: Any] {
             var q = baseQuery(account: account, service: service)
@@ -200,10 +162,8 @@ public enum KeychainStore {
         try? store(secret, for: targetID, kind: kind)
     }
 
-    /// Throwing variant. `SecItemAdd`'s status used to be discarded entirely, so
-    /// a keychain that refused the write was indistinguishable from one that
-    /// accepted it — and the first symptom was a login failing against a target
-    /// whose credentials the user had definitely entered.
+    /// Throwing variant: a discarded `SecItemAdd` status makes a refused write
+    /// indistinguishable from an accepted one.
     public static func store(_ secret: String, for targetID: String,
                              kind: Kind = .initiator) throws {
         let status = backend.store(account: kind.account(for: targetID),
@@ -227,10 +187,8 @@ public enum KeychainStore {
     public static func chapSecret(for targetID: String, kind: Kind = .initiator) -> String? {
         let (status, data) = backend.fetch(account: kind.account(for: targetID), service: service)
         guard status == errSecSuccess, let data else {
-            // Distinguishes the two ways this returns nil, which the caller
-            // cannot: "no such item" is an ordinary answer for a target with no
-            // CHAP configured, and anything else is a keychain refusing us.
-            // Both arrive at the call site as a bare nil.
+            // Logged because the caller sees only nil: "no such item" is
+            // ordinary, anything else is the keychain refusing us.
             DaemonLog.auth("keychain read \(kind) for \(targetID): \(describe(status))")
             return nil
         }

@@ -2,17 +2,9 @@
 //  DaemonStoreTests.swift
 //
 //  `DaemonStore` is the volume's real data path: every byte a user reads or
-//  writes on a mounted LUN goes through it. It had never been tested, because
-//  its initialiser opened its own `NSXPCConnection` to a privileged mach
-//  service — so reaching it required a running daemon, a target, and a mount.
-//
-//  With the daemon injectable, the parts worth pinning become reachable: the
-//  read-modify-write path that turns a 512-byte write against a 4Kn LUN into a
-//  read, a patch and a whole-block write; the chunk cache being patched by
-//  writes rather than invalidated by them, which is what keeps a guest's
-//  journal a cache hit instead of a refetch; and `ioLock` holding submission
-//  order, because the kernel rewrites the same block back-to-back and trusts
-//  device-order semantics.
+//  writes on a mounted LUN goes through it. Pinned here: read-modify-write
+//  for sub-block writes on a 4Kn LUN, the chunk cache being patched by
+//  writes rather than invalidated, and `ioLock` holding submission order.
 //
 
 import Foundation
@@ -207,11 +199,9 @@ struct DaemonStoreTests {
                 "the cache served bytes from a write that failed")
     }
 
-    /// Overlapping writes must reach the device in submission order. The kernel
-    /// rewrites GPT headers, APFS superblocks and journal heads back-to-back and
-    /// trusts device-order semantics; docs/architecture.md records that
-    /// violating this produces nondeterministic corruption which per-operation
-    /// tracing shows nothing wrong with.
+    /// Overlapping writes must reach the device in submission order: the
+    /// kernel rewrites the same block back-to-back and trusts device order
+    /// (violations are nondeterministic corruption — docs/architecture.md).
     @Test func overlappingWritesReachTheDeviceInOrder() throws {
         let (store, _daemon) = makeStore()
         for generation in UInt8(1) ... UInt8(24) {

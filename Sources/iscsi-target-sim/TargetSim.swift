@@ -3,19 +3,11 @@ import Foundation
 import MockTarget
 import iSCSIKit
 
-/// A local iSCSI target, for two things the real NAS cannot do.
-///
-/// **Measure without the network.** Run it on the same machine as the
-/// initiator and loopback removes the ~98 MB/s transport ceiling that has
-/// bounded every measurement so far, so what is left is our own cost. It also
-/// exposes the target-side negotiation knobs (`FirstBurstLength` above all)
-/// that were untestable because they belonged to someone else's NAS.
-///
-/// **Break things on purpose.** Drop connections mid-write, corrupt payloads,
-/// stall commands, and — the one that matters — simulate target power loss with
-/// a volatile write cache. The earlier crash test cut power to the *initiator*,
-/// which cannot discriminate FUA from non-FUA; `crash` here can, because the
-/// harness survives to inspect the damage.
+/// A local iSCSI target, for two things the real NAS cannot do: measure over
+/// loopback (no transport ceiling, and the target-side negotiation knobs are
+/// ours to set) and break things on purpose — dropped connections, corrupted
+/// payloads, stalls, and target power loss with a volatile write cache, which
+/// the surviving harness can then inspect.
 ///
 /// Not a production target: one LUN, one connection per session, no session
 /// reinstatement, no persistent reservations, no ERL>0.

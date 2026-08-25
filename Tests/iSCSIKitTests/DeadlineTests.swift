@@ -3,13 +3,8 @@ import Foundation
 @testable import iSCSIKit
 
 /// `withDeadline` is the last line of defence between a stuck target and a
-/// wedged Mac. Everything above it — the daemon's XPC reply, the FSKit
-/// extension's read, DiskImages, APFS — is waiting on it to give up on time.
-///
-/// These tests exist because it did not. A volume served over Backend A hung
-/// for eight hours with the daemon showing five idle threads and no work in
-/// flight, which is what a suspended-forever Swift task looks like from
-/// outside: suspended tasks hold no threads.
+/// wedged Mac: the daemon's XPC reply, the FSKit extension's read, DiskImages
+/// and APFS are all waiting on it to give up on time.
 @Suite("withDeadline") struct DeadlineTests {
 
     /// A box that is safe to read from the test while a task writes it.
@@ -38,22 +33,11 @@ import Foundation
         }
     }
 
-    /// The one that matters.
-    ///
-    /// `withThrowingTaskGroup` cannot return until every child task has
-    /// finished — that is the guarantee structured concurrency is built on.
-    /// `group.cancelAll()` only sets a flag, so an operation suspended on a
-    /// plain continuation never notices, never finishes, and the group waits on
-    /// it forever. The deadline fires and changes nothing.
-    ///
-    /// A caller cannot know whether the work it is bounding is cancellable —
-    /// that is the whole reason it asked for a deadline. So the deadline has to
-    /// hold even when the answer is no.
-    ///
-    /// Deliberately not written as a bare `await withDeadline(...)`: if the bug
-    /// is present that never returns, and the test would hang the suite instead
-    /// of failing it. The work runs detached and the assertion is on whether it
-    /// came back.
+    /// The one that matters: the deadline must hold for uncancellable work.
+    /// A task-group race cannot deliver that — the group waits for every
+    /// child, and `cancelAll()` only sets a flag a bare continuation never
+    /// observes. Written with detached work so a regression fails the test
+    /// instead of hanging the suite.
     @Test func timesOutEvenWhenTheOperationIgnoresCancellation() async throws {
         let returned = Flag()
 
@@ -66,8 +50,7 @@ import Foundation
             returned.set()
         }
 
-        // Twenty times the deadline. Generous enough that a slow machine cannot
-        // fail this, short enough that a hang is obvious.
+        // 20× the deadline: slow machines pass, a hang is obvious.
         try await Task.sleep(for: .seconds(2))
         work.cancel()
 

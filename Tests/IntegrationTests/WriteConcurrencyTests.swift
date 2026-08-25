@@ -8,12 +8,9 @@ import Testing
 /// depends on the order they complete in, which is the same argument
 /// `ISCSIBlockDevice.read` makes for pipelining its own chunks.
 ///
-/// The measurement is not wall-clock. CI runs `--no-parallel` precisely because
-/// timing assertions measure the runner once it is loaded, and "this took less
-/// than N ms" is the shape that failed there. Instead the target is told to
-/// stall every command — accept it, never answer — and then asked how many it
-/// was handed. A serialised writer can only ever have one command outstanding
-/// against a target that never replies; a pipelined one has all of them.
+/// Measured by counting, not wall-clock (timing assertions fail on loaded CI
+/// runners): the target stalls every command and is asked how many it was
+/// handed. A serialised writer can have one outstanding; a pipelined one all.
 @Suite("Integration: write chunk concurrency", .timeLimit(.minutes(1)))
 struct WriteConcurrencyTests {
     /// Stalling has to be armed *after* login and after the capacity read that
@@ -110,14 +107,9 @@ struct WriteConcurrencyTests {
         #expect(try await device.read(offset: 4096, length: payload.count) == payload)
     }
 
-    /// The fan-out is bounded, and this is what bounds it.
-    ///
-    /// Every chunk of a write holds a copy of its slice from the moment its task
-    /// starts until the command completes, so an unbounded group made a large
-    /// request cost memory proportional to its own size — a 64 MiB write grew
-    /// the process by 109 MiB. A stalled target never answers, so every command
-    /// the initiator was willing to have outstanding is still sitting there to
-    /// be counted.
+    /// Every in-flight chunk holds a copy of its slice, so unbounded fan-out
+    /// costs memory proportional to the request. Against a stalled target,
+    /// every command the initiator will have outstanding is there to count.
     @Test func aLargeWriteKeepsOnlyAWindowInFlight() async throws {
         // 4 KiB commands, 4 MiB request: 1024 chunks, far more than the window.
         let (device, target, faultBox, serve) = try await makeStallableDevice(

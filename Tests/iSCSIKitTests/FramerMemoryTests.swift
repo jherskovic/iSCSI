@@ -2,17 +2,10 @@ import Foundation
 import Testing
 @testable import iSCSIKit
 
-/// The deframer reclaims its consumed prefix, and this asserts it in the only
-/// way that would have caught the original bug: by watching the process.
-///
-/// The old `compactIfNeeded` called `buffer.removeFirst(consumed)` and looked
-/// correct — `count` dropped, the tests passed, and every PDU decoded fine.
-/// But `Data` is a slice type: `removeFirst` advances the slice's start and
-/// keeps the backing store, so each `append` reallocated that same store
-/// larger and the buffer grew by every byte the connection ever received.
-/// Reading a file off a LUN cost resident memory 1:1 with the bytes read; one
-/// daemon peaked at 37 GB. Nothing about the decoded PDUs was ever wrong, which
-/// is why only a memory assertion catches it.
+/// The deframer reclaims its consumed prefix, asserted the only way that
+/// catches a regression: by watching the process. `Data` is a slice type —
+/// `removeFirst` keeps the backing store, so a wrong compaction grows RSS
+/// 1:1 with bytes received while every decoded PDU stays correct.
 @Suite("PDU deframer memory")
 struct FramerMemoryTests {
     private func footprintBytes() -> UInt64 {

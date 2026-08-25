@@ -67,23 +67,12 @@ public final class NetworkTransport: ConnectionTransport, @unchecked Sendable {
 
     /// Deliver bytes, and give up if the caller stops waiting.
     ///
-    /// `contentProcessed` fires when the data has been handed to the stack, and
-    /// on a peer that has stopped draining a full socket buffer that is *never*.
-    /// This used to be a bare continuation, so nothing could interrupt it: not
-    /// the caller's deadline, not task cancellation, not the NOP keepalive's own
-    /// timeout — which sends through here too, and so could never detect the
-    /// dead peer that would have triggered recovery.
-    ///
-    /// That is what wedged a Mac for eight hours. Every SCSI command blocked in
-    /// here, the keepalive blocked in here, no recovery event was ever logged
-    /// because nothing was ever able to notice, and `withDeadline` could not
-    /// unwind past an uncancellable child.
-    ///
-    /// Cancelling tears down the whole `NWConnection`, which is heavier than it
-    /// looks and is the only correct answer: a send that never completed may
-    /// have put some fraction of a PDU on the wire, so the byte stream is no
-    /// longer at a frame boundary and nothing after it can be trusted. The
-    /// connection is finished; the session layer rebuilds it.
+    /// Must be cancellable: `contentProcessed` never fires against a peer that
+    /// stops draining a full socket buffer, and an uninterruptible send here
+    /// blocks every command *and* the keepalive that would detect the dead
+    /// peer. Cancelling tears down the whole `NWConnection` — correct, because
+    /// an incomplete send may have left a partial PDU on the wire, so the
+    /// stream is off frame boundary; the session layer rebuilds it.
     public func send(_ data: Data) async throws {
         let resumed = OSAllocatedUnfairLock(initialState: false)
         let connection = self.connection
@@ -96,9 +85,8 @@ public final class NetworkTransport: ConnectionTransport, @unchecked Sendable {
                     }
                     if !already { c.resume(with: result) }
                 }
-                // Checked before sending as well as after: cancellation can land
-                // between the handler being installed and this running, and a
-                // continuation nobody resumes is the bug being fixed.
+                // Cancellation can land between installing the handler and
+                // this running; a continuation nobody resumes is the bug.
                 if Task.isCancelled {
                     resumeOnce(.failure(CancellationError()))
                     return

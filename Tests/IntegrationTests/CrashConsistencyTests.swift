@@ -3,14 +3,9 @@ import Testing
 @testable import MockTarget
 @testable import iSCSIKit
 
-/// Does `writeThrough` actually buy durability?
-///
-/// This could not be answered before. The real target's cache is real, but
-/// cutting its power takes the test rig with it, and the earlier crash test cut
-/// power to the *initiator* instead — where FUA and non-FUA writes behave
-/// identically, so it could not discriminate. The simulated target's cache can
-/// be made to evaporate on command while the harness survives to inspect the
-/// damage.
+/// Does `writeThrough` actually buy durability? Only a *target-side* power
+/// cut discriminates FUA from non-FUA, so the simulated target's cache is
+/// made to evaporate on command while the harness survives to inspect.
 ///
 /// Both arms are asserted on purpose. "FUA writes survived a crash" proves
 /// nothing on its own: if nothing were ever cached, or if `crash()` did not

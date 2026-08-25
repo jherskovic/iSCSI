@@ -20,31 +20,18 @@ public enum TargetDiskError: Error, Sendable {
     case cannotSize(path: String, errno: Int32)
 }
 
-/// The simulated LUN: committed storage plus a **volatile write cache**.
+/// The simulated LUN: committed storage plus a **volatile write cache** —
+/// the cache is the point. With `WCE=1` a write is acknowledged from cache;
+/// only FUA and SYNCHRONIZE CACHE reach stable media, and `crash()` throws
+/// the cache away like a target power cut.
 ///
-/// The cache is the point of this type. A real target with `WCE=1` acknowledges
-/// a write as soon as it is in cache; only FUA writes and SYNCHRONIZE CACHE put
-/// data on stable media. `crash()` throws the cache away, which is what a power
-/// cut at the target does — and it is the one failure the real NAS could never
-/// be made to demonstrate, because cutting power there takes the whole test rig
-/// with it.
-///
-/// Two deliberate choices:
-///
-/// - **Nothing writes back on its own.** No timer, no background flush. A cache
-///   that flushes when it feels like it makes every crash test a coin flip;
-///   deterministic is worth more than realistic here. The single exception is
-///   `maxDirtyBytes`, which exists only to stop a long non-FUA soak from
-///   exhausting memory, and it bumps `pressureCommits` so a test can assert its
-///   window stayed clean.
-/// - **The cache answers reads.** Volatile is not the same as invisible: a read
-///   must see a cached write, or every read-after-write looks like corruption
-///   for a reason that has nothing to do with the initiator.
-///
-/// "Stable media" here means the backing store as this process sees it. Killing
-/// the *process* is not a modelled failure — the host page cache would still
-/// hold unsynced blocks. Use `crash()`, which models the target losing power
-/// while the harness stays alive to check the damage.
+/// Deliberate choices: nothing writes back on its own (deterministic crash
+/// tests beat realistic ones; `maxDirtyBytes` exists only to bound a long
+/// non-FUA soak and bumps `pressureCommits` so tests can assert a clean
+/// window), and the cache answers reads (volatile is not invisible — a read
+/// missing a cached write looks like corruption). "Stable media" means the
+/// backing store as this process sees it; model power loss with `crash()`,
+/// not by killing the process.
 public actor RAMDisk {
     public let blockSize: Int
     public let capacityBlocks: UInt64

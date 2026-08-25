@@ -1,19 +1,10 @@
 //
 //  DaemonController.swift
-//  Setup step C: the daemon is registered, approved, and answering.
-//
-//  Three separate conditions, and the reason this file is longer than a Bool is
-//  that they fail in ways the user has to respond to differently:
-//
-//    not registered          -> press the button
-//    registered, unapproved  -> go to System Settings and switch it on
-//    approved, not answering -> the daemon is crashing; reinstall or file a bug
-//
-//  `SMAppService.status` cannot tell the last two apart. `.enabled` means only
-//  that launchd is willing to start the job — not that it started, not that it
-//  stayed up, and not that it is the build we shipped. So the check is
-//  status *plus* an XPC round trip, and "approved but crashlooping" gets its own
-//  state rather than being reported as success.
+//  Setup step C: the daemon is registered, approved, and answering — three
+//  conditions with three different user remedies. `SMAppService.status`
+//  cannot tell "unapproved" from "approved but crashing" (`.enabled` only
+//  means launchd is willing to start the job), so the check is status *plus*
+//  an XPC round trip. See docs/daemon-registration.md.
 //
 
 import Foundation
@@ -68,26 +59,19 @@ enum DaemonState: Equatable {
 
 @MainActor
 final class DaemonController: ObservableObject {
-    /// SMAppService resolves the service by the *filename* of the plist, so
-    /// this string includes the extension and must match the file in
-    /// Contents/Library/LaunchDaemons byte for byte. release.sh asserts that
-    /// the shipped plist's Label matches its filename; this is the other half.
+    /// SMAppService resolves the service by plist *filename*; this must match
+    /// the file in Contents/Library/LaunchDaemons byte for byte (release.sh
+    /// asserts Label == filename, the other half of the contract).
     static let plistName = "me.herko.iSCSIInitiator.daemon.plist"
 
     @Published private(set) var state: DaemonState = .checking
-    /// Raw detail for the probe UI — error domains and codes, kept because the
-    /// interesting failures here are ones nobody has seen yet.
+    /// Raw error domains/codes for the probe UI.
     @Published private(set) var detail: String = ""
 
     private var service: SMAppService { .daemon(plistName: Self.plistName) }
 
-    /// Every state change, with the detail that produced it.
-    ///
-    /// Added after a reinstall that needed two clicks could not be diagnosed
-    /// from outside: Apple's own SMAppService logging reports a status integer
-    /// and nothing about what this class concluded from it, so working out
-    /// which of six states the screen was showing meant guessing. The same
-    /// lesson as the filesystem extension — instrument rather than infer.
+    /// Every state change is logged with its cause — SMAppService's own
+    /// logging reports only a status integer.
     private static let log = Logger(subsystem: "me.herko.iSCSIInitiator.app",
                                     category: "daemon")
 
@@ -99,10 +83,8 @@ final class DaemonController: ObservableObject {
         detail = why
     }
 
-    /// Whether the plist SMAppService is being asked about is actually in the
-    /// bundle. The reason to check rather than infer: `.notFound` was assumed to
-    /// mean "the plist is missing" and told the user their app was incomplete,
-    /// on a machine where the plist was demonstrably present. Look at the disk.
+    /// Checked on disk rather than inferred from `.notFound`, which is also
+    /// the ordinary never-registered state.
     static var bundledPlistExists: Bool {
         FileManager.default.fileExists(atPath: Bundle.main.bundleURL
             .appendingPathComponent("Contents/Library/LaunchDaemons")
@@ -117,15 +99,9 @@ final class DaemonController: ObservableObject {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
     }
 
-    /// How the running daemon identifies itself, for comparison against the app.
-    ///
-    /// Both halves, not just the marketing version. `DaemonInfo.build` exists
-    /// precisely "to tell two builds of the same marketing version apart" — its
-    /// own words — and the check ignored it, so shipping a changed `iscsid`
-    /// under an unchanged version number left the old daemon running and
-    /// nothing reported a problem. Apple's guidance is to re-register whenever
-    /// the executable changes, which is a statement about the binary, not about
-    /// what the release was called.
+    /// Both halves, not just the marketing version: `build` tells two builds
+    /// of one version apart, and Apple says to re-register whenever the
+    /// *executable* changes.
     private func versionLabel(_ version: String, _ build: String) -> String {
         "\(version) (\(build))"
     }
@@ -140,12 +116,9 @@ final class DaemonController: ObservableObject {
         case .requiresApproval:
             transition(to: .requiresApproval, "SMAppService.status = requiresApproval")
         case .notFound:
-            // Measured on a clean machine: a service that has never been
-            // registered reports .notFound and has no Background Task
-            // Management record at all, while .notRegistered is what you get
-            // after registering and then unregistering. So .notFound is the
+            // A never-registered service reports .notFound; it is the
             // ordinary starting state, not a defect — unless the plist really
-            // is absent, which is the one case worth alarming about.
+            // is absent from the bundle.
             transition(to: Self.bundledPlistExists ? .notRegistered : .notFound,
                        "SMAppService.status = notFound; bundled plist "
                        + (Self.bundledPlistExists ? "present (never registered yet)"
@@ -181,43 +154,18 @@ final class DaemonController: ObservableObject {
 
     /// Register, retrying while the system says nothing was recorded.
     ///
-    /// `register()` throws EPERM (SMAppServiceErrorDomain 1) in two unrelated
-    /// situations, and they need opposite responses:
-    ///
-    ///   * The daemon is recorded but unapproved. `.status` is then
-    ///     `requiresApproval` and the user has somewhere to go. Retrying is
-    ///     pointless and would delay telling them.
-    ///   * A previous `unregister()` has not finished. `.status` is
-    ///     `notRegistered` and nothing was recorded at all. Only asking again
-    ///     helps.
-    ///
-    /// The second is what made every reinstall take two clicks. Measured:
-    ///
-    ///     11:08:41.582  register() calling
-    ///     11:08:41.603  state checking -> notRegistered
-    ///     11:08:47.858  settle gave up after 24 rounds in notRegistered
-    ///                   failed("SMAppServiceErrorDomain 1 ... not permitted")
-    ///     11:09:15.346  register() returned without throwing   [second click]
-    ///     11:09:15.415  running(build 19, pid 70587)
-    ///
-    /// The first attempt threw, the second did not. Polling `.status` after a
-    /// failed register — which is what the previous fix did, 24 times over six
-    /// seconds — cannot help, because there is no pending result to wait for.
-    /// The user's second click was not confirming anything; it was doing the
-    /// work. So do it here.
-    ///
-    /// `unregister()` waits for the daemon process to die, and that is
-    /// evidently not the same as launchd having finished with the job.
+    /// `register()` throws EPERM in two unrelated situations needing opposite
+    /// responses: recorded-but-unapproved (`.status == requiresApproval` —
+    /// stop and point at System Settings) and a previous `unregister()` that
+    /// launchd has not finished with (`.status == notRegistered` — only
+    /// *calling register again* helps; polling `.status` waits on a result
+    /// that does not exist). See docs/daemon-registration.md.
     func register() async {
         state = .checking
         var lastError: NSError?
 
-        // Eight attempts, not the five first shipped. Measured on a healthy
-        // machine, launchd took ~1.4s to let go of the old job and the third
-        // attempt was the one that worked — leaving only two spare. Since a
-        // register that was recorded-but-unapproved returns immediately via the
-        // status check below, extra attempts cost nothing except in the case
-        // where registration is permanently failing, which is already broken.
+        // launchd can take >1 s to let go of an old job; the unapproved case
+        // returns immediately via the status check, so extra attempts are free.
         for attempt in 1 ... 8 {
             do {
                 Self.log.log("register() calling (attempt \(attempt, privacy: .public))")
@@ -236,8 +184,7 @@ final class DaemonController: ObservableObject {
                 lastError = error
                 Self.log.log("register() threw \(Self.describe(error), privacy: .public) on attempt \(attempt, privacy: .public)")
 
-                // Did it record the job despite throwing? One cheap look, not
-                // the full settle: the answer here is immediate either way.
+                // Did it record the job despite throwing?
                 await refresh()
                 guard case .notRegistered = state else {
                     // Something was recorded — approval pending, or already
@@ -247,8 +194,7 @@ final class DaemonController: ObservableObject {
                 }
 
                 if attempt < 8 {
-                    // Backoff capped so eight attempts stay inside ~6s rather
-                    // than growing to half a minute.
+                    // Capped so eight attempts stay inside ~6 s.
                     try? await Task.sleep(for: .milliseconds(min(400 * attempt, 1000)))
                 }
             }
@@ -260,20 +206,12 @@ final class DaemonController: ObservableObject {
         }
     }
 
-    /// Refresh until the answer stops changing, or a deadline passes.
-    ///
-    /// `SMAppService.register()` returns before launchd has finished recording
-    /// the job, and the daemon it starts needs a moment more before it answers
-    /// XPC. Asking once, immediately, catches that gap and reports
-    /// `notRegistered` — so the button relabelled itself from "Reinstall" to
-    /// "Install" and the user had to press it a second time to see the state
-    /// that was already on its way. Every update did this.
-    ///
-    /// `notRegistered` and `registeredNotResponding` are the two answers that
-    /// mean "not yet" as often as they mean "no", so those are the ones worth
-    /// waiting on. Everything else is a real answer, including
-    /// `requiresApproval`: the user has somewhere to go and should be told
-    /// immediately rather than after five seconds of nothing.
+    /// Refresh until the answer stops changing, or a deadline passes:
+    /// `register()` returns before launchd has recorded the job, and the
+    /// daemon needs a moment before it answers XPC. Only `notRegistered` and
+    /// `registeredNotResponding` mean "not yet" as often as "no"; everything
+    /// else — `requiresApproval` included — is a real answer reported
+    /// immediately.
     private func settle(within deadline: Duration = .seconds(6)) async {
         let clock = ContinuousClock()
         let started = clock.now
@@ -295,15 +233,10 @@ final class DaemonController: ObservableObject {
         }
     }
 
-    /// Apple's header: "If an app updates either the plist or the executable
-    /// for a LaunchAgent or LaunchDaemon, the SMAppService must be re-registered
-    /// or it may not launch. It is recommended to also call unregister before
-    /// re-registering if the executable has been changed."
-    ///
-    /// Uses the async unregister, which — unlike the throwing one — waits for
-    /// the running process to actually be killed. Re-registering before the old
-    /// process is reaped is how you get a registration that points at a daemon
-    /// which never comes back.
+    /// Apple requires re-registering whenever the plist or executable changes,
+    /// with an unregister first. The async unregister — unlike the throwing
+    /// one — waits for the old process to die; re-registering before that
+    /// yields a registration pointing at a daemon that never comes back.
     func reregister() async {
         state = .checking
         detail = "unregistering before re-registering (the executable changed)"
@@ -333,8 +266,7 @@ final class DaemonController: ObservableObject {
     }
 
     func openLoginItemsSettings() {
-        // A real API, unlike the FSKit pane — see the R7 note in
-        // docs/backend-a-fskit-notes.md. No URL-scheme guessing needed here.
+        // A real API, unlike the FSKit pane (docs/backend-a-fskit-notes.md).
         SMAppService.openSystemSettingsLoginItems()
     }
 
@@ -366,9 +298,8 @@ final class DaemonController: ObservableObject {
 
 // MARK: - The XPC round trip
 
-/// One-shot connections rather than a long-lived one, because everything the
-/// setup flow asks is a liveness question: a cached connection that has gone
-/// stale answers wrongly, and in the direction that looks like success.
+/// One-shot connections: everything the setup flow asks is a liveness
+/// question, and a stale cached connection answers wrongly toward success.
 enum DaemonConnection {
     struct Unreachable: LocalizedError {
         let reason: String
@@ -399,24 +330,18 @@ enum DaemonConnection {
         }
     }
 
-    /// Open a connection, hand the proxy to `body`, and bridge whichever of the
-    /// reply block or the error handler fires into one continuation.
-    ///
-    /// NSXPC calls exactly one of those in the ordinary cases but guarantees
-    /// neither if the peer dies mid-call, so this guards against resuming twice
-    /// (a crash) and, via the invalidation handler, against never resuming at
-    /// all (a hang the user experiences as a frozen setup screen).
+    /// Open a connection, hand the proxy to `body`, and bridge the reply
+    /// block / error handler into one continuation. NSXPC guarantees neither
+    /// exactly-one nor at-least-one if the peer dies mid-call, so this guards
+    /// against resuming twice (a crash) and never resuming (a frozen screen).
     // Not private: DaemonClient.swift builds the rest of the surface on it.
     static func call<T: Sendable>(
         _ body: @escaping @Sendable (ISCSIDaemonProtocol,
                                      @escaping @Sendable (Result<T, any Error>) -> Void) -> Void
     ) async throws -> T {
-        // NSXPCConnection's methods are documented as callable from any thread,
-        // but the class is not annotated Sendable — and the paths that have to
-        // invalidate it (the reply block, the error handler, the invalidation
-        // and interruption handlers) genuinely do run on arbitrary queues. This
-        // is the case nonisolated(unsafe) exists for: the safety argument is
-        // Apple's documentation, not the compiler's inference.
+        // NSXPCConnection is documented thread-safe but not annotated
+        // Sendable, and the handlers genuinely run on arbitrary queues — the
+        // case nonisolated(unsafe) exists for.
         nonisolated(unsafe) let connection = NSXPCConnection(
             machServiceName: iscsiDaemonServiceName, options: .privileged)
         connection.remoteObjectInterface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
@@ -458,9 +383,8 @@ enum DaemonConnection {
 
 // MARK: - Probe UI
 
-/// M2 instrumentation, not product UI. The shipping version of this is a step
-/// in the setup sheet; this exists to answer R4 — whether SMAppService.register()
-/// refuses a build that is not notarized — and to show the raw error when it does.
+/// Instrumentation, not product UI: shows the raw SMAppService errors the
+/// setup sheet summarises away.
 struct DaemonPanelView: View {
     @StateObject private var daemon = DaemonController()
 
@@ -479,9 +403,7 @@ struct DaemonPanelView: View {
                     Button("Re-register") { Task { await daemon.reregister() } }
                     Button("Unregister") { Task { await daemon.unregister() } }
                     Spacer()
-                    // Only offered when it is the actual next step. A button
-                    // that opens System Settings when System Settings is not
-                    // where the problem is teaches the user to ignore it.
+                    // Only offered when it is the actual next step.
                     if daemon.state == .requiresApproval {
                         Button("Open Login Items…") { daemon.openLoginItemsSettings() }
                             .buttonStyle(.borderedProminent)

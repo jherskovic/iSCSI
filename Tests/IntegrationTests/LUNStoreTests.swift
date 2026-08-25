@@ -1,18 +1,11 @@
 //
 //  LUNStoreTests.swift
 //
-//  First tests ever to run against the volume's data path. Until this code was
-//  split out of `iSCSIFSExtension.swift` it lived in an Xcode target, so
-//  `swift test` could not reach a line of it — 1,155 lines of shipping code
-//  sitting at 0% while the package reported 88%.
-//
-//  `BackingStore` is the local-file implementation of `LUNStore`. It is not the
-//  path a user's bytes take, but it is the same contract `DaemonStore` has to
-//  satisfy, and it is the one the FSKit plumbing is regression-tested against
-//  when a problem needs isolating from the network. Its edge behaviour — short
-//  reads at the end of the device, offsets past the end, partial writes — is
-//  exactly where a filesystem finds out whether a block device means what it
-//  says.
+//  `BackingStore` is the local-file implementation of `LUNStore` — the same
+//  contract `DaemonStore` satisfies, used to isolate FSKit problems from the
+//  network. Its edge behaviour (short reads at the device's end, offsets past
+//  the end, partial writes) is where a filesystem finds out whether a block
+//  device means what it says.
 //
 
 import Foundation
@@ -103,10 +96,9 @@ struct LUNStoreTests {
         #expect(try read(reopened, at: 16384, length: 4096) == payload)
     }
 
-    /// Overlapping writes to the same region must land in submission order.
-    /// The kernel rewrites the same block back-to-back — GPT headers, APFS
-    /// superblocks, journal heads — and trusts device-order semantics;
-    /// `docs/architecture.md` records what happens when that is violated.
+    /// Overlapping writes must land in submission order: the kernel rewrites
+    /// the same block back-to-back and trusts device-order semantics
+    /// (`docs/architecture.md` records the corruption otherwise).
     @Test func overlappingWritesLandInOrder() throws {
         let (store, url) = try makeStore()
         defer { try? FileManager.default.removeItem(at: url) }

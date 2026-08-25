@@ -2,16 +2,9 @@
 //  ISCSIError.swift
 //  One error domain for everything that crosses XPC.
 //
-//  Every `catch` in the daemon's XPC surface used to do `error as NSError`.
-//  Swift enums bridge to NSError as domain "iSCSIKit.SessionError" with the case
-//  *index* as the code and no user info, so the client received something like
-//  "The operation couldn't be completed. (iSCSIKit.SessionError error 2.)" —
-//  which cannot distinguish a wrong CHAP secret from a NAS that is switched off,
-//  and cannot be acted on by a UI or by a person reading a bug report.
-//
-//  The GUI needs three things from a failure and none of them survive that
-//  bridging: what went wrong in a sentence, what the user might do about it, and
-//  enough raw detail to diagnose it when the answer is neither.
+//  Swift enums bridge to NSError with the case *index* as code and no user
+//  info — useless across the boundary. The GUI needs a sentence, a recovery
+//  suggestion, and raw detail; this mapping is where they survive.
 //
 
 import Foundation
@@ -116,9 +109,8 @@ public enum ISCSIError {
                         + "Many targets also require the secret to be at least 12 characters.",
                         nil)
             case .loginFailed(let statusClass, let statusDetail):
-                // 0x02/0x01 is "authentication failure" in RFC 7143 terms, and
-                // it is by far the most common real failure — worth naming
-                // rather than printing two hex bytes at the user.
+                // RFC 7143 "authentication failure" — the most common real
+                // failure, worth naming over two hex bytes.
                 if statusClass == 0x02 && statusDetail == 0x01 {
                     return (.authenticationFailed,
                             "The target refused the login as unauthorised.",
@@ -183,9 +175,7 @@ public enum ISCSIError {
                         "The sense data attached to this error identifies the cause.",
                         sense.map(hex))
             case .invalidGeometry(let blockSize, let blockCount, let reason):
-                // Points at the target, not at the user, because there is
-                // nothing they can change here — and not at the initiator
-                // either, because it is the target that is misreporting.
+                // Points at the target: nothing user- or initiator-side to fix.
                 return (.deviceNotReady,
                         "The target described a device that cannot exist: \(reason) "
                         + "(block size \(blockSize), \(blockCount) blocks).",
@@ -210,8 +200,7 @@ public enum ISCSIError {
     }
 
     private static func hex(_ sense: SenseData) -> String {
-        // Sense bytes are what a storage vendor asks for first. Keep them in the
-        // error rather than only in the log, so a bug report carries them.
+        // Sense bytes ride in the error so a bug report carries them.
         sense.description
     }
 }

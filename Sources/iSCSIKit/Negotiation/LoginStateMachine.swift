@@ -6,23 +6,15 @@ public struct LoginConfig: Sendable {
     public var sessionType: SessionType
     /// Required for normal sessions; ignored for discovery.
     public var targetName: String?
-    /// nil → offer AuthMethod=None only.
-    ///
-    /// Note what that means, because it is not obvious at the call site and it
-    /// was the shape of a real bug: a nil here is not "no preference", it is an
-    /// instruction to log in unauthenticated. Anything that resolves credentials
-    /// and can *fail* to find them must not pass the failure through as nil —
-    /// see `requiresAuthentication`.
+    /// nil → offer AuthMethod=None only. nil is not "no preference", it is an
+    /// instruction to log in unauthenticated — code that can *fail* to find
+    /// credentials must not pass the failure through as nil; see
+    /// `requiresAuthentication`.
     public var chap: CHAP.Credentials?
-    /// Refuse to log in without CHAP.
-    ///
-    /// Set by callers who know the target is configured for authentication, so
-    /// that a credential lookup which silently returned nothing becomes a
-    /// connection error instead of an unauthenticated session. The daemon
-    /// already fails closed before it gets here; this is the backstop for any
-    /// other caller, present because the failure mode is invisible — an
-    /// unauthenticated session looks exactly like an authenticated one from
-    /// every layer above.
+    /// Refuse to log in without CHAP: a credential lookup that silently
+    /// returned nothing becomes an error instead of an unauthenticated
+    /// session, which looks identical to an authenticated one from every
+    /// layer above.
     public var requiresAuthentication = false
     public var desired = DesiredParameters()
     public var isid: ISID
@@ -30,22 +22,13 @@ public struct LoginConfig: Sendable {
     public var cid: UInt16 = 0
 
     /// Where the authentication exchange narrates itself, or nil for silence.
+    /// A closure, not `os.Logger`: iSCSIKit has no platform in it, and the
+    /// place CHAP failures are watched is `iscsictl --debug` on a terminal.
     ///
-    /// A closure rather than an `os.Logger` in this module, for two reasons.
-    /// iSCSIKit does not get to name the app's logging subsystem — it is the
-    /// half of the codebase that has no platform in it. And the place a CHAP
-    /// failure is actually watched is `iscsictl --debug` on a terminal, which
-    /// an os_log sink does not reach. The daemon points this at `DaemonLog`,
-    /// the CLI points it at stderr next to the PDU trace, and tests leave it
-    /// nil and observe no behaviour change at all.
-    ///
-    /// **Nothing secret may be written here.** User names, algorithm numbers,
-    /// stage names and byte counts only — never a secret, never `CHAP_R`, never
-    /// challenge bytes. `CHAP_R` is MD5 over the secret with an id and a
-    /// challenge the peer chose, so publishing it to a log that outlives the
-    /// connection hands an offline attack to anyone who reads the log. Where
-    /// the shape of a value matters, log its length in the `<redacted NB>` form
-    /// `TracingTransport` already uses.
+    /// **Nothing secret may be written here** — names, stage names, and byte
+    /// counts only; never `CHAP_R` or challenge bytes (a logged `CHAP_R` is an
+    /// offline attack on the secret). For shapes, use `<redacted NB>` as
+    /// `TracingTransport` does.
     public var trace: (@Sendable (String) -> Void)?
 
     public init(
@@ -183,9 +166,8 @@ public struct LoginStateMachine: Sendable {
         return "<redacted \(value.utf8.count)B>"
     }
 
-    /// RFC 7143 §11.13.5. Naming the code is the whole point: "status 2/1" sent
-    /// a real debugging session looking at the initiator's credentials when the
-    /// target was rejecting something else entirely.
+    /// RFC 7143 §11.13.5. Naming the code is the point: a bare "status 2/1"
+    /// misdirects debugging.
     private static func describe(statusClass: UInt8, statusDetail: UInt8) -> String {
         let meaning: String?
         switch (statusClass, statusDetail) {
@@ -228,10 +210,9 @@ public struct LoginStateMachine: Sendable {
             params.append("TargetName", target)
         }
         if chapExchange != nil {
-            // Whether we will challenge back is decided here and not announced
-            // until the response, so it is worth stating up front: a target that
-            // rejects only the mutual half fails three PDUs later, and the trace
-            // is the only thing that says which half we were attempting.
+            // Stated up front because a target that rejects only the mutual
+            // half fails three PDUs later; the trace is the only record of
+            // which half was attempted.
             note("offering AuthMethod=CHAP as “\(config.chap?.name ?? "?")”, "
                  + "mutual=\(config.chap?.wantsMutual == true ? "yes" : "no")"
                  + (config.chap?.mutualName.map { ", expecting the target to name “\($0)”" } ?? ""))
@@ -243,9 +224,7 @@ public struct LoginStateMachine: Sendable {
                 nsg: .securityNegotiation
             )
         } else {
-            // Worth a line of its own: an unauthenticated session looks
-            // identical to an authenticated one from every layer above, so this
-            // is the only place that says the credentials were never there.
+            // The only place that records the credentials were never there.
             note("offering AuthMethod=None — no credentials configured")
             params.append("AuthMethod", "None")
             stage = .operational // next response should carry us into LO stage
@@ -296,10 +275,9 @@ public struct LoginStateMachine: Sendable {
         }
 
         guard response.isSuccess else {
-            // The stage is half the diagnosis. A rejection while awaiting the
-            // CHAP *result* means the target took our response and refused it;
-            // the same code while awaiting the *challenge* means it refused us
-            // before any secret was involved.
+            // The stage is half the diagnosis: rejected awaiting the CHAP
+            // *result* = our response was refused; awaiting the *challenge* =
+            // refused before any secret was involved.
             note("target rejected the login while \(stageName): "
                  + Self.describe(statusClass: response.statusClass,
                                  statusDetail: response.statusDetail))
@@ -336,14 +314,9 @@ public struct LoginStateMachine: Sendable {
             ))
         }
 
-        // Incoming continuation: buffer and ask for the rest.
-        //
-        // Bounded, because this runs *before* authentication and the peer picks
-        // when it stops. `loginTextLimit` was already the right number — RFC 7143
-        // §6.3 caps login-phase text until MRDSL is negotiated — but it was only
-        // ever applied to what we send (`emit`, below). A target that sets the C
-        // bit and never clears it grew this buffer until the daemon died, and
-        // the daemon is root and holds every other volume on the machine.
+        // Incoming continuation: buffer and ask for the rest. Bounded — this
+        // runs pre-authentication and the peer picks when it stops, so the
+        // §6.3 text cap applies to what we receive, not just what we send.
         incomingText.append(response.dataSegment)
         guard incomingText.count <= Self.loginTextLimit else {
             throw NegotiationError.protocolViolation(

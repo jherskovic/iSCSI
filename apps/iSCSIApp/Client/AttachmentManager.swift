@@ -2,16 +2,10 @@
 //  AttachmentManager.swift
 //  Turning a configured target into a volume in Finder, and back.
 //
-//  Ported from scripts/iscsi-attach.sh and iscsi-detach.sh, which were the only
-//  working end-to-end path this project had. The semantics are preserved
-//  deliberately, including the mountpoint tag, so mounts made by the bash era
-//  are still recognised by this code.
-//
-//  It lives in the app rather than the daemon because the whole path is
-//  unprivileged and user-context: `mount -F` resolves the module through
-//  the *user's* fskit_agent — a root daemon's lookup goes to fskitd, which holds
-//  no third-party modules — and neither the mount nor `hdiutil attach` needs
-//  root. Measured; see the R2 section of docs/backend-a-fskit-notes.md.
+//  Lives in the app, not the daemon: the whole path is unprivileged and
+//  user-context — `mount -F` resolves the module through the *user's*
+//  fskit_agent, and a root daemon's lookup goes to fskitd, which holds no
+//  third-party modules (docs/backend-a-fskit-notes.md).
 //
 //  Two layers, and the order matters in both directions:
 //
@@ -50,10 +44,7 @@ enum AttachmentError: LocalizedError {
             if duplicates.isEmpty {
                 return "Could not serve the LUN as a file: \(detail)"
             }
-            // Reached only when the automatic repair did not help, so say that
-            // rather than describing a problem that has already been dealt
-            // with. Claiming "macOS has N copies registered" after removing
-            // them sends the user to fix something that is no longer true.
+            // Reached only when the automatic repair did not help; say that.
             return "Could not serve the LUN as a file, even after removing "
                  + "\(duplicates.count) stale copy(s) of the filesystem extension. "
                  + "Details: \(detail)"
@@ -73,9 +64,8 @@ enum AttachmentError: LocalizedError {
                 return "Check that the background service is running and the filesystem "
                      + "extension is enabled, on the Setup screen."
             }
-            // The extra copies are already gone by the time this is shown.
-            // What is left is the possibility that something is still holding
-            // the old registration, which a relaunch settles.
+            // The extra copies are already gone; a relaunch settles whatever
+            // still holds the old registration.
             return "The extra copies were removed. Quit and reopen the app, then "
                  + "try again. If a disk image of an older version is still "
                  + "mounted in Finder, eject it first — that is usually where "
@@ -97,15 +87,10 @@ final class AttachmentManager: ObservableObject {
     private var unmountObserver: NSObjectProtocol?
 
     init() {
-        // Ejecting in Finder takes down the APFS volume and the disk image, and
-        // leaves the FSKit mount — and the iSCSI session behind it — running.
-        // The user sees the volume disappear and reasonably believes they have
-        // detached; the session stays open against the NAS until the app is
-        // next brought forward, or forever if it is not.
-        //
-        // NSWorkspace rather than DiskArbitration: this is an app asking "did a
-        // volume I mounted go away", which is exactly what the workspace
-        // notification answers, without a C callback API and a run-loop source.
+        // A Finder eject takes down the APFS volume and disk image but leaves
+        // the FSKit mount — and the iSCSI session behind it — running until
+        // noticed. NSWorkspace rather than DiskArbitration: "did a volume go
+        // away" is exactly what the workspace notification answers.
         unmountObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didUnmountNotification, object: nil, queue: .main
         ) { [weak self] note in
@@ -120,9 +105,8 @@ final class AttachmentManager: ObservableObject {
         guard let orphan = attachments.first(where: { $0.volumePaths.contains(path) })
         else { return }
         Task {
-            // detach() is written to tolerate layers that are already gone, so
-            // the same path handles "the user ejected" and "the user pressed
-            // Detach" without either needing to know about the other.
+            // detach() tolerates layers already gone, so one path handles both
+            // Finder ejects and the Detach button.
             try? await detach(tag: orphan.tag)
         }
     }
@@ -132,7 +116,6 @@ final class AttachmentManager: ObservableObject {
             .appendingPathComponent("Library/Caches/me.herko.iSCSIInitiator")
             .appendingPathComponent(tag)
     }
-
 
     func attach(_ target: TargetRecordView) async throws -> Attachment {
         let portal = MountpointTag.portal(host: target.host, port: target.port)
@@ -149,17 +132,11 @@ final class AttachmentManager: ObservableObject {
             let result = try Self.run("/sbin/mount",
                                       ["-F", "-t", "iSCSI", url, hidden.path])
             if result.status != 0 {
-                // "File system named iSCSI not found" reads as "not installed"
-                // and is just as often "installed more than once" — which every
-                // presence check reports as healthy. Only worth the 2.3s scan
-                // once something has already failed.
-                //
-                // Repaired here rather than reported. Telling the user to press
-                // Register on another screen is asking them to run a fix this
-                // code could have run itself, and it does not reliably work:
-                // the duplicates come back the moment anything rebuilds or
-                // remounts the app, so the instruction lands on a moving
-                // target. Prune and try once more; only explain if that fails.
+                // "File system named iSCSI not found" is as often "installed
+                // more than once" as "not installed". Repaired here rather
+                // than reported — the duplicates come back whenever the app is
+                // rebuilt or remounted, so prune, retry once, and only explain
+                // if that still fails.
                 let pruned = FSKitRegistrationAudit.pruneDuplicates()
                 var retried: ProcessResult?
                 if !pruned.isEmpty {
@@ -186,19 +163,16 @@ final class AttachmentManager: ObservableObject {
             attachment.device = existing
             attachment.volumePaths = Self.mountPoints(ofDevice: existing)
         } else {
-            // -noverify: there is no checksum on a raw LUN, and verification
-            // would read the whole device across the network before anything
-            // could be mounted.
+            // -noverify: a raw LUN has no checksum, and verification would
+            // read the whole device over the network first.
             let common = ["attach", "-imagekey", "diskimage-class=CRawDiskImage",
                           "-noverify", "-plist", image.path]
             var result = try Self.run("/usr/bin/hdiutil", common)
 
             if result.status != 0 {
-                // A LUN with no filesystem on it makes hdiutil fail outright
-                // with "no mountable file systems". That is not a broken
-                // attach — it is a *new* LUN, which is the state every LUN
-                // starts in. Attach it again without mounting, so the device
-                // exists and Disk Utility has something to format.
+                // "No mountable file systems" is a *new* LUN, not a broken
+                // attach; re-attach -nomount so Disk Utility has a device to
+                // format.
                 let bare = try Self.run("/usr/bin/hdiutil", common + ["-nomount"])
                 guard bare.status == 0 else {
                     throw AttachmentError.imageAttachFailed(result.combined)
@@ -210,17 +184,13 @@ final class AttachmentManager: ObservableObject {
             attachment.volumePaths = volumes
         }
 
-        // Recorded before anything else can go wrong with it. An earlier
-        // version threw here when the LUN carried no filesystem — after the
-        // FSKit volume was mounted and the image attached — so both layers were
-        // left up and invisible to the app: not listed, not detachable, and the
-        // advice to "use Disk Utility" pointed at a device the same dialog had
-        // just called a failure.
+        // Recorded before anything else can go wrong: throwing after the
+        // layers are up leaves them mounted but invisible — not listed, not
+        // detachable.
         attachments.removeAll { $0.tag == tag }
         attachments.append(attachment)
         return attachment
     }
-
 
     /// Innermost first: the filesystem, then the raw device, then the FSKit
     /// volume that was serving the file underneath it. Detaching the outer
@@ -230,9 +200,8 @@ final class AttachmentManager: ObservableObject {
         let hidden = Self.hiddenDirectory(tag: tag)
         let image = hidden.appendingPathComponent("lun0.img")
 
-        // Ask hdiutil which device is backed by *this* image rather than
-        // remembering one: a disk number can be reused, and detaching a stale
-        // number would eject somebody else's disk.
+        // Ask hdiutil which device is backed by *this* image: disk numbers
+        // are reused, and detaching a stale one ejects somebody else's disk.
         if let device = Self.attachedDevice(forImage: image.path) {
             _ = try? Self.run("/usr/sbin/diskutil", ["unmountDisk", device])
             let detached = try? Self.run("/usr/bin/hdiutil", ["detach", device])
@@ -248,9 +217,8 @@ final class AttachmentManager: ObservableObject {
             }
         }
 
-        // rmdir, never rm -rf. The directory is a mount point, never storage —
-        // so if anything is left in it, something is wrong, and deleting it
-        // silently would destroy the evidence along with whatever it was.
+        // The directory is a mount point, never storage; it should be empty
+        // by the time it is removed.
         try? FileManager.default.removeItem(at: hidden)
 
         attachments.removeAll { $0.tag == tag }
@@ -282,8 +250,7 @@ final class AttachmentManager: ObservableObject {
     // MARK: - Asking the system
 
     private static func isMounted(_ path: String) -> Bool {
-        // getmntinfo rather than parsing `mount` output: no subprocess, no
-        // locale, and no false match on a path that merely contains another.
+        // getmntinfo: no subprocess, no locale, no substring false matches.
         var buffer: UnsafeMutablePointer<statfs>?
         let count = getmntinfo(&buffer, MNT_NOWAIT)
         guard count > 0, let buffer else { return false }
@@ -318,12 +285,10 @@ final class AttachmentManager: ObservableObject {
         return nil
     }
 
-    /// Where a device's filesystems are mounted.
-    ///
-    /// Asks hdiutil, not `mount | grep <device>`. APFS mounts a *synthesized*
-    /// container with a different disk number — disk8 becomes disk9s1 — so
-    /// matching on the device number reports "not mounted" for a perfectly
-    /// healthy volume. 
+    /// Where a device's filesystems are mounted. Asks hdiutil, not
+    /// `mount | grep`: APFS mounts a *synthesized* container under a different
+    /// disk number, so device-number matching reports healthy volumes as
+    /// unmounted.
     private static func mountPoints(ofDevice device: String) -> [String] {
         guard let result = try? run("/usr/bin/hdiutil", ["info", "-plist"]),
               result.status == 0,
@@ -346,7 +311,6 @@ final class AttachmentManager: ObservableObject {
     }
 
     /// Parse `hdiutil attach -plist`.
-
     private static func parseAttachPlist(_ data: Data) -> (device: String?, volumes: [String]) {
         guard let plist = try? PropertyListSerialization.propertyList(
             from: data, format: nil) as? [String: Any],
@@ -389,9 +353,8 @@ final class AttachmentManager: ObservableObject {
         process.standardOutput = out
         process.standardError = err
         try process.run()
-        // Read before waiting: a child that fills the pipe buffer blocks
-        // forever if nobody drains it, and hdiutil -plist output is large
-        // enough to matter.
+        // Read before waiting: hdiutil's -plist output can fill the pipe
+        // buffer, and an undrained child blocks forever.
         let outData = out.fileHandleForReading.readDataToEndOfFile()
         let errData = err.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()

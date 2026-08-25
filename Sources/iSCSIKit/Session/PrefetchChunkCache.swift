@@ -1,42 +1,21 @@
 import Foundation
 
 /// A read cache of fixed-size, offset-aligned chunks over a block device,
-/// with gated speculation. This is what stands between a VM guest and a
-/// round trip per read.
+/// with gated speculation — what stands between a VM guest and a round trip
+/// per read. A miss fetches the whole covering span in one round trip
+/// (read-around); requests match by range, not size, so a variable-size
+/// sequential stream still hits. Speculation is gated by `ReadaheadPolicy`
+/// and issues whole chunks.
 ///
-/// Two measured failures of the slot-per-request design this replaces, both
-/// from the first real VM run (docs/queue-depth.md):
+/// Coherence: write-through. `willWrite` runs before the device write (ramp
+/// reset, generation bump, overlapping pending fetches dropped); `didWrite`
+/// patches acknowledged bytes into overlapping ready chunks so
+/// write-then-read-back hits; `writeFailed` drops the overlap (outcome
+/// unknown). All of it assumes this initiator is the LUN's only writer.
 ///
-/// - Speculation was keyed by exact offset *and* request size, so a stream
-///   whose request size changed mid-run — which a guest's does constantly,
-///   4 KiB to ~850 KiB inside one minute — threw away entire windows of
-///   already-paid-for data: 72% of a genuinely sequential burst wasted.
-/// - A miss fetched exactly what was asked. With FSKit delivering one
-///   16–32 KiB read at a time and each paying an XPC plus SCSI round trip,
-///   the volume floored at ~80 reads/s and a guest boot took minutes.
-///
-/// So reads are now served from `chunkBytes`-aligned chunks. A miss fetches
-/// the whole covering span in one round trip (read-around) and keeps it, so
-/// nearby small reads — the shape of a boot — become memory copies. Requests
-/// are matched by range, not size, so a variable-size sequential stream hits.
-/// Speculation still exists and is still gated by `ReadaheadPolicy`'s
-/// proven-consecutive-bytes rule, but it issues chunks, and a chunk is never
-/// thrown away because the request size moved.
-///
-/// Coherence: writes are written *through*. `willWrite` runs before the
-/// device write (ramp reset, generation bump, overlapping pending fetches
-/// dropped), and `didWrite` patches the acknowledged bytes into overlapping
-/// ready chunks — so write-then-read-back is a hit and a guest's journal
-/// traffic stops shredding the cache. `writeFailed` is the conservative
-/// fallback: outcome unknown, overlapping chunks dropped. All of it assumes
-/// this initiator is the only writer of the LUN — the same single-initiator
-/// assumption the readahead path has always made; a second writer was never
-/// safe against any of this.
-///
-/// Transport-agnostic on purpose: the owner supplies a synchronous fetch (the
-/// miss path, whose errors and accounting stay the owner's) and an async
-/// fetch (speculation). It lives here, like `BlockAligner`, so all of the
-/// above is unit-tested against an in-memory LUN instead of argued correct.
+/// Transport-agnostic so everything above is unit-tested against an
+/// in-memory LUN: the owner supplies the synchronous (miss) and async
+/// (speculation) fetches.
 public final class PrefetchChunkCache: @unchecked Sendable {
     public enum CacheError: Error, Equatable {
         /// A previously issued speculative read never answered within the
@@ -67,17 +46,10 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         /// Deepest speculation window actually opened.
         public var maxDepth = 0
 
-        /// Speculative chunks that left the cache having been read at least
-        /// once, and having never been read at all. Together they are the only
-        /// *settled* verdict on speculation: a chunk still resident and unread
-        /// has not been wasted, it has merely not been wanted yet.
-        ///
-        /// `chunksSpeculated - speculatedUsed` cannot be used to steer depth,
-        /// which is what these exist for. That difference counts everything
-        /// in flight as waste, and a deeper window keeps more in flight, so it
-        /// reports more waste precisely when depth rises — a controller fed
-        /// that number would drive depth to the floor on a workload where
-        /// deep readahead was working perfectly.
+        /// Speculative chunks that left the cache read at least once / never
+        /// read — the only *settled* verdict on speculation, and what steers
+        /// depth. (`chunksSpeculated - speculatedUsed` cannot: it counts
+        /// everything in flight as waste, so it rises exactly when depth does.)
         public var resolvedUsed = 0
         public var resolvedWasted = 0
         /// Depth cap currently in force. Constant when a `workloadProfile`
@@ -149,13 +121,10 @@ public final class PrefetchChunkCache: @unchecked Sendable {
     private var tick: UInt64 = 0
     private var statsStore = Stats()
     /// Bumped by every `noteWrite`. A miss snapshots it before its fetch and
-    /// declines to cache the result if it changed: bytes fetched while a
-    /// write was landing may predate that write, and keeping them would serve
-    /// pre-write data indefinitely. The read still returns them — a caller
-    /// racing its own writer gets whichever side wins, as ever — but nothing
-    /// stale persists. Deliberately coarse (any write anywhere): the cost is
-    /// one uncached read-around per race, and a fine-grained range check is
-    /// exactly the kind of cleverness that ends in serving stale blocks.
+    /// declines to cache the result if it changed — bytes fetched while a
+    /// write was landing may predate that write. The read still returns them;
+    /// nothing stale persists. Deliberately coarse (any write anywhere):
+    /// a fine-grained range check is how stale blocks get served.
     private var writeGeneration: UInt64 = 0
 
     public var stats: Stats {
@@ -339,13 +308,9 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// The device acknowledged a write of exactly `data` at `offset`: write
-    /// it through into the overlapping cached chunks instead of dropping
-    /// them. This is what keeps a VM guest's journal — written and promptly
-    /// re-read, thousands of times per boot — served from memory instead of
-    /// costing a refetch per write. The bytes are authoritative: they are
-    /// what the target just acknowledged, by the same single-writer
-    /// assumption the cache already rests on.
+    /// The device acknowledged a write of exactly `data` at `offset`: patch
+    /// it into overlapping cached chunks (write-then-read-back stays a hit).
+    /// The bytes are authoritative under the single-writer assumption.
     public func didWrite(_ data: Data, at offset: UInt64) {
         lock.lock()
         writeGeneration &+= 1

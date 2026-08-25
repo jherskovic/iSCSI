@@ -54,16 +54,9 @@ struct BlockDeviceTests {
         await fleet.shutdown()
     }
 
-    /// A megabyte of unsolicited data, read back byte for byte.
-    ///
-    /// Raising our proposed `FirstBurstLength` to 1 MiB was worth 25% on
-    /// loopback writes, but every existing test negotiates 64 KiB (the mock
-    /// target's default folds it down), so the shape that change produces — a
-    /// small immediate segment followed by a long unsolicited Data-Out tail —
-    /// had produced nothing but a throughput number. A `bufferOffset`
-    /// off-by-one in that tail would corrupt every megabyte written while the
-    /// benchmark still reported the same rate, which is exactly the kind of
-    /// win this project has learned not to trust unverified.
+    /// A megabyte of unsolicited data, read back byte for byte: a
+    /// `bufferOffset` off-by-one in the unsolicited tail would corrupt every
+    /// megabyte written while benchmarks report the same rate.
     ///
     /// Two shapes, because they exercise different code:
     ///   - 1 MiB command: entirely unsolicited, no R2T at all.
@@ -83,9 +76,8 @@ struct BlockDeviceTests {
             await fleet.makeTransport()
         }
         let login = try await session.activate()
-        // Assert the negotiation actually landed where the test claims. Every
-        // other test in this file folds down to 64 KiB, so without this the
-        // round trip below could pass while exercising the old shape.
+        // Every other test here folds FirstBurst to 64 KiB; assert this one
+        // negotiated the shape it claims to exercise.
         #expect(login.parameters.firstBurstLength == 1 << 20)
         #expect(login.parameters.initialR2T == false)
 

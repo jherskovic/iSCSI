@@ -1,18 +1,9 @@
 import Foundation
 
-/// Faults that can be switched on and off while the target is serving.
-///
-/// The existing integration tests hand `MockTargetFaults` to a target at init
-/// and never change it, and that path still works untouched. This box exists
-/// for the standalone simulator, where the whole point is to break things
-/// *during* a run — drop the connection in the middle of a soak, turn on
-/// corruption for ten seconds, then turn it off and see whether the initiator
-/// recovered.
-///
-/// A lock rather than an actor on purpose: every fault check in `MockTarget`
-/// sits on the PDU path, and making them `await` would add a suspension point
-/// per PDU and reorder nothing usefully. Reads are a lock, a struct copy, and
-/// an unlock.
+/// Faults that can be switched on and off while the target is serving —
+/// for the standalone simulator, where the point is breaking things *during*
+/// a run. A lock, not an actor: fault checks sit on the PDU path and an
+/// `await` per PDU buys nothing.
 public final class FaultBox: @unchecked Sendable {
     private let lock = NSLock()
     private var faults: MockTargetFaults

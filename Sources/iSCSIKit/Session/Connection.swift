@@ -50,11 +50,9 @@ public actor ISCSIConnection {
         var nextDataSN: UInt32 = 0
         /// R2TSN numbering is likewise sequential (§11.8.3).
         var nextR2TSN: UInt32 = 0
-        /// Completed early (cancelled or rejected). The entry stays in
-        /// `pendingTasks` so the target's late PDUs for this ITT — legal
-        /// until the abort's TMF response (§11.5) or the post-Reject CHECK
-        /// CONDITION (§11.17.1) — are absorbed, not read as unknown-ITT
-        /// protocol errors.
+        /// Completed early (cancelled or rejected); the entry stays so the
+        /// target's late PDUs for this ITT — legal until the TMF response
+        /// (§11.5) or post-Reject CHECK CONDITION (§11.17.1) — are absorbed.
         var terminated = false
         let completion = Awaitable<SCSITaskResult>()
 
@@ -72,15 +70,10 @@ public actor ISCSIConnection {
     private let transport: any ConnectionTransport
     private let loginConfig: LoginConfig
     private var serializer = PDUSerializer()
-    /// Before MRDSL is negotiated the peer is unauthenticated, so the framer
-    /// starts deliberately small and is rebuilt at the negotiated size once
-    /// login succeeds (see the `.fullFeature` transition below).
-    ///
-    /// It used to start at `PDUDeframer()`'s default of 16 MiB, which meant a
-    /// target could make us allocate 16 MiB per PDU before proving anything.
-    /// 64 KiB is eight times RFC 7143 §6.3's 8192-byte login limit — far more
-    /// headroom than a conforming target needs, and still small enough that the
-    /// pre-auth allocation is uninteresting.
+    /// Pre-login framer cap: the peer is unauthenticated, so keep the
+    /// per-PDU allocation small (8× RFC 7143 §6.3's 8192-byte login text
+    /// limit). Rebuilt at the negotiated MRDSL on the `.fullFeature`
+    /// transition.
     static let loginPhaseSegmentLimit = 64 * 1024
     /// Upper bound on login round trips before we give up on the target.
     static let maxLoginRounds = 64
@@ -136,16 +129,10 @@ public actor ISCSIConnection {
         var request = machine.start()
         var rounds = 0
         while true {
-            // Bounded, because the peer decides when this ends and has not
-            // authenticated yet. Capping the text buffer stops it growing memory,
-            // but a target that keeps setting the C bit with an *empty* data
-            // segment adds nothing to the buffer and would spin here forever —
-            // the buffer cap never fires and neither does anything else.
-            //
-            // A round count rather than a wall clock: this actor has no timeout
-            // policy (that lives in ISCSISession), and a count is deterministic
-            // on a slow link, where a time limit would fail a legitimate login.
-            // A conforming login is a handful of round trips; 64 is generous.
+            // Bounded: the unauthenticated peer decides when login ends, and
+            // empty C-bit continuations spin forever without ever hitting the
+            // text-buffer cap. A round count, not a clock — deterministic on
+            // slow links, and this actor has no timeout policy.
             rounds += 1
             guard rounds <= Self.maxLoginRounds else {
                 let error = NegotiationError.protocolViolation(
@@ -308,8 +295,8 @@ public actor ISCSIConnection {
     }
 
     /// Issue a task management function and await the target's response.
-    /// ABORT TASK callers must pass the aborted command's CmdSN as
-    /// `refCmdSN` (§11.5.5).
+    /// For ABORT TASK, `refCmdSN` 0 resolves to the outstanding command's
+    /// CmdSN; pass it explicitly for a task no longer tracked (§11.5.5).
     public func taskManagement(
         _ function: TMFRequestPDU.Function,
         lun: UInt64,
@@ -341,8 +328,8 @@ public actor ISCSIConnection {
         return try await suspend(completion)
     }
 
-    /// Text negotiation exchange (SendTargets etc.), reassembling C-bit
-    /// continuations from the target.
+    /// Text negotiation exchange (SendTargets etc.), reassembling multi-PDU
+    /// responses (F=0 and C=1 continuations) from the target.
     public func textExchange(_ params: TextParameters) async throws -> TextParameters {
         try ensureOpen()
         try await waitForWindow()
@@ -737,10 +724,7 @@ public actor ISCSIConnection {
             throw ConnectionError.protocolError("text response for unknown ITT")
         }
         entry.buffer.append(resp.dataSegment)
-        // Bounded for the same reason the login buffer is: the target decides
-        // when a continued sequence ends. Post-authentication, so less alarming
-        // than the login case, but a SendTargets answer that never terminates
-        // grew this without limit in the root daemon.
+        // Bounded: the target decides when a continued sequence ends.
         guard entry.buffer.count <= Self.maxTextResponseBytes else {
             pendingText.removeValue(forKey: resp.initiatorTaskTag)
             let error = ConnectionError.protocolError(
@@ -749,20 +733,16 @@ public actor ISCSIConnection {
             throw error
         }
         if !resp.final {
-            // The exchange continues whenever F=0 — with C=1 (text cut
-            // mid-pair) or without it (target has more parts, §11.10.4's
-            // long-SendTargets shape). §11.11.4: a non-final response carries
-            // a valid TTT, and the empty F=1 follow-up copies the TTT *and*
-            // the LUN.
+            // F=0 continues the exchange, with or without C=1. §11.11.4:
+            // a non-final response carries a valid TTT, and the empty F=1
+            // follow-up copies the TTT and the LUN.
             guard resp.targetTransferTag != 0xFFFF_FFFF else {
                 throw ConnectionError.protocolError("non-final text response with reserved TTT")
             }
             pendingText[resp.initiatorTaskTag] = entry
-            // Through the command window, like every other CmdSN consumer. This
-            // used to bump `cmdSN` directly, which meant a target could drive it
-            // past `maxCmdSN` simply by sending continuations — and once CmdSN is
-            // outside the window the target ignores every later non-immediate
-            // command, so the session is wedged for good rather than slowed.
+            // Through the command window: bumping CmdSN past MaxCmdSN would
+            // wedge the session, since the target ignores everything outside
+            // the window.
             try await waitForWindow()
             var req = TextRequestPDU()
             req.initiatorTaskTag = resp.initiatorTaskTag
@@ -851,16 +831,10 @@ public actor ISCSIConnection {
 
     private func abortOnCancel(itt: UInt32) async {
         guard state == .fullFeature, let pending = pendingTasks[itt], !pending.terminated else { return }
-        // Unblock the caller *first*. Waiting for the ABORT TASK response
-        // before resolving the cancelled task turns a bounded cancellation
-        // into an unbounded hang: a target sick enough to ignore commands can
-        // just as easily ignore task management, and then nothing ever
-        // completes the continuation. The abort is a courtesy to the target,
-        // not a precondition for giving up on the task.
-        //
-        // The entry stays in `pendingTasks`, flagged, because the target may
-        // legally deliver the task's response or data until it answers the
-        // TMF (§11.5) — those PDUs are absorbed, not protocol errors.
+        // Unblock the caller first: waiting on the TMF response would turn a
+        // bounded cancellation into an unbounded hang on a dead target. The
+        // entry stays, flagged — the target may legally deliver the task's
+        // response or data until it answers the TMF (§11.5).
         pending.terminated = true
         pending.completion.complete(.failure(CancellationError()))
         let lun = pending.task.lun

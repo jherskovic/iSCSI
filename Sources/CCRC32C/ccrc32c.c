@@ -3,14 +3,10 @@
 #include <string.h>
 
 /*
- * The digest is computed over every byte that crosses the wire, in both
- * directions, so it sits directly in the throughput path. The byte-at-a-time
- * table loop this replaces also ran through a generic Swift Sequence, which
- * defeats any contiguous fast path.
- *
- * Apple silicon and every x86-64 Mac with SSE4.2 have a CRC32C instruction, so
- * the common case is a hardware path; the table remains for correctness
- * elsewhere and is exercised by the same golden vectors.
+ * The digest covers every byte on the wire in both directions, so this sits
+ * in the throughput path. Apple silicon and SSE4.2 x86-64 have a CRC32C
+ * instruction; the table fallback remains for other hardware and is checked
+ * by the same golden vectors.
  */
 
 #if defined(__aarch64__)

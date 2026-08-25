@@ -85,7 +85,6 @@ struct NegotiationTests {
     @Test func firstBurstGreaterThanMaxBurstRejected() {
         // Even after safe min-folding, a target that pushes MaxBurst below
         // FirstBurst must fail cross-key validation at the end of login.
-        // (default desired: FirstBurst 262144, MaxBurst 1 MiB)
         #expect(throws: NegotiationError.self) {
             try negotiate(answers: [
                 ("MaxBurstLength", "512"), // folds MaxBurst to 512

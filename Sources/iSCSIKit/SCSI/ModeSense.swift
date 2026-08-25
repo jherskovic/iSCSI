@@ -1,30 +1,21 @@
 import Foundation
 
-/// Parsing of MODE SENSE(10) responses.
-///
-/// Kept as pure functions, separate from the I/O that fetches them, for one
-/// reason: these bytes come from the target and are therefore untrusted. A
-/// buggy or hostile target can send any length, any block-descriptor length,
-/// and any page length. Pure parsing can be fuzzed and unit-tested directly —
-/// `Data`'s accessors trap rather than return nil on an out-of-range offset,
-/// so every read here has to be provably in bounds.
+/// Parsing of MODE SENSE(10) responses. Pure functions over target-controlled
+/// (untrusted) bytes so they can be fuzzed directly; `Data`'s accessors trap on
+/// out-of-range offsets, so every read must be provably in bounds.
 public enum ModeSense {
-    /// Reports the caching mode page's WCE bit: whether the target's write
-    /// cache is enabled (and therefore volatile).
-    ///
-    /// Returns nil when the response is truncated, malformed, or simply does
-    /// not carry page 0x08 — all of which mean "unknown", not "disabled".
-    /// Treating unknown as disabled would be the dangerous direction: it would
-    /// suggest durability that may not exist.
+    /// The caching mode page's WCE bit: whether the target's write cache is
+    /// enabled (and therefore volatile). nil = truncated/malformed/no page
+    /// 0x08 — "unknown", never "disabled", which would suggest durability
+    /// that may not exist.
     public static func writeCacheEnabled(inResponse data: Data) -> Bool? {
         // MODE SENSE(10) header is 8 bytes: 2 length, 1 medium type, 1 device
         // specific, 2 reserved/longlba, 2 block descriptor length.
         guard data.count >= 8 else { return nil }
 
         let blockDescLen = Int(data.beU16(6))
-        // A descriptor length that runs past the buffer is malformed; refuse
-        // rather than clamp, since clamping would parse whatever followed as a
-        // mode page.
+        // Refuse a descriptor length past the buffer rather than clamp:
+        // clamping would parse whatever followed as a mode page.
         guard blockDescLen >= 0, 8 + blockDescLen <= data.count else { return nil }
 
         var i = 8 + blockDescLen

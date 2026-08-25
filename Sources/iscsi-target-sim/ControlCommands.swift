@@ -1,19 +1,12 @@
 import Foundation
 import MockTarget
 
-/// The verbs the control socket understands.
-///
-/// The three teardown verbs are deliberately distinct, because conflating them
-/// is how a crash test ends up proving nothing:
-///
-/// - `drop`   — kill the TCP connection. Nothing else changes; cached writes
-///              stay cached. Tests reconnect and recovery.
-/// - `reboot` — drop, then commit the cache. An orderly target restart: no data
-///              is lost, so anything the initiator can no longer find is the
-///              initiator's bug.
-/// - `crash`  — drop, then *discard* the cache. Target power loss with `WCE=1`.
-///              Writes that carried FUA survive; writes that did not are gone.
-///              This is the arm that makes `writeThrough` provable.
+/// The verbs the control socket understands. The teardown verbs are
+/// deliberately distinct — conflating them makes a crash test prove nothing:
+/// - `drop`   — kill the TCP connection; cached writes stay cached.
+/// - `reboot` — drop, then commit the cache: orderly restart, no data lost.
+/// - `crash`  — drop, then *discard* the cache: power loss with `WCE=1`.
+///              FUA writes survive, others are gone — proves `writeThrough`.
 struct ControlCommands: Sendable {
     let disk: RAMDisk
     let server: MockTargetServer

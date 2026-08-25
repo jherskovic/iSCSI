@@ -1,22 +1,10 @@
 import Foundation
 
-/// Translates arbitrary byte ranges into the block-aligned requests that
-/// `ISCSIBlockDevice` demands.
-///
-/// `ISCSIBlockDevice` rejects anything that is not block-aligned with a
-/// whole-block length (`BlockDeviceError.misaligned`) and truncates on
-/// `length / blockSize`. Callers that sit under a filesystem — the FSKit
-/// extension in particular — receive arbitrary offsets and lengths, so the
-/// arithmetic to widen a request and slice the result back out has to live
-/// somewhere. It lives here so it can be tested directly instead of only
-/// through a mounted volume against a live target.
-///
-/// The failure this prevents is genuinely subtle: unaligned access still
-/// *appears* to work through ordinary file reads, because the page cache issues
-/// page-aligned requests. It only breaks for callers that read the backing
-/// store directly at finer granularity — which is how DiskImages reads a raw
-/// disk image, and why an APFS probe failed with EIO while `fsck_apfs` on the
-/// same container reported it healthy.
+/// Translates arbitrary byte ranges into the block-aligned requests
+/// `ISCSIBlockDevice` demands; lives here so the arithmetic is testable
+/// without a mounted volume. The failure it prevents is subtle: unaligned
+/// access still appears to work through the page cache and only breaks for
+/// direct finer-grained readers — which is how DiskImages reads a raw image.
 public struct BlockAligner: Sendable {
     public let blockSize: UInt64
     public let capacity: UInt64

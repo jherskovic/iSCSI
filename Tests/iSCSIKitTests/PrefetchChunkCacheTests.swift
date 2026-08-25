@@ -206,8 +206,7 @@ struct PrefetchChunkCacheTests {
         let cache = Self.makeCache(backing: backing, minStreamBytes: .max)
         _ = try cache.read(offset: 0, length: 512) // chunk 0 cached
         #expect(backing.syncCount == 1)
-        // A write lands inside the cached chunk. The cache learns the exact
-        // acknowledged bytes, so nothing needs refetching.
+        // A write inside the cached chunk patches it; nothing needs refetching.
         let written = Data(repeating: 0xAB, count: 64)
         cache.willWrite(offset: 100, length: 64)
         cache.didWrite(written, at: 100)
@@ -334,10 +333,9 @@ struct PrefetchChunkCacheTests {
                                     minStreamBytes: .max, chunkBytes: Self.chunk),
             timeout: 5,
             fetchSync: { offset, length in
-                // A write begins while this fetch is on the wire, so the bytes
-                // it returns are of unknowable era. The read may serve them —
-                // the caller raced and gets what it gets — but the cache must
-                // not KEEP them: that would serve pre-write data indefinitely.
+                // A write began while this fetch was on the wire: the racing
+                // caller may be served these bytes, but keeping them would
+                // serve pre-write data indefinitely.
                 box.cache?.willWrite(offset: offset, length: 1)
                 return try backing.fetchSync(offset: offset, length: length)
             },
@@ -362,13 +360,10 @@ struct PrefetchChunkCacheTests {
 
 extension PrefetchChunkCacheTests {
 
-    /// `chunksSpeculated - speculatedUsed` counts every speculative chunk that
-    /// has not *yet* been read as waste, including ones still resident whose
-    /// reader is simply a few milliseconds behind. That overstates waste, and
-    /// overstates it more at greater depth, because deeper windows keep more in
-    /// flight — which is fatal for a controller that reduces depth when waste
-    /// rises. `resolvedWasted` only counts a speculative chunk once it leaves
-    /// the cache never having been touched.
+    /// `chunksSpeculated - speculatedUsed` would count still-resident chunks
+    /// whose reader is milliseconds behind as waste — worse at greater depth,
+    /// fatal for a controller that reduces depth when waste rises.
+    /// `resolvedWasted` counts a chunk only once it leaves the cache unread.
     @Test func residentUntouchedSpeculationIsNotYetWaste() throws {
         let backing = Self.makeBacking()
         // Room for everything, so nothing is evicted and nothing can resolve.

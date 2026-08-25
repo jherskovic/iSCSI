@@ -2,28 +2,13 @@
 //  TargetStore.swift
 //  Where configured targets live.
 //
-//  Nothing persisted anything before this: no UserDefaults, no plist, no
-//  archiver anywhere in the project. Every session was built from arguments
-//  typed at a command line.
-//
-//  Daemon-side rather than app-side, for one reason that will matter later: a
-//  boot-time auto-attach has to know what to attach before anyone logs in, and
-//  an app's container is not readable then. That the app is currently the only
-//  writer does not change where the file has to live.
+//  Daemon-side rather than app-side: a boot-time auto-attach must read this
+//  before anyone logs in, and an app's container is not readable then.
 //
 //  Secrets are NOT here. `TargetRecord` carries a CHAP *username*; the secret
-//  lives in the keychain under the record's id. A targets file that leaks — in a
-//  backup, a support bundle, a screenshot of Finder — discloses topology, which
-//  is unpleasant, rather than credentials, which is a breach.
-//
-//  That argument is still true and it is still not a reason to leave the file
-//  readable. It was written when the file was 0644, and it held only because the
-//  record id was inert; login then started using a client-supplied string as the
-//  keychain account name, which quietly turned this file into a list of valid
-//  credential selectors. The lesson is that "this data is harmless" is a claim
-//  about code elsewhere, and code elsewhere changes. It is 0600 in a 0700
-//  directory now, and the argument above is a nice-to-have rather than the
-//  thing standing between a local user and a secret.
+//  lives in the keychain under the record's id. The file is still 0600 in a
+//  0700 directory — record ids have served as credential selectors before,
+//  and "this data is harmless" is a claim about code elsewhere.
 //
 
 import Foundation
@@ -51,22 +36,11 @@ public actor TargetStore {
         return loaded
     }
 
-    /// Insert or update. Returns the record as stored, whose id may differ from
-    /// the one passed in — see below.
-    ///
-    /// Identity is (host, port, targetIQN, lun), not the id. Two records with
-    /// the same four values are the same target however they were created, and
-    /// allowing both is actively harmful: `MountpointTag` is derived from
-    /// exactly those values, so twins share a mount point. Attaching the second
-    /// would silently land on the first's mount, and detaching either would tear
-    /// down the other's volume.
-    ///
-    /// It happened: adding a target from Discover mints a fresh UUID, so
-    /// discovering the same portal twice produced two records for one LUN.
-    ///
-    /// When a twin exists, the **existing** id wins and its fields are updated.
-    /// That keeps the keychain item and the mount point stable, where taking the
-    /// newcomer's id would orphan a stored secret and strand a live mount.
+    /// Insert or update. Returns the record as stored — its id may differ:
+    /// identity is (host, port, targetIQN, lun), not the id. Twins would share
+    /// a `MountpointTag` (derived from those values) and so a mount point.
+    /// When a twin exists the **existing** id wins, keeping the keychain item
+    /// and mount point stable.
     @discardableResult
     public func save(_ record: TargetRecord) throws -> TargetRecord {
         var records = all()
@@ -87,13 +61,10 @@ public actor TargetStore {
         return incoming
     }
 
-    /// The configured target at this portal, if there is one.
-    ///
-    /// Login resolves credentials through here rather than taking them from the
-    /// caller, so the set of portals the daemon will authenticate to is exactly
-    /// the set the user configured. Uses the same (host, port, IQN, LUN)
-    /// identity as `save`, which is what makes "the record the user edited" and
-    /// "the record a mount URL names" the same record.
+    /// The configured target at this portal, if any. Login resolves
+    /// credentials through here rather than from the caller, so the daemon
+    /// only authenticates to portals the user configured. Same identity
+    /// tuple as `save`.
     public func record(host: String, port: UInt16, targetIQN: String, lun: UInt64) -> TargetRecord? {
         all().first {
             $0.host.caseInsensitiveCompare(host) == .orderedSame
@@ -116,26 +87,18 @@ public actor TargetStore {
 
     // MARK: - Disk
 
-    /// A corrupt or unreadable file returns an empty list rather than throwing.
-    ///
-    /// The alternative is a daemon that refuses to start because one JSON file
-    /// is malformed, which turns a cosmetic problem into a total outage. The
-    /// broken file is moved aside rather than deleted, so it can still be
-    /// inspected — losing a user's target list silently would be worse than
-    /// either.
+    /// A corrupt file returns an empty list rather than refusing to start the
+    /// daemon; the broken file is moved aside for inspection, not deleted.
     private func load() -> [TargetRecord] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         do {
             let data = try Data(contentsOf: url)
             let records = try JSONDecoder().decode([TargetRecord].self, from: data)
 
-            // Retire any `workloadProfile` left behind by the workload picker,
-            // which existed for three builds and is gone. Nothing can display
-            // or clear one now, and a stale value silently pins that volume's
-            // readahead depth for good — which is not hypothetical: a target
-            // still carrying "sequential" came up pinned on the test rig with
-            // the depth controller inert. Rewritten to disk rather than dropped
-            // in memory, or the next daemon start would pin it again.
+            // Retire any `workloadProfile` left by the removed workload
+            // picker: nothing can clear one now, and a stale value pins that
+            // volume's readahead depth. Rewritten to disk, or the next daemon
+            // start would pin it again.
             let stale = records.filter { $0.workloadProfile != nil }
             guard stale.isEmpty else {
                 let cleaned = records.map { record -> TargetRecord in
@@ -162,14 +125,9 @@ public actor TargetStore {
     }
 
     private func persist(_ records: [TargetRecord]) throws {
-        // 0700/0600, not 0755/0644. The header above argues that a leak
-        // discloses topology rather than credentials, and that was true only
-        // while the record id was not itself a credential selector. It was: the
-        // daemon used to look a CHAP secret up by a string the client supplied,
-        // so a world-readable list of ids was a list of keychain account names.
-        // Login no longer works that way, but nothing unprivileged has any
-        // business reading this either — every legitimate reader is this daemon
-        // or goes through `listTargets` on the authenticated XPC channel.
+        // 0700/0600: nothing unprivileged has any business reading this —
+        // every legitimate reader is this daemon or the authenticated XPC
+        // channel.
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
@@ -177,20 +135,14 @@ public actor TargetStore {
             [.posixPermissions: 0o700], ofItemAtPath: url.deletingLastPathComponent().path)
 
         let encoder = JSONEncoder()
-        // Sorted and pretty so the file diffs cleanly and can be read by a human
-        // who is trying to work out what the app thinks it is connected to.
+        // Sorted and pretty so the file diffs cleanly and reads by eye.
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(records)
 
-        // Atomic: a truncated targets.json is indistinguishable from a corrupt
-        // one, and would cost the user their whole configuration for a crash
-        // that happened to land mid-write.
+        // Atomic: a truncated file would cost the whole configuration.
         try data.write(to: url, options: .atomic)
-        // An atomic write lands a fresh inode with umask-derived permissions, so
-        // there is a moment before this chmod when the file is world-readable.
-        // The 0700 on the directory above is what actually closes that window:
-        // an unprivileged process cannot traverse into it to open the file at
-        // all, whatever mode the file itself is wearing at the time.
+        // The atomic write lands a fresh inode with umask permissions; the
+        // 0700 directory is what closes that pre-chmod window.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         cache = records
     }

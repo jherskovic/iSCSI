@@ -20,11 +20,8 @@ public enum BlockDeviceError: Error, Equatable, Sendable {
     case misaligned(offset: UInt64, length: Int, blockSize: Int)
     case outOfRange(lba: UInt64, blocks: UInt32, capacity: UInt64)
     case scsiError(status: UInt8, sense: SenseData?)
-    /// READ CAPACITY described a device that cannot exist.
-    ///
-    /// Its own case rather than a `misaligned` or a generic protocol error
-    /// because the fix for it is entirely different: nothing the initiator does
-    /// will make this target usable, and the geometry is the evidence.
+    /// READ CAPACITY described a device that cannot exist; nothing the
+    /// initiator does will make this target usable.
     case invalidGeometry(blockSize: Int, blockCount: UInt64, reason: String)
 }
 
@@ -39,39 +36,16 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     private var capacityKnown = false
 
     /// Cap per-SCSI-command transfer. Kept ≤ negotiated MaxBurstLength; also
-    /// bounds memory per request.
-    ///
-    /// The default is 256 KiB rather than the 1 MiB it used to be, because
-    /// large commands degrade badly once several are outstanding. Measured
-    /// against a TrueNAS target over 10GbE, with the same number of bytes in
-    /// flight either way:
-    ///
-    ///     16 commands x 1 MiB   = 16 MiB outstanding ->  340 MB/s
-    ///     64 commands x 256 KiB = 16 MiB outstanding -> 1169 MB/s
-    ///
-    /// 256 KiB reached the same ceiling as 1 MiB at low depth and kept it out
-    /// to 64 outstanding, where 1 MiB fell to under a third of line rate
-    /// somewhere between 8 and 16. Smaller commands cost more round trips for
-    /// a given transfer, which pipelining already hides; the cliff is not
-    /// something depth can compensate for.
-    ///
-    /// Measured on one target, and 1 MiB happens to be exactly its negotiated
-    /// MaxBurstLength, so the boundary may be specific to it. The change is
-    /// still the right default: 256 KiB was never slower anywhere tested, and
-    /// it removes a failure mode that looks like the network being bad. See
-    /// docs/queue-depth.md.
+    /// bounds memory per request. 256 KiB, not 1 MiB: large commands collapse
+    /// under queue depth on real targets, and 256 KiB was never slower
+    /// anywhere tested. See docs/queue-depth.md.
     private let maxTransferBytes: Int
 
-    /// When true, every WRITE carries Force Unit Access, so the target commits
-    /// the data to stable media before returning status.
-    ///
-    /// This exists because Backend A gets no barrier signal: FSKit never calls
-    /// `synchronize`, so the layer above cannot tell us when a filesystem
-    /// wanted a flush. If the target's write cache is volatile, an
-    /// acknowledged-but-cached write can be lost on power failure while APFS
-    /// believes its barrier was honoured — which is precisely how ordering
-    /// guarantees turn into corruption. Write-through keeps each acknowledged
-    /// write durable, at a cost in throughput.
+    /// When true, every WRITE carries Force Unit Access. Backend A gets no
+    /// barrier signal from FSKit, so with a volatile target cache an
+    /// acknowledged-but-cached write breaks APFS's ordering guarantees;
+    /// write-through keeps each acknowledged write durable, at a throughput
+    /// cost.
     private let writeThrough: Bool
 
     public init(session: ISCSISession, lun: UInt64 = 0, maxTransferBytes: Int = 256 << 10,
@@ -99,15 +73,9 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
 
     private var lunAddress: UInt64 { SCSITask.lunField(lun) }
 
-    /// Executes a task, absorbing UNIT ATTENTION.
-    ///
-    /// A target reports UNIT ATTENTION (sense key 0x06) on the first non-INQUIRY
-    /// command of a fresh I_T nexus — "power on, reset, or bus device reset
-    /// occurred" — and again after events like a target reset or a capacity
-    /// change. Reporting the condition is what clears it, so the correct
-    /// initiator behaviour is to retry rather than surface an error. Retrying
-    /// the *login* cannot help: each new session re-arms the UA, so it has to be
-    /// absorbed inside the session.
+    /// Executes a task, absorbing UNIT ATTENTION (sense key 0x06): targets
+    /// report it on the first non-INQUIRY command of a fresh I_T nexus and
+    /// after resets. Reporting clears it, so retry here — re-login re-arms it.
     private func executeAbsorbingUnitAttention(
         _ task: SCSITask,
         retries: Int = 2
@@ -122,30 +90,11 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         }
     }
 
-    /// Parse and sanity-check a READ CAPACITY(16) Data-In.
-    ///
-    /// Pure and `static` on purpose, for the same reason `ModeSense` is: it is a
-    /// parser of wholly attacker-controlled bytes, so it should be reachable
-    /// from a fuzzer without standing up a session. It had no such seam, and
-    /// consequently had never been fuzzed.
-    ///
-    /// Three separate crashes lived in the four lines this replaces, all from
-    /// trusting the numbers:
-    ///
-    /// - `lastLBA + 1` is a *trapping* add. Eight `0xFF` bytes aborted the
-    ///   process — and `DaemonCore.login` calls this on every login, so it was
-    ///   the first command of every session.
-    /// - `blockSize` went unchecked into `maxTransferBytes / blockSize`, so a
-    ///   reported size of zero was a division by zero on any path that skipped
-    ///   `validate`.
-    /// - `blockSize * blockCount` overflowed in the FSKit extension, and further
-    ///   out a non-power-of-two size let `BlockAligner.alignUp` wrap.
-    ///
-    /// Requiring a power of two is doing more work than it looks like. It is
-    /// what guarantees the largest multiple of `blockSize` below 2^64 leaves
-    /// `blockSize - 1` bytes of headroom, which is what stops `alignUp`'s
-    /// wrapping `&+` from rolling over. Relaxing this rule silently reopens
-    /// that; there is a regression test pinning it.
+    /// Parse and sanity-check a READ CAPACITY(16) Data-In. Pure and `static`
+    /// so the fuzzer can reach a parser of attacker-controlled bytes without a
+    /// session. The power-of-two block-size rule is load-bearing: it is what
+    /// keeps `BlockAligner.alignUp`'s wrapping `&+` from rolling over near
+    /// 2^64 (regression-tested); relaxing it silently reopens that.
     public static func geometry(fromReadCapacity16 data: Data) throws
         -> (blockSize: Int, blockCount: UInt64) {
         guard data.count >= 12 else {
@@ -220,19 +169,9 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
             return try await readChunk(lba: firstLBA, blocks: totalBlocks, blockSize: bs)
         }
 
-        // Several commands, issued together rather than one after another.
-        //
-        // They used to be sequential, which made splitting a request strictly
-        // worse than not splitting it: a 1 MiB read became four 256 KiB round
-        // trips end to end, ~189 MB/s where a single 1 MiB command managed 349.
-        // That would have turned lowering maxTransferBytes — done to avoid the
-        // large-command cliff described above — into a regression for anyone
-        // asking for more than one chunk at a time.
-        //
-        // Concurrently, the split is a gain instead: the chunks of one request
-        // pipeline against each other, which is the same reason readahead works
-        // one layer up. Chunks of a read are independent and the results are
-        // reassembled by index, so nothing depends on completion order.
+        // Several commands, issued concurrently: sequential chunks would make
+        // splitting strictly worse than not splitting. Chunks are independent
+        // and reassembled by index, so completion order is irrelevant.
         var plan: [(index: Int, lba: UInt64, blocks: Int)] = []
         var lba = firstLBA
         var remaining = totalBlocks
@@ -279,34 +218,19 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         return result.data
     }
 
-    /// The chunks of one write pipeline against each other, for the same reason
-    /// and by the same argument as `read`: they are contiguous slices of a single
-    /// buffer, so they are **disjoint by construction** and nothing depends on
-    /// the order they complete in. No ordering gate is needed or wanted here.
-    ///
-    /// This is deliberately not conditioned on the write-through setting. Four
-    /// disjoint FUA writes issued together are each still individually durable
-    /// when acknowledged, so there is no durability trade to gate on — this buys
-    /// latency back without spending safety.
-    ///
-    /// What it does *not* do is give a small write any depth. A write is one
-    /// FSKit operation and the extension holds `ioLock` across it, so the gain is
-    /// confined to requests larger than `maxTransferBytes` — file copies, not the
-    /// 7-16 KB writes a running VM makes.
+    /// Chunks of one write pipeline concurrently: they are disjoint by
+    /// construction, and disjoint FUA writes are each still durable when
+    /// acknowledged, so write-through loses nothing. The gain only applies to
+    /// requests larger than `maxTransferBytes` — the extension holds `ioLock`
+    /// across each FSKit write.
     public func write(offset: UInt64, data: Data) async throws {
         let (bs, count) = try await readCapacity()
         try validate(offset: offset, length: data.count, blockSize: bs, capacity: count)
         let blocksPerChunk = max(1, maxTransferBytes / bs)
 
-        // Ranges, not payloads. Materialising every chunk here would copy the
-        // whole request before the first byte reached the wire — worse on peak
-        // memory and worse on first-byte latency, which is the very thing
-        // pipelining is for, and worse the larger the write. Each task slices
-        // its own chunk when it is about to send it.
-        //
-        // The copy itself stays: `data[range]` is a slice carrying a non-zero
-        // `startIndex`, and normalising it is what the original code's
-        // `Data(chunk)` was doing.
+        // Ranges, not payloads: materialising every chunk up front would copy
+        // the whole request before the first byte hit the wire. Each task
+        // slices (and `Data(...)`-normalises) its chunk when it sends it.
         var plan: [(lba: UInt64, bytes: Range<Data.Index>)] = []
         var lba = offset / UInt64(bs)
         var cursor = data.startIndex
@@ -320,25 +244,17 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
             remaining -= blocks
         }
 
-        // The overwhelmingly common case, and it should not pay for a task group
-        // to discover it has one member.
+        // The common case should not pay for a one-member task group.
         if plan.count == 1 {
             try await writeChunk(lba: plan[0].lba,
                                  payload: Data(data[plan[0].bytes]), blockSize: bs)
             return
         }
 
-        // Bounded, and the bound is the point. Adding every chunk at once let a
-        // large request hold a copy of most of itself: a 64 MiB write grew the
-        // process by 109 MiB beyond its payload, so a file copy cost memory
-        // proportional to the file. A stalled-target probe suggested the CmdSN
-        // window already capped this at 64 commands; it does not, because that
-        // probe measured a target that never answers, and with one that does
-        // the tasks churn while their allocations do not come back.
-        //
-        // `maxChunksInFlight` chunks is what the 2.1-2.6x measurement actually
-        // used — 1 MiB requests split four ways — so the depth that was shown to
-        // help is kept and the unbounded tail is not.
+        // Bounded: unbounded submission holds a copy of most of the request
+        // (the CmdSN window does not cap it — tasks churn while their
+        // allocations stay), so a file copy would cost memory proportional to
+        // the file.
         try await withThrowingTaskGroup(of: Void.self) { group in
             var next = 0
             func addNext() {
@@ -356,18 +272,13 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         }
     }
 
-    /// How many commands one request may have outstanding.
-    ///
-    /// Eight rather than four so a request larger than the measured case still
-    /// gains something, and not unbounded because peak memory is the cost:
-    /// this caps a single request at eight chunk copies regardless of its size.
+    /// Commands one request may have outstanding; caps a single request at
+    /// this many chunk copies regardless of its size.
     static let maxChunksInFlight = 8
 
-    /// One WRITE(16). On failure the group cancels its siblings, so which chunks
-    /// reached the medium is indeterminate — as it already was, since a partial
-    /// write is a partial write whether the survivors form a prefix or a subset.
-    /// `DaemonStore.write` drops the whole overlap from its cache on any error
-    /// for exactly that reason.
+    /// One WRITE(16). On failure the group cancels its siblings, so which
+    /// chunks reached the medium is indeterminate; `DaemonStore.write` drops
+    /// the whole overlap from its cache on any error for that reason.
     private func writeChunk(lba: UInt64, payload: Data, blockSize bs: Int) async throws {
         let result = try await executeAbsorbingUnitAttention(SCSITask(
             lun: lunAddress,

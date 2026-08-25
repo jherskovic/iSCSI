@@ -2,15 +2,12 @@
 //  XPCServiceTests.swift
 //
 //  `ISCSIXPCService` is the whole surface the app and the FSKit extension
-//  reach the daemon through, and it was the least-covered file in the package
-//  at 35.9%. Its two jobs are worth testing for different reasons: it decides
-//  which credentials a login uses, which is where two shipped bugs lived; and
-//  it decides which caller may touch which session, which is the only thing
-//  standing between a compromised client and someone else's volume.
+//  reach the daemon through. It decides which credentials a login uses and
+//  which caller may touch which session — the only thing between a
+//  compromised client and someone else's volume.
 //
-//  No XPC connection is involved. The service is a plain object whose methods
-//  take reply blocks, so it can be driven directly — the pattern
-//  `WorkloadBudgetTests` already established.
+//  No XPC connection involved: the service is a plain object with reply
+//  blocks, driven directly.
 //
 
 import Foundation
@@ -110,23 +107,16 @@ struct XPCServiceTests {
         #expect(error != nil)
     }
 
-    /// The gate added when mutual CHAP was switched off. A record saved while
-    /// the fields were still visible still names a mutual user, and the daemon
-    /// must ignore it rather than go on challenging a target that answers
-    /// 0x02/0x01 — with the UI to clear it now gone, a login that insisted on
-    /// mutual would be unfixable from the app.
-    ///
-    /// Reachable only since the keychain grew a backend seam: getting here needs
-    /// a stored initiator secret, which previously meant a real System keychain
-    /// and root.
+    /// While `CHAP.mutualIsOffered` is false, a record that still names a
+    /// mutual user must be ignored — the UI to clear it is gone, so a login
+    /// that insisted on mutual would be unfixable from the app.
     @Test func aStoredMutualUserIsIgnoredWhileMutualIsSwitchedOff() async throws {
         let fake = FakeKeychain()
         let previous = KeychainStore.backend
         KeychainStore.backend = fake
         defer { KeychainStore.backend = previous }
 
-        // The target requires one-way CHAP and nothing more, which is the
-        // configuration the gate exists to keep working.
+        // One-way CHAP only — the configuration the gate keeps working.
         var targetConfig = MockTargetConfig()
         targetConfig.requireChap = true
         targetConfig.chapUser = "initiator-user"
@@ -323,19 +313,16 @@ struct XPCServiceTests {
         #expect(!listed.contains { $0.id == fresh.id })
     }
 
-    // `removeAllData` is deliberately not tested here. It operates on the real
-    // /Library/Application Support/me.herko.iSCSIInitiator, not on the
-    // TargetStore it was handed, because uninstall has to clear where the
-    // daemon actually keeps things. That makes it untestable in-process
-    // without either running as root or deleting the developer's own saved
-    // targets, and a test that can do the latter is worse than no test.
+    // `removeAllData` is deliberately untested: it operates on the real
+    // /Library/Application Support path (uninstall must clear where the
+    // daemon actually keeps things), so an in-process test would need root
+    // or would delete the developer's own saved targets.
 
     // MARK: - Discovery credential validation
     //
-    // Discovery is the one call that legitimately takes a secret from its
-    // caller, because it happens before a target record exists. It validates on
-    // the way through so a too-short secret is refused here rather than turning
-    // into an "authentication failure" from the portal that explains nothing.
+    // Discovery is the one call that takes a secret from its caller (no
+    // target record exists yet); it validates so a too-short secret fails
+    // here, not as an unexplained portal "authentication failure".
 
     @Test("discovery refuses a secret shorter than the RFC floor before connecting")
     func discoveryValidatesSecretLength() async throws {

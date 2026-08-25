@@ -160,7 +160,6 @@ public struct NegotiationEngine: Sendable {
         }
 
         guard let def = Self.keys[key] else {
-            // Unknown key offered by the target.
             return "NotUnderstood"
         }
 
@@ -210,10 +209,8 @@ public struct NegotiationEngine: Sendable {
             try requireBool(key, theirs)
             return (ours == "Yes" || theirs == "Yes") ? "Yes" : "No"
         case .numericMin:
-            // Compute the fold ourselves rather than trusting the target to
-            // return the correctly-folded value. Real targets (e.g. LIO)
-            // often just echo their own configured value; taking min(ours,
-            // theirs) keeps us safely within our own proposal either way.
+            // Fold locally: real targets (LIO) echo their configured value
+            // instead of the fold; min() keeps us within our own proposal.
             return String(min(try num(key, ours), try num(key, theirs)))
         case .numericMax:
             return String(max(try num(key, ours), try num(key, theirs)))
@@ -250,9 +247,8 @@ public struct NegotiationEngine: Sendable {
     private func answerOffer(key: String, def: KeyDef, theirs: String) throws -> String {
         switch def.result {
         case .booleanAnd:
-            // §13: when the received value determines the result (AND + No),
-            // the answer must restate that result. Otherwise we choose: markers
-            // stay off, everything else (ImmediateData) folds with Yes.
+            // §13: AND + No is determined — the answer must restate it.
+            // Otherwise our choice: markers off, everything else Yes.
             try requireBool(key, theirs)
             if theirs == "No" { return "No" }
             return (key == "OFMarker" || key == "IFMarker") ? "No" : "Yes"
@@ -356,16 +352,9 @@ public struct DesiredParameters: Sendable, Equatable {
     public var initialR2T = false // we prefer unsolicited data allowed
     public var immediateData = true
     public var maxBurstLength: UInt32 = 1 << 20
-    /// Ask for as much unsolicited data as a burst can carry.
-    ///
-    /// This is a `numericMin` fold, so a target that cannot buffer a megabyte
-    /// per command simply answers with less and we honour it — the real NAS
-    /// caps it at 64 KiB and this changes nothing there. But when the target
-    /// does allow it, a 1 MiB write goes out in one go instead of sending
-    /// `firstBurstLength` and then waiting for an R2T for the remainder, and
-    /// that round trip was measurable: against the simulator, raising the
-    /// negotiated value from 64 KiB to 256 KiB moved writes 951 -> 1048 MB/s.
-    /// We were previously the binding constraint at 256 KiB.
+    /// Ask for as much unsolicited data as a burst can carry: a numericMin
+    /// fold, so a target that buffers less answers with less; when it allows
+    /// more, a write skips the R2T round trip, which is measurable.
     public var firstBurstLength: UInt32 = 1 << 20
     public var maxOutstandingR2T: UInt32 = 8
 

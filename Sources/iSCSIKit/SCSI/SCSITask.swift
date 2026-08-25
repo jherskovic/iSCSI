@@ -128,14 +128,9 @@ public enum CDB {
         return cdb
     }
 
-    /// WRITE(16). Set `fua` to force the data to stable media before the target
-    /// returns status (Force Unit Access, CDB byte 1 bit 3).
-    ///
-    /// This matters for Backend A: FSKit signals no barriers, so the extension
-    /// cannot know when a filesystem above the disk image wanted a flush. If
-    /// the target has a volatile write cache, the only way to keep APFS's
-    /// ordering guarantees meaningful is to make each write durable as it is
-    /// acknowledged.
+    /// WRITE(16). `fua` (CDB byte 1 bit 3) forces the data to stable media
+    /// before status — the only durability signal available when FSKit
+    /// delivers no barriers (see `FlushPolicy`).
     public static func write16(lba: UInt64, blocks: UInt32, fua: Bool = false) -> Data {
         var cdb = Data(count: 16)
         cdb.setU8(0x8A, 0)

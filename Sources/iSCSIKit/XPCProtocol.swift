@@ -27,11 +27,9 @@ import Foundation
     /// stored secret is used nor point one at a portal the user never
     /// configured. A portal with no matching record is refused.
     ///
-    /// This replaced a `chapUser` parameter that was used verbatim as the
-    /// keychain account name. Because secrets are filed under the record id,
-    /// passing a username missed every time — and a missing secret was not an
-    /// error but a silent downgrade to `AuthMethod=None`. Passing an id instead
-    /// made it a way to spend any stored secret against an attacker's portal.
+    /// No username or id parameter: a client-supplied lookup key either misses
+    /// (silent downgrade to `AuthMethod=None`) or lets a client spend any
+    /// stored secret against an attacker's portal.
     func login(
         host: String,
         port: NSNumber,
@@ -48,11 +46,9 @@ import Foundation
     /// Readahead byte budget for this session's target, from its
     /// `WorkloadProfile`. Reply: bytes.
     ///
-    /// The FSKit extension builds its `ReadaheadPolicy` at mount, before it has
-    /// seen any TargetRecord — it is handed only a mount URL, and deliberately
-    /// forwards nothing from it (see the note on `DaemonStore.init`). So this
-    /// is keyed on the session handle the daemon already resolved and owns,
-    /// which keeps the lookup on the daemon's side of the trust boundary.
+    /// Keyed on the session handle the daemon already owns — the FSKit
+    /// extension holds only a mount URL and deliberately forwards nothing
+    /// from it, keeping the lookup on the daemon's side of the trust boundary.
     func readaheadBudget(session: String, reply: @escaping (NSNumber, Error?) -> Void)
 
     /// Block read. offset/length in bytes, block-aligned. Reply: data.
@@ -118,27 +114,16 @@ import Foundation
     func hasCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void)
 
     /// The *target's* secret, for mutual CHAP: what the target must prove it
-    /// knows before we trust the block device it is serving.
-    ///
-    /// This had no API at all, which is why `CHAP.Credentials.mutualSecret` was
-    /// never non-nil on any path the app could reach, `wantsMutual` was always
-    /// false, and the target was never authenticated. The verification code was
-    /// correct the whole time and simply unreachable — the target-edit sheet
-    /// collected a mutual username that nothing could ever act on.
-    ///
-    /// Stored under a separate keychain account from the initiator secret so the
-    /// two cannot collide for one target.
+    /// knows before we trust the block device it is serving. Stored under a
+    /// separate keychain account from the initiator secret so the two cannot
+    /// collide for one target.
     func setMutualCHAPSecret(targetID: String, secret: String, reply: @escaping (Error?) -> Void)
     func deleteMutualCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void)
     func hasMutualCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void)
 
     // MARK: - Discovery and inspection
 
-    /// SendTargets against a portal, **with** optional CHAP.
-    ///
-    /// The older `discover(host:port:)` silently dropped credentials that
-    /// `DaemonCore.discover` has always accepted, which made discovery against
-    /// any authenticated portal impossible from the app. Reply: JSON
+    /// SendTargets against a portal, with optional CHAP. Reply: JSON
     /// `[DiscoveredTargetInfo]`.
     func discoverTargets(host: String, port: NSNumber, chapUser: String?,
                          chapSecret: String?, reply: @escaping (Data?, Error?) -> Void)
@@ -151,33 +136,18 @@ import Foundation
     func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void)
 
     /// Log in, read the geometry, and log out again — entirely inside the
-    /// daemon. Reply: a JSON `LUNInfo`.
-    ///
-    /// Exists so a client can check "can I actually reach this target with
-    /// these credentials?" without ever holding a session. A client that did
-    /// this as login-then-logout would have to make both calls on the same XPC
-    /// connection, since handles are owned by the connection that created them
-    /// — and a client that opens a connection per call (which is the right
-    /// shape for infrequent, liveness-sensitive calls) cannot. That mismatch
-    /// leaked a session per attach before this existed.
-    ///
-    /// The geometry comes back because the caller usually wants it anyway, and
-    /// it costs nothing once logged in.
-    ///
-    /// Resolves credentials the same way `login` does, and refuses a portal that
-    /// is not on file — otherwise this would be the same credential oracle by a
-    /// different name, and it is the call the UI makes to *validate* credentials,
-    /// so a false success here is worse than elsewhere.
+    /// daemon, so a client can check reachability/credentials without holding
+    /// a session (handles are owned by the XPC connection that created them,
+    /// so client-side login-then-logout leaks a session per attach). Resolves
+    /// credentials like `login` and refuses a portal not on file — anything
+    /// else is a credential oracle. Reply: a JSON `LUNInfo`.
     func testConnection(host: String, port: NSNumber, targetIQN: String, lun: NSNumber,
                         reply: @escaping (Data?, Error?) -> Void)
 
-    /// Delete everything the daemon owns: the targets file, its directory, and
-    /// every stored CHAP secret.
-    ///
-    /// Part of uninstall, and it has to be called while the daemon still exists.
-    /// The secrets live in *its* keychain context — once it is unregistered the
-    /// app cannot reach them, and they would sit there after the app is in the
-    /// Trash with nothing left that knows they are there.
+    /// Delete everything the daemon owns: targets file, its directory, every
+    /// stored CHAP secret. Must run while the daemon still exists — the
+    /// secrets live in *its* keychain context and are unreachable after
+    /// unregistration.
     func removeAllData(reply: @escaping (Error?) -> Void)
 }
 

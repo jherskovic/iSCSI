@@ -2,12 +2,10 @@ import Foundation
 import iSCSIDaemon
 import iSCSIKit
 
-// iscsid — the iSCSI initiator daemon. Runs as a launchd LaunchDaemon and
-// vends the block-I/O + session-management XPC service to the FSKit extension,
-// the dext-side helper, and iscsictl.
-//
-// launchd registers the Mach service (see the LaunchDaemon plist in
-// docs/) and hands us the listener via NSXPCListener(machServiceName:).
+// iscsid — the iSCSI initiator daemon: a launchd LaunchDaemon vending the
+// block-I/O + session-management XPC service to the app and the FSKit
+// extension (iscsictl connects in debug builds only). launchd registers the
+// Mach service and hands us the listener via NSXPCListener(machServiceName:).
 
 #if canImport(Network)
 let initiatorName = IQN.defaultInitiatorName(
@@ -25,7 +23,7 @@ let writeThrough = (ProcessInfo.processInfo.environment["ISCSI_WRITE_THROUGH"] ?
 // rather than waited on forever. Without it, a target that accepts commands
 // and never answers them wedges APFS instead of failing an I/O — and the NOP
 // keepalive does not notice, because such a target still answers pings.
-//   ISCSI_TASK_TIMEOUT_SEC=0  -> wait forever (the old behaviour)
+//   ISCSI_TASK_TIMEOUT_SEC=0  -> wait forever
 var policy = SessionPolicy()
 if let raw = ProcessInfo.processInfo.environment["ISCSI_TASK_TIMEOUT_SEC"], let seconds = Int(raw) {
     policy.taskTimeout = seconds > 0 ? .seconds(seconds) : nil

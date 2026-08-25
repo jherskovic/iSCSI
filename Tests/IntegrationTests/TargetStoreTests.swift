@@ -1,8 +1,8 @@
 //
 //  TargetStoreTests.swift
 //
-//  The store holds the user's entire configuration. Every failure mode here is
-//  one where they lose it, so the tests are mostly about not losing it.
+//  The store holds the user's entire configuration; most of these tests are
+//  about not losing it.
 //
 
 import Foundation
@@ -25,12 +25,8 @@ struct TargetStoreTests {
                      chapUser: "initiator", autoAttach: true)
     }
 
-    /// The file lists every target's id, portal, IQN and CHAP username. It was
-    /// 0644 in a 0755 directory, which was argued to be fine because the ids
-    /// were inert — and then login started using a client-supplied string as a
-    /// keychain account name, which made a world-readable list of ids a list of
-    /// valid credential selectors. Login no longer works that way, and this is
-    /// no longer world-readable either.
+    /// The file lists every target's id, portal, IQN and CHAP username —
+    /// enough to select credentials — so it must be readable only by root.
     @Test("the targets file and its directory are readable only by root")
     func permissionsAreRestrictive() async throws {
         let url = temporaryURL()
@@ -64,14 +60,12 @@ struct TargetStoreTests {
                                        targetIQN: saved.targetIQN, lun: saved.lun)
         #expect(found?.id == saved.id)
 
-        // Case-insensitive on the host, matching `save`'s notion of identity —
-        // otherwise "NAS.local" and "nas.local" would be different targets to
-        // login and the same target to the store.
+        // Case-insensitive on the host, matching `save`'s notion of identity.
         let mixedCase = await store.record(host: saved.host.uppercased(), port: saved.port,
                                            targetIQN: saved.targetIQN, lun: saved.lun)
         #expect(mixedCase?.id == saved.id)
 
-        // And a portal nobody configured resolves to nothing, which is what makes
+        // An unconfigured portal resolves to nothing; that is what makes
         // `login` refuse it.
         let absent = await store.record(host: "attacker.example", port: saved.port,
                                         targetIQN: saved.targetIQN, lun: saved.lun)
@@ -112,9 +106,8 @@ struct TargetStoreTests {
         let url = temporaryURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        // Genuinely different targets. An earlier version of this test used two
-        // records that differed only by id — which is the duplicate the store
-        // now collapses, so the test was asserting the bug.
+        // Genuinely different targets — records differing only by id are the
+        // duplicates the store collapses.
         let store = TargetStore(url: url)
         var a = sample("a"); a.host = "nas-one.local"
         var b = sample("b"); b.host = "nas-two.local"
@@ -124,9 +117,8 @@ struct TargetStoreTests {
         #expect(await store.all().map(\.id) == ["b"])
     }
 
-    /// A daemon that refuses to start because one JSON file is malformed turns
-    /// a cosmetic problem into a total outage. It should come up empty and keep
-    /// the broken file for inspection.
+    /// A malformed JSON file must not become a total outage: come up empty
+    /// and keep the broken file for inspection.
     @Test("a corrupt file is set aside rather than crashing or being destroyed")
     func corruptFileIsQuarantined() async throws {
         let url = temporaryURL()
@@ -143,12 +135,8 @@ struct TargetStoreTests {
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
-    /// The workload picker existed for three builds and wrote this field. With
-    /// the picker gone nothing can show or clear a value it left behind, and a
-    /// stale one silently pins that volume's readahead depth forever — which is
-    /// exactly what happened on the test rig: a target still carrying
-    /// "sequential" came up pinned with the controller inert. Clearing on load
-    /// means no volume is steered by a setting nobody can see.
+    /// The workload picker is gone, so nothing can show or clear this field —
+    /// a stale value would silently pin the volume's readahead depth forever.
     @Test("a stale workload profile is cleared when the store loads")
     func staleWorkloadProfileIsCleared() async throws {
         let url = temporaryURL()
@@ -166,19 +154,16 @@ struct TargetStoreTests {
         let store = TargetStore(url: url)
         #expect(await store.all().first?.workloadProfile == nil)
 
-        // And it is gone from disk, not merely from the in-memory copy —
-        // otherwise the next daemon start pins the volume again.
+        // Gone from disk too, or the next daemon start pins the volume again.
         let onDisk = try JSONDecoder().decode(
             [TargetRecord].self, from: try Data(contentsOf: url))
         #expect(onDisk.first?.workloadProfile == nil)
         #expect(onDisk.first?.id == "t1", "clearing the field must not disturb the record")
     }
 
-    /// The bug this prevents was found in the field: adding a target from
-    /// Discover mints a fresh UUID, so discovering the same portal twice put two
-    /// records in the file for one LUN. Both derive the same MountpointTag, so
-    /// they share a mount point — attaching the second lands on the first's
-    /// mount and detaching either tears down the other's volume.
+    /// Discover mints a fresh UUID per add, so the same portal added twice
+    /// would make two records deriving the same MountpointTag — a shared
+    /// mount point where detaching either tears down the other's volume.
     @Test("the same target added twice collapses to one record")
     func duplicateTargetsCollapse() async throws {
         let url = temporaryURL()
@@ -188,16 +173,14 @@ struct TargetStoreTests {
         let first = sample("first-id")
         try await store.save(first)
 
-        // Same host/port/IQN/LUN, different id — exactly what Discover produces
-        // on a second run.
+        // Same host/port/IQN/LUN, different id — a second Discover run.
         var twin = sample("second-id")
         twin.displayName = "Renamed by the second add"
         let stored = try await store.save(twin)
 
         let all = await store.all()
         #expect(all.count == 1, "two records for one LUN would share a mount point")
-        // The original id survives, so the keychain item and the mount point
-        // stay valid; taking the newcomer's id would orphan both.
+        // The original id survives; the keychain item and mount point stay valid.
         #expect(stored.id == "first-id")
         #expect(all.first?.id == "first-id")
         #expect(all.first?.displayName == "Renamed by the second add")
@@ -216,14 +199,14 @@ struct TargetStoreTests {
         #expect(await store.all().count == 2)
     }
 
-    /// A file that already went wrong should heal, not stay wrong forever.
+    /// A file that already went wrong heals on the next save.
     @Test("an already-duplicated file is repaired on the next save")
     func existingDuplicatesAreRepaired() async throws {
         let url = temporaryURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
-        // Hand-written, as a pre-fix installation's file would look.
+        // As a pre-fix installation's file would look.
         let both = [sample("one"), sample("two"), sample("three")]
         try JSONEncoder().encode(both).write(to: url)
 
@@ -238,8 +221,8 @@ struct TargetStoreTests {
         #expect(await TargetStore(url: temporaryURL()).all().isEmpty)
     }
 
-    /// The secret must never be in this file. It is the difference between a
-    /// leaked support bundle disclosing topology and disclosing credentials.
+    /// The secret must never be in this file: a leaked copy may disclose
+    /// topology, never credentials.
     @Test("no secret is ever written to disk")
     func secretsNeverPersist() async throws {
         let url = temporaryURL()
@@ -274,9 +257,8 @@ struct XPCModelWireTests {
         #expect(record.mutualChapUser == nil, "an absent optional must stay decodable")
     }
 
-    /// The flush setting was added after 0.3.8 shipped, so every installed
-    /// targets.json lacks it. Absent must mean write-through — the safe default
-    /// — not a decode failure and not some other policy.
+    /// Installed targets.json files predate the flush setting; absent must
+    /// mean write-through, not a decode failure or some other policy.
     @Test("a pre-flush-setting record decodes as write-through")
     func flushSettingAbsentIsWriteThrough() throws {
         let golden = """
@@ -299,23 +281,19 @@ struct XPCModelWireTests {
         #expect(decoded.flushIntervalSeconds == 30)
         #expect(FlushPolicy(intervalSeconds: 30) == .interval(seconds: 30))
 
-        // 0 is "never flush": the user has declared the target's cache
-        // non-volatile.
+        // 0 is "never flush": the user declared the cache non-volatile.
         record.flushIntervalSeconds = 0
         decoded = try JSONDecoder().decode(
             TargetRecord.self, from: JSONEncoder().encode(record))
         #expect(decoded.flushIntervalSeconds == 0)
         #expect(FlushPolicy(intervalSeconds: 0) == .never)
 
-        // The file is hand-editable; a nonsense negative falls back to the
-        // safe default rather than becoming a policy.
+        // Hand-editable file: a nonsense negative falls back to the safe default.
         #expect(FlushPolicy(intervalSeconds: -5) == .writeThrough)
     }
 
-    /// The workload profile sets the readahead byte budget, and so the
-    /// speculation depth, per target. Absent must mean `.mixed`, which carries
-    /// the budget the shipping build already used — no installed target may
-    /// change its I/O behaviour merely by being upgraded.
+    /// Absent must pin nothing (the depth controller steers): an installed
+    /// target must not change I/O behaviour merely by being upgraded.
     @Test("a record without a workload profile decodes as mixed")
     func workloadProfileAbsentIsMixed() throws {
         let golden = """
@@ -325,8 +303,7 @@ struct XPCModelWireTests {
             """
         let record = try JSONDecoder().decode(TargetRecord.self, from: Data(golden.utf8))
         #expect(record.workloadProfile == nil)
-        // nil is not a profile — it means nothing is pinned and the depth
-        // controller steers. Only an explicit value overrides it.
+        // nil is not a profile: nothing pinned, the controller steers.
         #expect(WorkloadProfile(rawValue: record.workloadProfile ?? "") == nil)
     }
 
@@ -356,9 +333,7 @@ struct XPCModelWireTests {
         #expect(WorkloadProfile(rawValue: "mixed") == .mixed)
     }
 
-    /// Same reasoning as the negative flush interval: targets.json is
-    /// hand-editable, and a typo must not silently pin a depth. An
-    /// unrecognised value is no override, so the controller keeps steering.
+    /// A typo in the hand-editable file must not silently pin a depth.
     @Test("an unrecognised workload profile pins nothing")
     func workloadProfileUnknownPinsNothing() {
         #expect(WorkloadProfile.pinnedBudgetBytes(stored: "turbo") == nil)
@@ -397,10 +372,8 @@ struct XPCModelWireTests {
         #expect(decoded.byteCount == 512 * 1024)
     }
 
-    /// The diagnostics pane exists so a bug report can say what was negotiated.
-    /// If a parameter is missing from this dictionary it is invisible to every
-    /// report, so the ones that most often explain a performance question are
-    /// asserted present.
+    /// A parameter missing from this dictionary is invisible to every bug
+    /// report; the ones that explain performance questions must be present.
     @Test("the parameters that explain performance questions are all displayed")
     func displayPairsCoverTheUsefulOnes() {
         let pairs = OperationalParameters().displayPairs

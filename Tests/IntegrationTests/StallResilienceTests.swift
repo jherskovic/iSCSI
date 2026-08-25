@@ -3,12 +3,9 @@ import Testing
 @testable import MockTarget
 @testable import iSCSIKit
 
-/// A target that takes commands and never answers them.
-///
-/// This is the failure the NOP keepalive cannot see: the connection is up, the
-/// pings come back, and every I/O hangs forever. Under Backend A that hang does
-/// not surface as an error — it propagates through DiskImages into APFS and
-/// becomes a wedged volume, which is worse than a reported failure.
+/// A target that takes commands and never answers them — the failure the NOP
+/// keepalive cannot see: pings come back, every I/O hangs, and under Backend A
+/// a hang becomes a wedged APFS volume rather than an error.
 @Suite("Integration: stalled-target resilience", .timeLimit(.minutes(1)))
 struct StallResilienceTests {
     private func stallingConfig() -> MockTargetConfig {
@@ -73,10 +70,8 @@ struct StallResilienceTests {
     }
 
     @Test func cancellationCompletesEvenWhenTaskManagementIsSwallowed() async throws {
-        // Regression: cancelling a task used to wait for the ABORT TASK
-        // response before resolving the caller. A target sick enough to ignore
-        // commands can ignore task management too, and then the cancellation
-        // itself hung — so the timeout above would have had nothing to land on.
+        // Cancellation must not wait for the ABORT TASK response: a target
+        // that ignores commands ignores task management too.
         var config = MockTargetConfig()
         config.faults.stallCommands = true
         config.faults.swallowTMF = true
@@ -114,17 +109,10 @@ struct StallResilienceTests {
 // MARK: - A transport that cannot finish a send
 
 /// Wraps another transport and, once armed, accepts a `send` that never
-/// completes and cannot be cancelled.
-///
-/// That is exactly what `NWConnection.send` does against a peer which has
-/// stopped draining its socket: `contentProcessed` never fires. Before this was
-/// fixed, `NetworkTransport.send` was a bare continuation, so nothing could
-/// interrupt it — and because the NOP keepalive sends through the same path, it
-/// could not detect the dead peer either. Eight hours of wedged Mac produced
-/// not one recovery event, because nothing was ever able to notice.
-///
-/// `MemoryPipe` never blocks on send, which is why 226 passing tests missed
-/// this: MockTarget stalls *responses*, and the incident stalled a *send*.
+/// completes and cannot be cancelled — what `NWConnection.send` does against
+/// a peer that stopped draining its socket (`contentProcessed` never fires),
+/// and a shape `MemoryPipe` cannot produce: MockTarget stalls *responses*,
+/// this stalls a *send*.
 final class StallingSendTransport: ConnectionTransport, @unchecked Sendable {
     /// Shared with the test so the stall can be armed after login succeeds.
     final class Switch: @unchecked Sendable {
@@ -156,14 +144,8 @@ final class StallingSendTransport: ConnectionTransport, @unchecked Sendable {
 }
 
 extension StallResilienceTests {
-    /// The regression test for the eight-hour wedge.
-    ///
-    /// A stalled *send* must surface as an error within the deadline. It used
-    /// to hang forever: `withDeadline` raced the work against a sleep inside a
-    /// task group, and a task group cannot return until every child finishes,
-    /// so an uncancellable send held the whole thing open. The daemon then
-    /// never sent its XPC reply, and the FSKit extension above it blocked until
-    /// DiskImages retried — for ever.
+    /// The eight-hour-wedge regression test: a stalled, uncancellable *send*
+    /// must still surface as an error within the deadline.
     @Test func stalledSendFailsInsteadOfHangingForever() async throws {
         let fleet = TargetFleet(disk: RAMDisk(), configs: [MockTargetConfig()])
         let stall = StallingSendTransport.Switch()

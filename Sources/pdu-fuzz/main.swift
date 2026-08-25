@@ -13,12 +13,9 @@ public func fuzzOne(_ start: UnsafeRawPointer, _ count: Int) -> CInt {
 
 func fuzzBody(_ data: Data) {
     stateless(data)
-    // Again at a non-zero startIndex. Every input this harness generates is a
-    // fresh Data whose startIndex is 0, so it structurally could not catch the
-    // classic Swift parsing bug: indexing a *slice* with an absolute offset.
-    // Foundation keeps the original startIndex on a slice, and the accessors in
-    // Support/Endian are all `self[startIndex + offset]` — this is what pins
-    // that. A regression here would be silent and catastrophic.
+    // Again at a non-zero startIndex: fresh Data always starts at 0, which
+    // cannot catch indexing a *slice* with an absolute offset. This pins the
+    // `self[startIndex + offset]` accessors in Support/Endian.
     var prefixed = Data([0xAA, 0x55, 0x00])
     prefixed.append(data)
     stateless(prefixed.dropFirst(3))
@@ -29,10 +26,9 @@ func fuzzBody(_ data: Data) {
 
 /// Stateless parsers of target-controlled bytes.
 private func stateless(_ data: Data) {
-    // Two digest configurations, not four. A mutated input essentially never
-    // carries a valid CRC, so `(true, false)` and `(false, true)` threw at the
-    // digest check and did almost no decoding — costing half the CPU budget for
-    // no added coverage.
+    // Two digest configurations, not four: mutated inputs essentially never
+    // carry a valid CRC, so the mixed configs decoded nothing and cost half
+    // the CPU budget.
     for digests in [DigestConfig(), DigestConfig(headerDigest: true, dataDigest: true)] {
         var deframer = PDUDeframer(digests: digests, maxDataSegmentLength: 1 << 20)
         deframer.append(data)
@@ -76,13 +72,10 @@ private func chapParsers(_ data: Data) {
     }
 }
 
-/// Drive the login state machine through a whole conversation, which is where
-/// the negotiation engine, the CHAP exchange and the continuation buffers live.
-///
-/// Needs a multi-round exchange rather than a single blob, so it is driven by
-/// slicing the input into successive login responses. Bounded rounds: a hostile
-/// script that never terminates is a real behaviour (and now a caught one), but
-/// this loop must still return.
+/// Drive the login state machine — negotiation engine, CHAP, continuation
+/// buffers — through a multi-round exchange sliced from the input. Rounds are
+/// bounded: a never-terminating script is real target behaviour, but this
+/// loop must return.
 private func loginExchange(_ data: Data) {
     guard !data.isEmpty else { return }
     for withCHAP in [false, true] {

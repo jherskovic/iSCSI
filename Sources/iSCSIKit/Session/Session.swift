@@ -1,12 +1,8 @@
 import Foundation
 
 /// Things worth telling someone about, which are not errors the caller sees.
-///
-/// Recovery is deliberately invisible to callers — that is its whole point — but
-/// invisible to *operators* is a different thing. A session that quietly rebuilt
-/// itself five times and then gave up produced, before this existed, exactly no
-/// record: an I/O that never returned, and a log containing only the original
-/// login banner. Diagnosing that took hours and ended in a guess.
+/// Recovery is invisible to callers by design; it must not be invisible to
+/// operators too.
 public enum SessionEvent: Sendable {
     /// The connection dropped; recovery is starting.
     case connectionLost(reason: String)
@@ -41,14 +37,9 @@ public struct SessionPolicy: Sendable {
     public var taskRetries = 2
     /// A task unanswered for this long is abandoned: aborted at the target,
     /// then retried on a fresh session (bounded by `taskRetries`). nil waits
-    /// forever.
-    ///
-    /// The keepalive does not cover this. A target that accepts commands and
-    /// never answers them typically still answers NOPs, so the connection
-    /// looks healthy while every I/O hangs — and under Backend A that hang
-    /// propagates up through DiskImages into APFS, where it becomes a wedged
-    /// volume rather than an error. 30s matches the conventional SCSI command
-    /// timeout.
+    /// forever. The keepalive does not cover this — a target that swallows
+    /// commands usually still answers NOPs. 30s is the conventional SCSI
+    /// command timeout.
     public var taskTimeout: Duration? = .seconds(30)
     /// RFC 7143 §7.5: after a transport exception, recovery SHOULD NOT begin
     /// before the negotiated DefaultTime2Wait. Tests that script fast
@@ -142,14 +133,10 @@ public actor ISCSISession {
                 try await recover(after: error)
             } catch is DeadlineError {
                 try Task.checkCancellation()
-                // The deadline cancelled the task, which aborted it at the
-                // target. Resubmitting on the same connection would just wait
-                // out another timeout: a target that swallows commands is not
-                // persuaded by a second one. Re-login instead — and if that
-                // does not help either, drop the connection so the *next*
-                // caller starts fresh rather than queueing behind the wedge,
-                // and surface the failure so the layers above see an error
-                // instead of hanging forever.
+                // The deadline aborted the task at the target. Re-login rather
+                // than resubmit on the same connection; when retries run out,
+                // drop the connection so the next caller starts fresh instead
+                // of queueing behind the wedge.
                 guard !loggedOut, attempt < policy.taskRetries else {
                     await dropConnection()
                     throw SessionError.taskTimedOut
@@ -285,7 +272,7 @@ public actor ISCSISession {
     }
 
     private func establishForRecovery() async throws {
-        // A recovered session is a new session: fresh ISID qualifier keeps
+        // A recovered session is a new session: a fresh random ISID keeps
         // targets from confusing it with the half-dead old one.
         loginConfig.isid = .random()
         loginConfig.tsih = 0

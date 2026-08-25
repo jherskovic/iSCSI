@@ -4,14 +4,10 @@ import Foundation
 /// CRC-32C (Castagnoli) as used by iSCSI header/data digests (RFC 7143 §13.1).
 ///
 /// Standard reflected CRC: polynomial 0x1EDC6F41 (reversed 0x82F63B78),
-/// init 0xFFFFFFFF, final XOR 0xFFFFFFFF. The 32-bit result is transmitted
-/// on the wire in little-endian byte order (so the RFC's "32 bytes of zeros →
-/// aa 36 91 8a" wire bytes correspond to the value 0x8a9136aa).
-///
-/// The digest covers every byte in both directions, so it sits in the
-/// throughput path. `iscsi_crc32c` uses the CRC32C instruction where the CPU
-/// has one; the previous byte-at-a-time table loop also ran through a generic
-/// `Sequence`, which prevented any contiguous fast path.
+/// init 0xFFFFFFFF, final XOR 0xFFFFFFFF. The 32-bit result goes on the wire
+/// little-endian (the RFC's "32 bytes of zeros → aa 36 91 8a" is the value
+/// 0x8a9136aa). In the throughput path; `iscsi_crc32c` uses the CPU's CRC32C
+/// instruction where available.
 public enum CRC32C {
     /// Starting value for a chained digest; see `update` / `finalize`.
     public static let initial: UInt32 = 0xFFFF_FFFF
@@ -35,9 +31,8 @@ public enum CRC32C {
         bytes.withUnsafeBytes { checksum($0) }
     }
 
-    /// General case. Anything without contiguous storage is copied once — the
-    /// accelerated routine needs a buffer, and the copy is still far cheaper
-    /// than iterating a Sequence byte by byte.
+    /// General case: non-contiguous input is copied once — the accelerated
+    /// routine needs a buffer.
     @inlinable
     public static func checksum(_ bytes: some Sequence<UInt8>) -> UInt32 {
         if let contiguous = bytes as? [UInt8] { return checksum(contiguous) }

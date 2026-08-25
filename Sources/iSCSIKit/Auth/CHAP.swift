@@ -10,25 +10,12 @@ public enum CHAP {
     /// Whether the app offers mutual CHAP, and whether the daemon acts on
     /// credentials already stored for it.
     ///
-    /// **Off since 2026-08-17, and not because this implementation is in
-    /// doubt.** It is exercised end to end in `AuthTraceTests`, and against a
-    /// real target the wire trace shows a well-formed RFC 7143 §12.1.3
-    /// exchange: `CHAP_N CHAP_R CHAP_I CHAP_C` in one Login Request, mirroring
-    /// the encodings the target itself chose. One-way and mutual logins were
-    /// run minutes apart against the same target with the same credentials —
-    /// one-way succeeded, mutual was refused with 0x02/0x01.
-    ///
-    /// The target is what cannot answer. TrueNAS SCALE writes `OutgoingUser`
-    /// into `/etc/scst.conf` and never loads it into `/sys/kernel/scst_tgt/`,
-    /// across a service restart, so `iscsi-scstd` logs "CHAP target auth.: no
-    /// outgoing credentials configured" and rejects the login without ever
-    /// composing an answer. A switch that turns a working target into a broken
-    /// one is worse than no switch.
-    ///
-    /// This gates *use*, not storage. A record that already names a mutual
-    /// user keeps it, the keychain keeps the secret, and setting this back to
-    /// `true` restores the feature with nothing re-entered. Deleting the
-    /// credentials instead would make the retreat one-way.
+    /// **Off because of a target-side bug, not this implementation**: TrueNAS
+    /// SCALE never loads its configured `OutgoingUser` into scst, so mutual
+    /// logins are refused with 0x02/0x01 (evidence: docs/open-questions.md 3a).
+    /// Gates *use*, not storage — stored mutual credentials survive, and
+    /// flipping this back to `true` restores the feature with nothing
+    /// re-entered.
     public static let mutualIsOffered = false
 
     public enum CredentialError: Error, LocalizedError, Equatable {
@@ -74,10 +61,8 @@ public enum CHAP {
         public var mutualName: String?
         public var mutualSecret: String?
 
-        /// RFC 7143 §12.1.1's floor. Below this, a captured exchange is
-        /// brute-forceable offline: the response is one MD5 over a short input,
-        /// and both the id and the challenge that go into it are chosen by
-        /// whoever we are talking to.
+        /// RFC 7143 §12.1.1's floor; below it a captured exchange is
+        /// brute-forceable offline.
         public static let minimumSecretLength = 12
 
         public init(name: String, secret: String, mutualName: String? = nil, mutualSecret: String? = nil) {
@@ -88,13 +73,10 @@ public enum CHAP {
         }
 
         /// Throws rather than accepting a secret no target should honour.
-        ///
-        /// The non-throwing initialiser above stays for tests and for callers
-        /// holding an already-validated secret; this is what anything taking a
-        /// secret from a human or a file should use. The case it exists for is
-        /// an *empty* secret: `--chap-user x` with the secret argument forgotten
-        /// used to produce `MD5(id ‖ "" ‖ challenge)` — a complete, well-formed
-        /// exchange that tells the peer the secret is empty.
+        /// Use this for any secret from a human or a file; the plain
+        /// initialiser is for callers holding an already-validated secret.
+        /// The dangerous case is an *empty* secret, which still produces a
+        /// well-formed exchange.
         public static func validated(name: String, secret: String,
                                      mutualName: String? = nil,
                                      mutualSecret: String? = nil) throws -> Credentials {

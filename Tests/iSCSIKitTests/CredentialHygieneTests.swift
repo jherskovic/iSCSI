@@ -35,10 +35,9 @@ struct CredentialHygieneTests {
         var text: String { lock.lock(); defer { lock.unlock() }; return lines.joined(separator: "\n") }
     }
 
-    /// The exact scenario: a user hits a login problem, is told to run with
-    /// `--debug`, and attaches the output to a bug report. Before this, that
-    /// published `CHAP_I`, `CHAP_C` and `CHAP_R` — the complete input to an
-    /// offline attack on their SAN password.
+    /// The exact scenario: `--debug` output attached to a bug report must not
+    /// publish `CHAP_I`/`CHAP_C`/`CHAP_R` — the complete input to an offline
+    /// attack on the SAN password.
     @Test("a traced CHAP exchange discloses no challenge, response or user name")
     func chapValuesAreRedacted() async throws {
         let secretish = "0x8f1e2d3c4b5a69780f1e2d3c4b5a6978"

@@ -1,35 +1,20 @@
 //
 //  iSCSIFSExtension.swift
-//  Backend A: an FSKit module that presents a LUN as a regular file, so that
-//  `hdiutil attach -imagekey diskimage-class=CRawDiskImage <file>` yields a real
-//  /dev/diskN. The block device then comes from Apple's DiskImages framework
-//  instead of our DriverKit dext, which is how this backend routes around the
-//  wedge documented in docs/feedback-virtual-scsi-wedge.md.
+//  Backend A: an FSKit module presenting a LUN as a regular file, which
+//  `hdiutil attach -imagekey diskimage-class=CRawDiskImage` turns into a real
+//  /dev/diskN. The resource URL selects the backing store:
 //
-//  The resource URL selects the backing store:
+//    iscsi://proto/lun0                      -> local sparse file, no network
+//    iscsi://[user@]host[:port]/<iqn>/<lun>  -> real session via iscsid (XPC)
 //
-//    iscsi://proto/lun0                      -> a local sparse file, no network.
-//                                               Verified working end to end and
-//                                               kept so FSKit problems can be
-//                                               separated from network ones.
-//    iscsi://[user@]host[:port]/<iqn>/<lun>  -> a real session, forwarded to
-//                                               iscsid over XPC.
-//
-//  Both Backend A risks have been settled (docs/backend-a-fskit-notes.md):
-//  DiskImages *will* attach a file living on an FSKit volume, and our read/write
-//  path is genuinely used — 123 writes / 38.9 MB in the reference run, 1 MiB max
-//  I/O, nothing offloaded behind our back.
-//
-//  ⚠️ There is NO barrier signal. `synchronize` is never called — not by
-//  sync(8), not by fsync(), not by F_FULLFSYNC on the served file. The only
-//  durability hook is `closeItem` with no retained modes, so the iSCSI store
-//  issues SYNCHRONIZE CACHE there and the target should also be write-through.
-//  Do not add code that assumes a barrier will arrive.
+//  ⚠️ There is NO barrier signal: `synchronize` is never called
+//  (docs/backend-a-fskit-notes.md). The only durability hook is `closeItem`
+//  with no retained modes, so the store flushes there and the target should
+//  also be write-through. Do not add code that assumes a barrier will arrive.
 //
 //  API notes:
-//   - FSVolume.Operations is deprecated in macOS 27 in favour of FSVolumeHandler,
-//     but FSVolumeHandler is V3-only and the test VM runs 26.6.1, so this
-//     targets FSVolume.Operations on purpose.
+//   - FSVolume.Operations is deprecated in macOS 27 for FSVolumeHandler, but
+//     FSVolumeHandler is V3-only and the test VM runs 26.6.1 — deliberate.
 //   - FSGenericURLResource is macOS 26.0. Every FS* Info.plist key must live
 //     inside EXAppExtensionAttributes or FSKit silently ignores it.
 //
@@ -45,27 +30,16 @@ private let kImageName = "lun0.img"
 
 
 
-/// Fixed directory for prototype backing files. Nothing derived from a resource
-/// URL is ever allowed to change this.
-///
-/// It must live inside the extension's sandbox container: the appex is built
-/// with `com.apple.security.app-sandbox`, so opening a path under /Users/Shared
-/// fails with EPERM and `loadResource` reports "Operation not permitted".
-/// For a sandboxed extension `NSHomeDirectory()` is the container root.
-///
-/// This is prototype-only storage. Nothing outside the extension ever needs to
-/// see it — the bytes are served *as* a file by this filesystem, so the backing
-/// store does not have to be visible to hdiutil or anyone else.
+/// Fixed directory for prototype backing files; nothing from a resource URL
+/// may change it. Must live inside the sandbox container (the appex is
+/// sandboxed; paths outside fail with EPERM), and for a sandboxed extension
+/// `NSHomeDirectory()` is the container root.
 private let kProtoBackingDir = NSHomeDirectory() + "/Documents"
 
 
-/// Reduces a caller-supplied URL to a single safe filename component.
-///
-/// An FSKit resource URL is caller-influenced input: `iscsi://h/../../etc/x`
-/// would otherwise let a mount request pick the file this extension creates and
-/// writes. Only `[A-Za-z0-9._-]` survives, `.` and `..` are rejected outright,
-/// and the result is length-bounded — so the value can never contain a path
-/// separator or traverse upward.
+/// Reduces a caller-supplied URL to a single safe filename component: only
+/// `[A-Za-z0-9._-]`, `.`/`..` rejected, length-bounded — a mount request must
+/// not be able to pick the file this extension writes.
 private func safeTag(from url: URL) -> String {
     let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
     let filtered = String(url.lastPathComponent.filter { allowed.contains($0) }.prefix(64))
@@ -73,10 +47,8 @@ private func safeTag(from url: URL) -> String {
     return filtered
 }
 
-/// Describes a URL for logging without leaking credentials.
-///
-/// An iSCSI URL may carry `user:password@host`; `absoluteString` would put that
-/// straight into the system log, which is readable beyond this process.
+/// Describes a URL for logging without credentials — an iSCSI URL may carry
+/// `user:password@host`, and the system log is readable beyond this process.
 private func redact(_ url: URL) -> String {
     var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
     parts?.user = nil
@@ -144,14 +116,9 @@ private let kVolumeUUID = UUID(uuidString: "6F1C2B14-9A4E-4E31-B1E2-4C7A9D0E5B33
 
 final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
 
-    /// Resolves the backing path from whichever resource kind FSKit hands us,
-    /// and logs which one it was — that answers, empirically, which Info.plist
-    /// resource key `/sbin/mount` actually honours.
-    ///
-    /// The resource URL is caller-influenced, so the generic-URL branch never
-    /// interpolates it into a path directly: `safeTag` reduces it to a single
-    /// bounded `[A-Za-z0-9._-]` component, which cannot contain `/` or `..` and
-    /// so cannot escape the fixed directory.
+    /// Resolves the backing path from whichever resource kind FSKit hands us.
+    /// The URL is caller-influenced, so the generic branch goes through
+    /// `safeTag` and cannot escape the fixed directory.
     private func backingPath(for resource: FSResource) -> String? {
         if let pathURL = resource as? FSPathURLResource {
             fsLog.log("resource: FSPathURLResource \(redact(pathURL.url), privacy: .public)")
@@ -160,21 +127,17 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         if let generic = resource as? FSGenericURLResource {
             let url = generic.url
             fsLog.log("resource: FSGenericURLResource \(redact(url), privacy: .public)")
-            // TODO(iscsi): this URL is the target/LUN identifier; hand it to
-            // iscsid instead of mapping it onto a local file.
+            // Only used when the host is `proto`; real sessions are routed
+            // to iscsid by `makeStore`.
             return "\(kProtoBackingDir)/iscsi-proto-\(safeTag(from: url)).img"
         }
         fsLog.error("resource: unsupported kind \(String(describing: type(of: resource)), privacy: .public)")
         return nil
     }
 
-    /// Chooses the backing store from the resource URL.
-    ///
-    ///   iscsi://proto/lun0                     → local file (prototype)
-    ///   iscsi://[user@]host[:port]/<iqn>/<lun> → real session via iscsid
-    ///
-    /// Keeping the `proto` host means the known-good local configuration stays
-    /// available for separating FSKit problems from network ones.
+    /// Chooses the backing store: host `proto` → local file (keeps a
+    /// known-good configuration for separating FSKit problems from network
+    /// ones), anything else → real session via iscsid.
     private func makeStore(for resource: FSResource, localPath: String) throws -> LUNStore {
         guard let generic = resource as? FSGenericURLResource,
               let host = generic.url.host, host != "proto" else {
@@ -190,10 +153,8 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         let target = parts[0]
         let lun = parts.count >= 2 ? (UInt64(parts[1]) ?? 0) : 0
         fsLog.log("connecting to iscsid: host=\(host, privacy: .public) target=\(target, privacy: .public) lun=\(lun)")
-        // `url.user` is deliberately ignored. It used to be forwarded as the
-        // daemon's keychain lookup key, which made a mount URL a way to name
-        // which stored secret root should spend. The daemon now decides that
-        // from its own saved record, and refuses portals it has no record for.
+        // `url.user` is deliberately ignored: a mount URL must not name which
+        // stored secret root spends. The daemon decides from its own record.
         return try DaemonStore(host: host, port: url.port ?? 3260,
                                target: target, lun: lun)
     }
@@ -218,21 +179,15 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         do {
             let store = try makeStore(for: resource, localPath: path)
             let volume = ProtoVolume(store: store)
-            // The container state machine is notReady -> ready -> active, and
-            // `loadResource` is the transition to *ready*: "ready, but
-            // inactive". `.active` means a volume is already active, and FSKit
-            // rejects the load with "unexpected container state" (surfaced by
-            // mount as "Protocol not supported").
-            //
-            // Use the no-error form. `.ready(status: fs_errorForPOSIXError(0))`
-            // would attach a real NSError with POSIX code 0, which FSKit reports
-            // as "Undefined error: 0".
+            // `loadResource` transitions notReady -> ready; `.active` here
+            // makes FSKit reject the load ("unexpected container state").
+            // The no-error form matters: `.ready(status:)` with POSIX code 0
+            // attaches a real NSError reported as "Undefined error: 0".
             containerStatus = .ready
             fsLog.log("loadResource ok, volume ready")
             reply(volume, nil)
         } catch {
-            // Include the path: the first real failure here was a sandbox EPERM,
-            // which is indistinguishable from any other I/O error without it.
+            // The path distinguishes a sandbox EPERM from any other I/O error.
             fsLog.error("loadResource failed for \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             reply(nil, fs_errorForPOSIXError(EIO))
         }
@@ -248,11 +203,8 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
 
 // MARK: - Volume
 
-// FSVolume.OpenCloseOperations is optional — "if a file system volume doesn't
-// conform to this protocol, the kernel layer can skip making such calls". It is
-// implemented here mainly to observe *when* the disk image is opened for write
-// and finally closed, which is a candidate point for the flush that never
-// reaches `synchronize`.
+// FSVolume.OpenCloseOperations is optional; implemented so the final close
+// can carry the flush that `synchronize` never delivers.
 final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations,
                          FSVolume.OpenCloseOperations {
     private let store: LUNStore
@@ -329,8 +281,8 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
         reply()
     }
 
-    /// Question (2): does a flush from the attached disk image reach us?
-    /// Logged unconditionally so the answer is visible even if nothing else is.
+    /// Never observed to fire (no barrier signal); logged unconditionally so
+    /// that ever changing would be visible.
     func synchronize(flags: FSSyncFlags, replyHandler reply: @escaping ((any Error)?) -> Void) {
         fsLog.log("SYNCHRONIZE flags=\(flags.rawValue)")
         trace("SYNCHRONIZE flags=\(flags.rawValue)")

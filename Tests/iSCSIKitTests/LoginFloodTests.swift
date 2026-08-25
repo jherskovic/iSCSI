@@ -2,14 +2,9 @@
 //  LoginFloodTests.swift
 //  The login exchange against a target that never finishes it.
 //
-//  Both cases here ran forever before the bounds went in, and both are
-//  pre-authentication: the peer has proved nothing at the point it starts
-//  misbehaving, and in the shipping configuration the process it is doing this
-//  to is the root daemon.
-//
-//  They test `LoginStateMachine` directly rather than through a connection
-//  because it is pure — no sockets, no clock — so "does this terminate?" is a
-//  question a unit test can answer in microseconds instead of a timeout.
+//  Both cases are pre-authentication, and the process on the receiving end
+//  is the root daemon. The state machine is pure — no sockets, no clock — so
+//  "does this terminate?" is answerable in microseconds.
 //
 
 import Foundation
@@ -45,9 +40,8 @@ struct LoginFloodTests {
         return resp
     }
 
-    /// B4. The C bit set forever with real payload: the initiator buffered every
-    /// chunk and asked for more. `loginTextLimit` existed and said exactly the
-    /// right number, but was only applied to what we *send*.
+    /// B4. The C bit set forever with real payload: `loginTextLimit` must
+    /// bound what we *receive*, not only what we send.
     @Test("a target that never clears the C bit is cut off at the login text limit")
     func continuationFloodIsBounded() throws {
         var machine = LoginStateMachine(config: config(), cmdSN: 1)

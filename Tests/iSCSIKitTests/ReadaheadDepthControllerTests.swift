@@ -2,11 +2,9 @@ import Foundation
 import Testing
 @testable import iSCSIKit
 
-/// The depth controller replaces the per-target workload rungs. Those asked the
-/// user to choose between settings that measurement showed differ only in
-/// wasted bandwidth — hit rate was flat at 93% across a 16x range of depth, and
-/// throughput tracked array state rather than the setting. Nobody would
-/// knowingly choose more waste, so the choice belongs to the machine.
+/// The depth controller replaces the per-target workload rungs: hit rate is
+/// flat across a 16× depth range, so waste is the only signal and the choice
+/// belongs to the machine.
 @Suite("Readahead depth controller")
 struct ReadaheadDepthControllerTests {
 
@@ -83,11 +81,9 @@ struct ReadaheadDepthControllerTests {
     /// to 0.3 and 0.1, and drops the oldest — a two-second window at 0.75/0.25
     /// wearing three-second weights.
     ///
-    /// Asserting on the share rather than on `cap`: both orderings happen to
-    /// move `cap` the same way on most inputs, which is how the original bug
-    /// survived seven tests. The share is the number the loop acted on, and it
-    /// differs unambiguously — 10% correctly weighted, 0% one slot late,
-    /// because the only wasteful second has fallen out of the window.
+    /// Asserts on the share, not `cap`: both orderings move `cap` the same
+    /// way on most inputs. The share differs unambiguously — 10% correctly
+    /// weighted, 0% one slot late.
     @Test("the newest completed second carries the 0.6 weight")
     func weightsCoverThreeCompletedSeconds() {
         var c = ReadaheadDepthController(initialCap: 16, ceiling: 32)

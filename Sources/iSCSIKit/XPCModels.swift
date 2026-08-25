@@ -2,24 +2,17 @@
 //  XPCModels.swift
 //  Data transfer objects for the daemon's XPC surface.
 //
-//  These cross the wire as `Data` holding Codable structs, not as
-//  NSSecureCoding classes. NSXPC can carry object graphs, but every method that
-//  returns a collection then needs its classes allowlisted with
-//  setClasses(_:for:argumentIndex:ofReply:) — a step the compiler does not
-//  check, that is invisible until the call silently fails at runtime, and that
-//  has to be repeated for every new method. Encoding to Data moves the problem
-//  into Codable, where the compiler does check it.
+//  These cross the wire as `Data` holding Codable structs, not NSSecureCoding
+//  classes: NSXPC's per-method class allowlisting is unchecked by the compiler
+//  and fails silently at runtime; Codable is checked.
 //
 
 import Foundation
 
-/// Identity and liveness of the running daemon.
-///
-/// The setup flow's whole question is "is the thing I registered actually alive
-/// and is it the build I shipped?", and neither half is answerable from
-/// `SMAppService.status`: launchd reporting `.enabled` only means it is willing
-/// to start the job. This is the round trip that distinguishes "approved and
-/// working" from "approved and crashing", which need opposite instructions.
+/// Identity and liveness of the running daemon. `SMAppService.status` cannot
+/// answer either: `.enabled` only means launchd is willing to start the job.
+/// This round trip distinguishes "approved and working" from "approved and
+/// crashing".
 public struct DaemonInfo: Codable, Sendable, Equatable {
     /// CFBundleShortVersionString of the app bundle the daemon shipped inside,
     /// or "dev" when it is running loose from `swift run`.
@@ -64,13 +57,9 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
     /// and wants no periodic flush at all. See `FlushPolicy`.
     public var flushIntervalSeconds: Int?
     /// Pins this LUN's readahead depth, overriding the adaptive controller.
-    ///
-    /// nil — every record, unless someone hand-edited this file — means no
-    /// override: `ReadaheadDepthController` sets the depth from measured waste.
-    /// There is no UI for this and it is not expected to be set; it exists so a
-    /// depth can be held still for debugging or A/B measurement, which is how
-    /// the evidence for removing the setting was gathered in the first place.
-    /// See `WorkloadProfile`.
+    /// nil (every record, unless hand-edited) means `ReadaheadDepthController`
+    /// sets depth from measured waste. No UI; exists to hold depth still for
+    /// debugging or A/B measurement. See `WorkloadProfile`.
     public var workloadProfile: String?
 
     public init(id: String, displayName: String, host: String, port: UInt16 = 3260,
@@ -93,34 +82,12 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
 
 /// How much speculation a LUN's access pattern justifies.
 ///
-/// Readahead only pays on streams, and it stops paying well before it stops
-/// costing. Measured on one array in one session, a soak that is 46%
-/// sequential runs, 21% writes and 17% seeks:
-///
-///     budget   depth   blocks/600s   hit    unused   wasted/read
-///     1 MiB        4       151,643   93.1%    11.1%        0.115x
-///     4 MiB       16       212,710   93.2%    32.4%        0.443x
-///     8 MiB       32       212,033   93.2%    48.8%        0.882x
-///
-/// The hit rate never moves, so depth is not buying residency — only queue
-/// occupancy at the target, where speculation that a write or a seek will throw
-/// away sits ahead of reads that are real. 8 MiB bought nothing over 4 and
-/// wasted twice the bandwidth. A guest booting a VM image is locality without
-/// streams and wastes proportionally more; a media file is the case the deep
-/// window was built for.
-///
-/// These are no longer a user-facing choice. Measurement is why: the throughput
-/// column above moved 2.4x between two consecutive days on identical code, and
-/// 48% within a single morning at a fixed depth, while `unused` reproduced to
-/// the digit. A setting whose options differ only in wasted bandwidth is not a
-/// choice worth offering, so `ReadaheadDepthController` steers depth from that
-/// waste directly and these survive only as a debugging override in
-/// targets.json.
-///
-/// The stored form is the symbolic name rather than the byte count, unlike
-/// `TargetRecord.flushIntervalSeconds` where the number is itself the user's
-/// choice. Here the number is derived from a three-way pick, so storing bytes
-/// would let the file hold values the editor cannot represent.
+/// Measured: deeper readahead never moved the hit rate, only queue occupancy
+/// and wasted bandwidth (docs/performance.md), so this is no longer a
+/// user-facing choice — `ReadaheadDepthController` steers depth from measured
+/// waste, and these survive only as a debugging override in targets.json.
+/// Stored as the symbolic name so the hand-editable file cannot hold values
+/// the editor cannot represent.
 public enum WorkloadProfile: String, Sendable {
     /// Scattered small reads: a database, or a VM image being booted.
     case randomAccess = "random"
@@ -212,14 +179,8 @@ public struct LUNInfo: Codable, Sendable, Equatable {
     }
 }
 
-/// Everything known about a live session.
-///
-/// This is the diagnostic surface, and it is deliberately generous. Every field
-/// here already existed inside the daemon and none of it had ever crossed XPC,
-/// which meant a bug report could say "it was slow" but not "firstBurstLength
-/// negotiated down to 64 KiB and the session recovered four times". The data
-/// costs nothing to send and is the difference between an actionable report and
-/// a guess.
+/// Everything known about a live session — deliberately generous: this is
+/// what turns "it was slow" into an actionable bug report.
 public struct SessionInfo: Codable, Sendable, Equatable, Identifiable {
     public var id: String { handle }
     public var handle: String

@@ -120,10 +120,8 @@ struct ReadaheadPolicyTests {
     @Test func smallRequestsNeedBytesOfProofNotJustTwoReads() {
         var p = Self.makePolicy()
         let small = 16 << 10
-        // A VM guest's 16 KiB stream: two consecutive reads are 32 KiB of
-        // evidence, which under the real workload was wrong often enough that
-        // an entire 12-minute window wasted 100% of its speculation. Nothing
-        // opens until the run has covered 256 KiB — the 16th consecutive read.
+        // A 16 KiB stream: nothing opens until the run has covered 256 KiB
+        // of proof — the 16th consecutive read.
         var depths: [Int] = []
         for i in 0 ..< 17 {
             depths.append(p.noteServed(offset: UInt64(i * small), length: small))

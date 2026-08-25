@@ -119,17 +119,10 @@ struct SessionRecoveryTests {
         // Keepalive ping times out (250 ms) → connection closed → the next
         // execute() recovers onto the healthy target.
         //
-        // Polled rather than slept. A fixed 600 ms was enough on a developer
-        // machine and not on a loaded CI runner, where it failed for want of
-        // scheduling rather than want of recovery — the worst kind of red,
-        // because it teaches people to re-run instead of read. The assertion is
-        // unchanged: recovery must still land on the second target. Only the
-        // waiting is now bounded by an outcome instead of a stopwatch.
-        //
-        // execute() is inside the loop because it is what drives recovery, and
-        // it succeeds against the mute target until the keepalive kills that
-        // connection — so the exit condition is the second connection, not a
-        // successful command.
+        // Polled, not slept: fixed waits fail on loaded CI runners. execute()
+        // is inside the loop because it drives recovery and succeeds against
+        // the mute target until the keepalive kills that connection — the exit
+        // condition is the second connection, not a successful command.
         let deadline = ContinuousClock.now + .seconds(10)
         var recovered: SCSITaskResult?
         while ContinuousClock.now < deadline {

@@ -1,14 +1,8 @@
 //
 //  DaemonAuthError.swift
-//  Why the daemon refused to log in.
-//
-//  These are the failures that used to not be failures. A portal the daemon had
-//  never heard of was logged into anyway; a configured CHAP username whose
-//  secret could not be found fell through to `AuthMethod=None` and reported
-//  success. Both are now errors, and both need to say something the person
-//  reading the alert can act on — "authentication failed" would send someone to
-//  check a password that is fine, when the actual problem is that the target was
-//  never saved or the secret never stored.
+//  Why the daemon refused to log in — worded so the alert names the actual
+//  problem (target never saved, secret never stored) rather than sending the
+//  user to re-check a password that is fine.
 //
 
 import Foundation

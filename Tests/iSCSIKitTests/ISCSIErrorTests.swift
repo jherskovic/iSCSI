@@ -14,9 +14,8 @@ import Testing
 @Suite("Error mapping across XPC")
 struct ISCSIErrorTests {
 
-    /// The distinction the whole file exists for. Before this mapping, both of
-    /// these arrived as "The operation couldn't be completed", and a user could
-    /// not tell a mistyped password from an unplugged NAS.
+    /// The distinction the whole file exists for: a mistyped password must
+    /// not read the same as an unplugged NAS.
     @Test("a bad secret and an unreachable target are different errors")
     func authIsNotConnectivity() {
         let auth = ISCSIError.nsError(

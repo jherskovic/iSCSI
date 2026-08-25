@@ -25,8 +25,7 @@ final class UpdateController: NSObject, ObservableObject {
     /// Set by the app model so the postpone check can see live state without
     /// this class owning any.
     var isAnythingAttached: () -> Bool = { false }
-    /// What is attached, in the words the user would use for it. Naming the
-    /// volume is the difference between a rule and an instruction.
+    /// What is attached, in the user's words — the dialog names the volumes.
     var attachedVolumeNames: () -> [String] = { [] }
     /// Offered as the default button, so the dialog that says why the update is
     /// stuck can also be the thing that unsticks it.
@@ -37,10 +36,8 @@ final class UpdateController: NSObject, ObservableObject {
     @Published private(set) var pendingUpdateVersion: String?
 
     private var controller: SPUStandardUpdaterController!
-    /// Sparkle hands us a block to call when we are ready to let it proceed.
-    /// @unchecked Sendable box: Sparkle's block is not typed Sendable, and
-    /// this method is nonisolated, so the compiler cannot see that the block is
-    /// only ever stored and called on the main actor. Which it is.
+    /// Sparkle's resume block. @unchecked Sendable: the block is not typed
+    /// Sendable but is only stored and called on the main actor.
     private struct InstallHandler: @unchecked Sendable {
         let invoke: () -> Void
     }
@@ -50,8 +47,7 @@ final class UpdateController: NSObject, ObservableObject {
         super.init()
         controller = SPUStandardUpdaterController(
             startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
-        // KVO-observable rather than @Published, so bridge it once here and
-        // let the menu item bind to a plain Bool.
+        // KVO-observable, bridged once so the menu item binds a plain Bool.
         controller.updater.publisher(for: \.canCheckForUpdates)
             .assign(to: &$canCheckForUpdates)
     }
@@ -70,12 +66,9 @@ final class UpdateController: NSObject, ObservableObject {
 }
 
 extension UpdateController: SPUUpdaterDelegate {
-    /// The rule.
-    ///
-    /// Sparkle calls this before replacing the bundle. Returning true holds the
-    /// installation until `invocation` is called, which happens once the last
-    /// volume is detached — or on the next launch, when nothing is attached yet
-    /// and the update simply proceeds.
+    /// The rule: called before Sparkle replaces the bundle; returning true
+    /// holds installation until the last volume is detached (or the next
+    /// launch, when nothing is attached).
     nonisolated func updater(_ updater: SPUUpdater,
                              shouldPostponeRelaunchForUpdate item: SUAppcastItem,
                              untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
@@ -85,10 +78,8 @@ extension UpdateController: SPUUpdaterDelegate {
             guard isAnythingAttached() else { return false }
             pendingUpdateVersion = version
             resumeInstallation = handler
-            // Scheduled rather than run inline. This method owes Sparkle a Bool
-            // synchronously, and a modal here would put a dialog on top of the
-            // update window Sparkle is in the middle of taking down — and hold
-            // its teardown open behind a click.
+            // Scheduled: this method owes Sparkle a Bool synchronously, and a
+            // modal here would hold Sparkle's teardown open behind a click.
             Task { @MainActor [weak self] in
                 self?.explainPostponement(version: version)
             }
@@ -110,8 +101,7 @@ private extension UpdateController {
         NSApp.activate()
 
         let alert = NSAlert()
-        // Informational, not a warning: refusing is the app working correctly,
-        // and dressing it as a problem would teach the user to distrust it.
+        // Informational, not a warning: refusing is the app working correctly.
         alert.alertStyle = .informational
         alert.messageText = "Version \(version) will install after you detach"
         alert.informativeText = """
@@ -129,10 +119,8 @@ private extension UpdateController {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task { @MainActor [weak self] in
             await self?.detachEverything()
-            // Also reached by the app model watching attachments, which is what
-            // covers a Finder eject. Calling here too is what makes the button
-            // feel like it did something; installPendingUpdateIfReady clears its
-            // handler before invoking it, so arriving twice is harmless.
+            // The attachment sink also reaches this; it clears its handler
+            // before invoking, so arriving twice is harmless.
             self?.installPendingUpdateIfReady()
         }
     }
@@ -140,18 +128,9 @@ private extension UpdateController {
 
 // MARK: - Menu item
 
-/// The menu bar popover's row.
-///
-/// Styled as a row rather than as a `Button`, because the popover is a menu and
-/// everything else in it is a row. A bordered button in the middle of a list of
-/// plain labels reads as a different kind of thing, and it was also sitting
-/// between "Detach All" and the window item, which put a rarely-used command
-/// above two frequently-used ones.
-///
-/// A separate view rather than an inlined `menuButton` call so that
-/// `@ObservedObject` sits on something that actually redraws: `canCheckForUpdates`
-/// and `pendingUpdateVersion` live on `UpdateController`, and observing
-/// `AppModel` does not propagate its changes.
+/// The menu bar popover's row, styled like the rows around it. A separate
+/// view so `@ObservedObject` sits on something that actually redraws —
+/// observing `AppModel` does not propagate `UpdateController`'s changes.
 struct CheckForUpdatesButton: View {
     @ObservedObject var updates: UpdateController
 
@@ -167,9 +146,8 @@ struct CheckForUpdatesButton: View {
             .disabled(!updates.canCheckForUpdates)
 
             if let version = updates.pendingUpdateVersion {
-                // The standing reminder, for after the dialog has been
-                // dismissed. It names the relaunch because that is the part
-                // that is startling if it is not expected.
+                // Standing reminder after the dialog; names the relaunch
+                // because that is the startling part.
                 Text("Version \(version) is ready. It will install and relaunch "
                      + "once every volume is detached.")
                     .font(.caption)
@@ -181,11 +159,8 @@ struct CheckForUpdatesButton: View {
     }
 }
 
-/// The same command in the application menu, under "About iSCSI Initiator".
-///
-/// Plain `Button`, unlike the popover's row: this one *is* a menu item, and
-/// AppKit draws it. Styling it would make it the odd one out here for exactly
-/// the reason the popover version needed restyling.
+/// The same command in the application menu. Plain `Button`: this one *is* a
+/// menu item, and AppKit draws it.
 struct AppMenuUpdatesItem: View {
     @ObservedObject var updates: UpdateController
 
