@@ -201,6 +201,30 @@ Management notification can be waited on properly.
   everything after immediately. Built in response to the eight-hour wedge,
   reasoned about carefully, and never triggered in anger.
 
+## 7a. RFC-compliance strictness deliberately not taken (2026-08-25)
+
+The 2026-08 RFC 7143 review fixed every deviation it found, with four
+exceptions left lenient on purpose. Each is overridable if strictness turns
+out to matter:
+
+- **Minimum/Maximum result-function validity is not enforced.** A target that
+  answers a Minimum key *above* our offer is folded down to `min(ours,
+  theirs)` instead of failing the login. Real targets (LIO) echo their own
+  configured value rather than the fold; enforcing §13's "selected value
+  cannot exceed the offered value" would refuse to log in to them.
+  `NegotiationEngine.fold` carries the rationale.
+- **Login-phase StatSN tolerance.** A login response that fails to advance
+  StatSN is tolerated when its data segment is empty and T=0
+  (`LoginStateMachine`); §11.13.4 says every response advances it. Pinned by
+  `HostileTargetTests` as deliberate leniency toward non-conforming targets.
+- **A `TargetAddress` before any `TargetName` in a SendTargets reply is
+  silently dropped** (`Discovery.parse`) rather than treated as an error.
+- **CHAP challenge minimum length.** Only non-emptiness and the §12.1.3
+  1024-byte cap are enforced; RFC 1994's length recommendations are not.
+
+Also deferred: `expCmdSNSeen` is tracked and unused (nothing hangs off
+ExpCmdSN acknowledgment at ERL0).
+
 ## 8. Readahead depth is now chosen automatically — measured
 
 Closed, and replaced by a different mechanism than the one this item

@@ -97,7 +97,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         return ModeSense.writeCacheEnabled(inResponse: result.data)
     }
 
-    private var lunAddress: UInt64 { lun << 48 }
+    private var lunAddress: UInt64 { SCSITask.lunField(lun) }
 
     /// Executes a task, absorbing UNIT ATTENTION.
     ///

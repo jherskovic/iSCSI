@@ -6,9 +6,30 @@ import Foundation
 public struct SCSIResponsePDU: ProtocolDataUnit {
     public static let opcode = Opcode.scsiResponse
 
-    public enum Response: UInt8, Sendable {
-        case commandCompleted = 0x00
-        case targetFailure = 0x01
+    /// §11.4.3: 0x00 completed, 0x01 target failure, 0x80–0xff vendor
+    /// specific (all mapping to SERVICE DELIVERY OR TARGET FAILURE); the rest
+    /// are reserved and their receipt is a protocol error.
+    public enum Response: Equatable, Sendable {
+        case commandCompleted
+        case targetFailure
+        case vendorSpecific(UInt8)
+
+        init?(code: UInt8) {
+            switch code {
+            case 0x00: self = .commandCompleted
+            case 0x01: self = .targetFailure
+            case 0x80 ... 0xFF: self = .vendorSpecific(code)
+            default: return nil
+            }
+        }
+
+        var code: UInt8 {
+            switch self {
+            case .commandCompleted: return 0x00
+            case .targetFailure: return 0x01
+            case .vendorSpecific(let code): return code
+            }
+        }
     }
 
     public var bidiReadResidualOverflow = false
@@ -40,7 +61,7 @@ public struct SCSIResponsePDU: ProtocolDataUnit {
         bidiReadResidualUnderflow = f & 0x08 != 0
         residualOverflow = f & 0x04 != 0
         residualUnderflow = f & 0x02 != 0
-        guard let r = Response(rawValue: raw.bhs.u8(2)) else {
+        guard let r = Response(code: raw.bhs.u8(2)) else {
             throw PDUError.malformed("SCSI response code \(raw.bhs.u8(2))")
         }
         response = r
@@ -63,7 +84,7 @@ public struct SCSIResponsePDU: ProtocolDataUnit {
             | (bidiReadResidualUnderflow ? 0x08 : 0)
             | (residualOverflow ? 0x04 : 0)
             | (residualUnderflow ? 0x02 : 0)
-        b.bytes.setU8(response.rawValue, 2)
+        b.bytes.setU8(response.code, 2)
         b.bytes.setU8(status, 3)
         b.setDataSegmentLength(dataSegment.count)
         b.bytes.setBE32(initiatorTaskTag, 16)
@@ -384,9 +405,8 @@ public struct NopInPDU: ProtocolDataUnit {
         expCmdSN = raw.bhs.beU32(28)
         maxCmdSN = raw.bhs.beU32(32)
         dataSegment = raw.data
-        if initiatorTaskTag == 0xFFFF_FFFF && targetTransferTag == 0xFFFF_FFFF {
-            throw PDUError.malformed("NOP-In with both ITT and TTT reserved")
-        }
+        // Both tags may be 0xffffffff (§11.19.1): a NOP-In the target sends
+        // purely to update ExpCmdSN/MaxCmdSN, wanting no reply.
     }
 
     public func encode() -> RawPDU {

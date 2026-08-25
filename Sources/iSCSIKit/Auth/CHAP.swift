@@ -35,6 +35,7 @@ public enum CHAP {
         case emptyName
         case emptySecret(label: String)
         case secretTooShort(label: String, length: Int)
+        case sameSecretBothDirections
 
         public var errorDescription: String? {
             switch self {
@@ -45,6 +46,8 @@ public enum CHAP {
             case .secretTooShort(let label, let length):
                 return "The \(label) is \(length) characters; "
                      + "at least \(Credentials.minimumSecretLength) are required."
+            case .sameSecretBothDirections:
+                return "The mutual CHAP secret must differ from the CHAP secret."
             }
         }
 
@@ -56,6 +59,10 @@ public enum CHAP {
                 return "RFC 7143 sets 12 characters as the minimum, and most targets "
                      + "reject anything shorter with an error that says only "
                      + "“authentication failure”."
+            case .sameSecretBothDirections:
+                return "RFC 7143 §9.2.1 forbids one secret for both directions: "
+                     + "a shared secret lets an attacker reflect our own "
+                     + "challenge back and impersonate the target."
             }
         }
     }
@@ -93,7 +100,14 @@ public enum CHAP {
                                      mutualSecret: String? = nil) throws -> Credentials {
             guard !name.isEmpty else { throw CredentialError.emptyName }
             try check(secret, label: "CHAP secret")
-            if let mutualSecret { try check(mutualSecret, label: "mutual CHAP secret") }
+            if let mutualSecret {
+                try check(mutualSecret, label: "mutual CHAP secret")
+                // §9.2.1: a secret used for initiator authentication MUST NOT
+                // also authenticate the target.
+                guard mutualSecret != secret else {
+                    throw CredentialError.sameSecretBothDirections
+                }
+            }
             return Credentials(name: name, secret: secret,
                                mutualName: mutualName, mutualSecret: mutualSecret)
         }
@@ -194,7 +208,8 @@ public enum CHAP {
             to params: TextParameters,
             randomBytes: (Int) -> Data = { count in Data((0 ..< count).map { _ in UInt8.random(in: 0 ... 255) }) }
         ) throws -> TextParameters {
-            guard params["CHAP_A"] == "5" else {
+            // CHAP_A is a number (§12.1.3): compare numerically, not textually.
+            guard let aStr = params["CHAP_A"], let a = UInt16(aStr), a == 5 else {
                 throw NegotiationError.authenticationFailed("target chose CHAP_A=\(params["CHAP_A"] ?? "<missing>")")
             }
             guard let iStr = params["CHAP_I"], let cStr = params["CHAP_C"] else {
@@ -204,6 +219,11 @@ public enum CHAP {
             let challenge = try decodeValue(cStr)
             guard !challenge.isEmpty else {
                 throw NegotiationError.authenticationFailed("empty CHAP challenge")
+            }
+            // §12.1.3: the binary length of C MUST NOT exceed 1024 bytes.
+            guard challenge.count <= 1024 else {
+                throw NegotiationError.authenticationFailed(
+                    "CHAP challenge is \(challenge.count) bytes; the RFC caps it at 1024")
             }
 
             var out = TextParameters()
@@ -235,8 +255,17 @@ public enum CHAP {
             if let expectedName = credentials.mutualName, expectedName != name {
                 throw NegotiationError.authenticationFailed("mutual CHAP name mismatch")
             }
-            let expected = response(id: id, secret: mutualSecret, challenge: challenge)
             let got = try decodeValue(rStr)
+            // §9.2.1: a response equal to the one we would have generated for
+            // this challenge means the same secret is configured in both
+            // directions — MUST be treated as an authentication failure, or a
+            // reflection attack succeeds without knowing either secret.
+            let reflected = response(id: id, secret: credentials.secret, challenge: challenge)
+            guard got != reflected else {
+                throw NegotiationError.authenticationFailed(
+                    "target's CHAP response matches the initiator's own secret")
+            }
+            let expected = response(id: id, secret: mutualSecret, challenge: challenge)
             // Constant-time-ish comparison; both sides are fixed 16-byte MD5.
             guard got.count == expected.count,
                   zip(got, expected).reduce(0, { $0 | ($1.0 ^ $1.1) }) == 0

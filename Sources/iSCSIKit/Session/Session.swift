@@ -50,6 +50,10 @@ public struct SessionPolicy: Sendable {
     /// volume rather than an error. 30s matches the conventional SCSI command
     /// timeout.
     public var taskTimeout: Duration? = .seconds(30)
+    /// RFC 7143 §7.5: after a transport exception, recovery SHOULD NOT begin
+    /// before the negotiated DefaultTime2Wait. Tests that script fast
+    /// reconnects turn this off.
+    public var honorTime2Wait = true
 
     public init() {}
 }
@@ -68,6 +72,9 @@ public actor ISCSISession {
     private var keepaliveTask: Task<Void, Never>?
     private var recoveryTask: Task<Void, any Error>?
     private var loggedOut = false
+    /// DefaultTime2Wait from the most recent login, kept past the connection
+    /// teardown so recovery can honor it (§7.5).
+    private var lastTime2Wait: UInt32 = 0
     /// Diagnostics for tests and status reporting.
     public private(set) var recoveryCount = 0
 
@@ -202,6 +209,7 @@ public actor ISCSISession {
             let result = try await conn.login()
             connection = conn
             loginResult = result
+            lastTime2Wait = result.parameters.defaultTime2Wait
             startKeepalive(for: conn)
             watchForClose(of: conn)
             return result
@@ -239,18 +247,15 @@ public actor ISCSISession {
         keepaliveTask?.cancel()
         keepaliveTask = nil
 
+        let time2Wait = lastTime2Wait
         let task = Task { [policy, onEvent] in
             var lastError = error.map { "\($0)" } ?? "initial"
             for attempt in 0 ..< policy.maxRecoveryAttempts {
                 onEvent?(.recoveryAttempt(number: attempt + 1,
                                           of: policy.maxRecoveryAttempts))
                 if attempt > 0 || error != nil {
-                    let factor = 1 << min(attempt, 8)
-                    let delay = min(
-                        policy.recoveryBackoffBase * factor,
-                        policy.recoveryBackoffCap
-                    )
-                    try await Task.sleep(for: delay)
+                    try await Task.sleep(for: Self.recoveryDelay(
+                        attempt: attempt, policy: policy, time2Wait: time2Wait))
                 }
                 try Task.checkCancellation()
                 do {
@@ -267,6 +272,16 @@ public actor ISCSISession {
         recoveryTask = task
         defer { recoveryTask = nil }
         try await task.value
+    }
+
+    /// Delay before recovery attempt `attempt` (0-based). The first attempt
+    /// respects the negotiated DefaultTime2Wait (§7.5); later attempts are
+    /// already past that respite and use plain exponential backoff.
+    static func recoveryDelay(attempt: Int, policy: SessionPolicy, time2Wait: UInt32) -> Duration {
+        let factor = 1 << min(attempt, 8)
+        let backoff = min(policy.recoveryBackoffBase * factor, policy.recoveryBackoffCap)
+        guard attempt == 0, policy.honorTime2Wait, time2Wait > 0 else { return backoff }
+        return max(backoff, .seconds(Int(time2Wait)))
     }
 
     private func establishForRecovery() async throws {

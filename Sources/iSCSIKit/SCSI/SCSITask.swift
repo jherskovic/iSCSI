@@ -24,6 +24,13 @@ public struct SCSITask: Sendable {
         self.direction = direction
         self.attribute = attribute
     }
+
+    /// The 64-bit LUN field for a LUN number (SAM-2): single-level peripheral
+    /// addressing for 0–255, flat-space addressing above that.
+    public static func lunField(_ lun: UInt64) -> UInt64 {
+        precondition(lun <= 16383, "flat-space addressing carries 14 bits")
+        return lun <= 255 ? lun << 48 : (0x4000 | lun) << 48
+    }
 }
 
 /// Completion of a SCSI task.
@@ -55,19 +62,28 @@ public struct SCSITaskResult: Sendable, Equatable {
     }
 }
 
-/// Fixed-format sense data essentials (SPC-4 §4.5.3).
+/// Sense data essentials, fixed (SPC-4 §4.5.3) or descriptor (§4.5.2) format.
 public struct SenseData: Sendable, Equatable {
     public var key: UInt8
     public var asc: UInt8
     public var ascq: UInt8
 
     public init?(_ bytes: Data) {
-        guard bytes.count >= 14 else { return nil }
-        let code = bytes.u8(0) & 0x7F
-        guard code == 0x70 || code == 0x71 else { return nil } // fixed format
-        key = bytes.u8(2) & 0x0F
-        asc = bytes.u8(12)
-        ascq = bytes.u8(13)
+        guard !bytes.isEmpty else { return nil }
+        switch bytes.u8(0) & 0x7F {
+        case 0x70, 0x71: // fixed format
+            guard bytes.count >= 14 else { return nil }
+            key = bytes.u8(2) & 0x0F
+            asc = bytes.u8(12)
+            ascq = bytes.u8(13)
+        case 0x72, 0x73: // descriptor format: key/ASC/ASCQ in the header
+            guard bytes.count >= 4 else { return nil }
+            key = bytes.u8(1) & 0x0F
+            asc = bytes.u8(2)
+            ascq = bytes.u8(3)
+        default:
+            return nil
+        }
     }
 
     public var description: String {

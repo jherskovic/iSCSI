@@ -58,6 +58,12 @@ public struct NegotiationEngine: Sendable {
     public private(set) var notUnderstood: Set<String> = []
     /// Keys the target rejected (fall back to defaults, recorded for logs).
     public private(set) var rejected: Set<String> = []
+    /// Keys answered Irrelevant (§6.2; fall back to defaults).
+    public private(set) var irrelevant: Set<String> = []
+    /// Every key the target has used once — renegotiation detection (§6.3).
+    private var seenKeys: Set<String> = []
+    /// Keys for which repeated declarations are explicitly allowed (§6.3).
+    private static let repeatableKeys: Set<String> = ["TargetAddress"]
 
     public init() {}
 
@@ -109,6 +115,15 @@ public struct NegotiationEngine: Sendable {
 
     /// Handle one key from the target. Returns a reply value if one is owed.
     mutating func process(key: String, value: String) throws -> String? {
+        // §6.3: renegotiating or redeclaring a key is a protocol error the
+        // initiator MUST detect (and drop the connection on); only specific
+        // keys — TargetAddress — allow repeated declarations.
+        if !Self.repeatableKeys.contains(key) {
+            guard seenKeys.insert(key).inserted else {
+                throw NegotiationError.protocolViolation("renegotiation of key \(key)")
+            }
+        }
+
         // Declarative session facts from the target.
         switch key {
         case "TargetPortalGroupTag", "TargetAlias", "TargetName", "TargetAddress":
@@ -122,7 +137,24 @@ public struct NegotiationEngine: Sendable {
             guard proposed[key] != nil else {
                 throw NegotiationError.protocolViolation("NotUnderstood for unproposed key \(key)")
             }
+            // §6.2: an implementation MUST comprehend every key this document
+            // defines; NotUnderstood for one of them is a protocol error.
+            guard Self.keys[key] == nil else {
+                throw NegotiationError.protocolViolation(
+                    "target answered NotUnderstood for standard key \(key)")
+            }
             notUnderstood.insert(key)
+            answered.insert(key)
+            return nil
+        }
+
+        // §6.2: a legal answer for a key made irrelevant by another selection;
+        // the key falls back to its default and login continues.
+        if value == "Irrelevant" {
+            guard proposed[key] != nil else {
+                throw NegotiationError.protocolViolation("Irrelevant for unproposed key \(key)")
+            }
+            irrelevant.insert(key)
             answered.insert(key)
             return nil
         }
@@ -145,7 +177,7 @@ public struct NegotiationEngine: Sendable {
         }
 
         if let range = def.range, def.result != .listSelect {
-            guard let n = UInt32(value), range.contains(n) else {
+            guard let n = Self.numericValue(value), range.contains(n) else {
                 throw NegotiationError.invalidValue(key: key, value: value)
             }
         }
@@ -218,12 +250,16 @@ public struct NegotiationEngine: Sendable {
     private func answerOffer(key: String, def: KeyDef, theirs: String) throws -> String {
         switch def.result {
         case .booleanAnd:
-            // We only ever want markers off; ImmediateData offers fold with Yes.
+            // §13: when the received value determines the result (AND + No),
+            // the answer must restate that result. Otherwise we choose: markers
+            // stay off, everything else (ImmediateData) folds with Yes.
             try requireBool(key, theirs)
+            if theirs == "No" { return "No" }
             return (key == "OFMarker" || key == "IFMarker") ? "No" : "Yes"
         case .booleanOr:
+            // OR + Yes is likewise determined; our own preference is No.
             try requireBool(key, theirs)
-            return "No" // fold() will still produce Yes if they insisted Yes
+            return theirs == "Yes" ? "Yes" : "No"
         case .numericMin:
             let t = try num(key, theirs)
             // Keys where we hold a hard preference answer with min(ours, theirs);
@@ -254,10 +290,20 @@ public struct NegotiationEngine: Sendable {
     }
 
     private func num(_ key: String, _ v: String) throws -> UInt32 {
-        guard let n = UInt32(v) else {
+        guard let n = Self.numericValue(v) else {
             throw NegotiationError.invalidValue(key: key, value: v)
         }
         return n
+    }
+
+    /// §6.1 numerical-value: a decimal-constant or a hex-constant ("0x...").
+    static func numericValue(_ v: String) -> UInt32? {
+        if v.hasPrefix("0x") || v.hasPrefix("0X") {
+            let digits = v.dropFirst(2)
+            guard !digits.isEmpty else { return nil }
+            return UInt32(digits, radix: 16)
+        }
+        return UInt32(v)
     }
 
     // MARK: Final parameters
@@ -272,7 +318,7 @@ public struct NegotiationEngine: Sendable {
             if let v = results[key] { into = v == "Yes" }
         }
         func number(_ key: String, _ into: inout UInt32) {
-            if let v = results[key], let n = UInt32(v) { into = n }
+            if let v = results[key], let n = Self.numericValue(v) { into = n }
         }
 
         if let v = results["HeaderDigest"] { p.headerDigest = v == "CRC32C" }
@@ -291,7 +337,7 @@ public struct NegotiationEngine: Sendable {
         number("ErrorRecoveryLevel", &p.errorRecoveryLevel)
 
         if let tpgt = targetDeclared["TargetPortalGroupTag"] {
-            p.targetPortalGroupTag = UInt16(tpgt)
+            p.targetPortalGroupTag = Self.numericValue(tpgt).flatMap { UInt16(exactly: $0) }
         }
         p.targetAlias = targetDeclared["TargetAlias"]
 

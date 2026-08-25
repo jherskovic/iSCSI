@@ -218,15 +218,26 @@ struct Verify: AsyncParsableCommand {
             print("  INQUIRY: \(vendor.trimmingCharacters(in: .whitespaces)) / \(product.trimmingCharacters(in: .whitespaces))")
         }
 
-        let capacity = try await connection.execute(SCSITask(
-            lun: lunAddress, cdb: CDB.readCapacity16(), direction: .read(expectedLength: 32)
-        ))
-        var blockSize: UInt32 = 512
-        if capacity.data.count >= 12 {
-            let lastLBA = capacity.data.beU64(0)
-            blockSize = capacity.data.beU32(8)
-            print("  CAPACITY: \(lastLBA + 1) blocks × \(blockSize) bytes = \((lastLBA + 1) * UInt64(blockSize) / 1_048_576) MiB")
+        // A fresh nexus answers its first non-INQUIRY command with UNIT
+        // ATTENTION; absorb it. Guessing a block size is not an option: the
+        // 512 fallback that used to be here made every CDB against a 4Kn LUN
+        // describe 8× more data than the write carried — block-aligned sizes
+        // degenerated into short I/O, odd sizes got CHECK CONDITION.
+        var capacity = SCSITaskResult(status: 0x02)
+        for _ in 0 ..< 3 {
+            capacity = try await connection.execute(SCSITask(
+                lun: lunAddress, cdb: CDB.readCapacity16(), direction: .read(expectedLength: 32)
+            ))
+            if capacity.isGood { break }
+            guard capacity.sense.flatMap(SenseData.init)?.key == 0x06 else { break }
         }
+        guard capacity.isGood else {
+            throw ValidationError("READ CAPACITY failed: status \(capacity.status)")
+        }
+        let (blockSizeInt, blockCount) = try ISCSIBlockDevice
+            .geometry(fromReadCapacity16: capacity.data)
+        let blockSize = UInt32(blockSizeInt)
+        print("  CAPACITY: \(blockCount) blocks × \(blockSize) bytes = \(blockCount * UInt64(blockSize) / 1_048_576) MiB")
 
         let byteCount = Int(blocks) * Int(blockSize)
         if write {

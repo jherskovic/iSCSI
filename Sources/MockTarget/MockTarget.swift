@@ -108,6 +108,8 @@ public actor MockTarget {
         var received: Int
         var awaitingUnsolicited: Bool
         var currentTTT: UInt32?
+        /// Next R2TSN for this task — sequential per RFC 7143 §11.8.3.
+        var nextR2TSN: UInt32 = 0
         /// FUA from the command's CDB: decides whether the data is committed
         /// or merely cached when the write completes.
         var fua: Bool
@@ -696,7 +698,9 @@ public actor MockTarget {
             let w = window()
             r2t.expCmdSN = w.expCmdSN
             r2t.maxCmdSN = w.maxCmdSN
-            r2t.r2tSN = 0
+            r2t.r2tSN = state.nextR2TSN
+            state.nextR2TSN &+= 1
+            writes[itt] = state
             r2t.bufferOffset = UInt32(state.received)
             r2t.desiredDataTransferLength = UInt32(desired)
             try await send(r2t)

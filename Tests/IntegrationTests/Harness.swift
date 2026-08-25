@@ -65,6 +65,7 @@ func testPolicy(
     nopInterval: Duration? = nil
 ) -> SessionPolicy {
     var policy = SessionPolicy()
+    policy.honorTime2Wait = false // scripted targets reconnect immediately
     policy.nopInterval = nopInterval
     policy.nopTimeout = .milliseconds(250)
     policy.maxRecoveryAttempts = recoveryAttempts

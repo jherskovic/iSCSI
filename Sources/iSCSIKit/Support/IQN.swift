@@ -38,8 +38,12 @@ public enum IQN {
     }
 
     /// A default initiator name for this host, guaranteed valid.
+    ///
+    /// The naming authority must be a domain the author owns on the given
+    /// date (RFC 3721 §1.1); com.example is reserved for documentation and
+    /// must never appear on the wire.
     public static func defaultInitiatorName(
-        naming reverseDomain: String = "com.example",
+        naming reverseDomain: String = "me.herko",
         date: String = "2026-08",
         hostIdentifier: String
     ) -> String {

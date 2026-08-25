@@ -272,14 +272,29 @@ public actor DaemonCore {
         var luns: [LUNInfo] = []
         var offset = 8
         while offset + 8 <= min(data.count, 8 + listLength) {
-            // Peripheral-device addressing: the LUN is in the second byte of the
-            // first two-byte field for single-level addressing, which is all any
-            // target this app talks to will use.
-            let lun = UInt64(data.u8(offset + 1))
-            luns.append(LUNInfo(lun: lun))
+            if let lun = Self.lunNumber(fromReportLUNsEntry: Data(data.sub(offset, 8))) {
+                luns.append(LUNInfo(lun: lun))
+            }
             offset += 8
         }
         return luns
+    }
+
+    /// Decode one 8-byte REPORT LUNS entry (SAM-2 first-level field):
+    /// peripheral addressing (00b, bus 0) or flat-space addressing (01b).
+    /// Entries in other formats are skipped rather than misread.
+    static func lunNumber(fromReportLUNsEntry entry: Data) -> UInt64? {
+        guard entry.count >= 8 else { return nil }
+        let b0 = entry.u8(0)
+        switch b0 & 0xC0 {
+        case 0x00:
+            guard b0 & 0x3F == 0 else { return nil } // multi-level: unsupported
+            return UInt64(entry.u8(1))
+        case 0x40:
+            return (UInt64(b0 & 0x3F) << 8) | UInt64(entry.u8(1))
+        default:
+            return nil
+        }
     }
 
     public func sessionHandles() -> [String] {

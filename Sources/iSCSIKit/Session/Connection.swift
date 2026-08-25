@@ -39,11 +39,28 @@ public actor ISCSIConnection {
 
     private final class PendingTask {
         let task: SCSITask
+        /// CmdSN the command went out with — ABORT TASK must quote it as
+        /// RefCmdSN (§11.5.5).
+        let cmdSN: UInt32
         var readBuffer: Data
+        /// Data-In bytes accepted so far; a GOOD completion must account for
+        /// every byte or the read has silent zero-filled holes.
+        var receivedBytes = 0
+        /// Data-In DataSN numbering is sequential for the task (§11.7.6).
+        var nextDataSN: UInt32 = 0
+        /// R2TSN numbering is likewise sequential (§11.8.3).
+        var nextR2TSN: UInt32 = 0
+        /// Completed early (cancelled or rejected). The entry stays in
+        /// `pendingTasks` so the target's late PDUs for this ITT — legal
+        /// until the abort's TMF response (§11.5) or the post-Reject CHECK
+        /// CONDITION (§11.17.1) — are absorbed, not read as unknown-ITT
+        /// protocol errors.
+        var terminated = false
         let completion = Awaitable<SCSITaskResult>()
 
-        init(task: SCSITask) {
+        init(task: SCSITask, cmdSN: UInt32) {
             self.task = task
+            self.cmdSN = cmdSN
             if case .read(let expected) = task.direction {
                 readBuffer = Data(count: Int(expected))
             } else {
@@ -88,6 +105,9 @@ public actor ISCSIConnection {
     private var pendingTMFs: [UInt32: Awaitable<TMFResponsePDU.Response>] = [:]
     private var pendingText: [UInt32: (buffer: Data, completion: Awaitable<TextParameters>)] = [:]
     private var pendingLogout: Awaitable<LogoutResponsePDU>?
+    /// ITTs of pings cancelled locally: the echo already on the wire is a
+    /// conforming PDU and is absorbed instead of tearing the connection down.
+    private var retiredPings: Set<UInt32> = []
     private var nextITT: UInt32 = 1
     private var windowWaiters: [Awaitable<Void>] = []
     private var closeWaiters: [CheckedContinuation<ConnectionError, Never>] = []
@@ -195,7 +215,7 @@ public actor ISCSIConnection {
         try await waitForWindow()
 
         let itt = allocateITT()
-        let pending = PendingTask(task: task)
+        let pending = PendingTask(task: task, cmdSN: cmdSN)
         pendingTasks[itt] = pending
 
         var command = SCSICommandPDU()
@@ -282,14 +302,19 @@ public actor ISCSIConnection {
     }
 
     private func cancelPing(itt: UInt32) {
-        pendingPings.removeValue(forKey: itt)?.complete(.failure(CancellationError()))
+        guard let completion = pendingPings.removeValue(forKey: itt) else { return }
+        retiredPings.insert(itt)
+        completion.complete(.failure(CancellationError()))
     }
 
     /// Issue a task management function and await the target's response.
+    /// ABORT TASK callers must pass the aborted command's CmdSN as
+    /// `refCmdSN` (§11.5.5).
     public func taskManagement(
         _ function: TMFRequestPDU.Function,
         lun: UInt64,
-        referencedTaskTag: UInt32 = 0xFFFF_FFFF
+        referencedTaskTag: UInt32 = 0xFFFF_FFFF,
+        refCmdSN: UInt32 = 0
     ) async throws -> TMFResponsePDU.Response {
         try ensureOpen()
         let itt = allocateITT()
@@ -302,6 +327,14 @@ public actor ISCSIConnection {
         tmf.lun = lun
         tmf.initiatorTaskTag = itt
         tmf.referencedTaskTag = referencedTaskTag
+        // Callers aborting a still-outstanding command can't know its CmdSN;
+        // resolve it here (§11.5.5) rather than sending the reserved 0.
+        if function == .abortTask && refCmdSN == 0,
+           let pending = pendingTasks[referencedTaskTag] {
+            tmf.refCmdSN = pending.cmdSN
+        } else {
+            tmf.refCmdSN = refCmdSN
+        }
         tmf.cmdSN = cmdSN
         tmf.expStatSN = expStatSN
         try await sendRaw(serializer.serialize(tmf))
@@ -478,9 +511,17 @@ public actor ISCSIConnection {
         case .asyncMessage(let msg):
             try advanceStatSN(msg.statSN)
             updateWindow(expCmdSN: msg.expCmdSN, maxCmdSN: msg.maxCmdSN)
-            if msg.event == .logoutRequest || msg.event == .sessionDropNotification
-                || msg.event == .connectionDropNotification {
+            switch msg.event {
+            case .logoutRequest:
+                // §11.9.1 event 1: the initiator MUST honor the demand by
+                // issuing a Logout (within Parameter3 seconds), not by
+                // silently dropping TCP.
+                try await honorTargetLogoutRequest(deadlineSeconds: msg.parameter3)
+            case .sessionDropNotification, .connectionDropNotification:
+                // The target is dropping us either way; nothing to send.
                 throw ConnectionError.targetRequestedLogout
+            default:
+                break
             }
         case .reject(let reject):
             try advanceStatSN(reject.statSN)
@@ -516,6 +557,7 @@ public actor ISCSIConnection {
         guard let pending = pendingTasks.removeValue(forKey: resp.initiatorTaskTag) else {
             throw ConnectionError.protocolError("SCSI response for unknown ITT \(resp.initiatorTaskTag)")
         }
+        if pending.terminated { return } // final word on an abandoned task
         guard resp.response == .commandCompleted else {
             pending.completion.complete(.failure(ConnectionError.protocolError("target failure response")))
             return
@@ -524,9 +566,19 @@ public actor ISCSIConnection {
         result.data = pending.readBuffer
         result.residualCount = resp.residualCount
         result.residualIsOverflow = resp.residualOverflow
-        if resp.residualUnderflow, case .read = pending.task.direction {
-            let valid = pending.readBuffer.count - Int(min(resp.residualCount, UInt32(pending.readBuffer.count)))
-            result.data = pending.readBuffer.prefix(valid)
+        if case .read = pending.task.direction {
+            var valid = pending.readBuffer.count
+            if resp.residualUnderflow {
+                valid -= Int(min(resp.residualCount, UInt32(pending.readBuffer.count)))
+                result.data = pending.readBuffer.prefix(valid)
+            }
+            // GOOD promises the data phase delivered everything the residual
+            // accounting claims; anything less is a hole the pre-zeroed
+            // buffer would silently paper over.
+            if resp.status == 0x00 && pending.receivedBytes != valid {
+                throw ConnectionError.protocolError(
+                    "read completed GOOD with \(pending.receivedBytes) of \(valid) bytes delivered")
+            }
         }
         if resp.status == 0x02 { result.sense = resp.senseData }
         pending.completion.complete(.success(result))
@@ -536,10 +588,27 @@ public actor ISCSIConnection {
         guard let pending = pendingTasks[dataIn.initiatorTaskTag] else {
             throw ConnectionError.protocolError("Data-In for unknown ITT \(dataIn.initiatorTaskTag)")
         }
+        if pending.terminated {
+            // Abandoned task: absorb its data phase; status retires the ITT.
+            if dataIn.statusPresent { pendingTasks.removeValue(forKey: dataIn.initiatorTaskTag) }
+            return
+        }
         guard case .read(let expected) = pending.task.direction else {
             throw ConnectionError.protocolError("Data-In for non-read task")
         }
+        // §11.7.6: DataSN is sequential for the task; with DataPDUInOrder in
+        // force the offsets are contiguous too. At ERL0 a gap is data the
+        // target will never resend — fail now, not with a zero-filled buffer.
+        guard dataIn.dataSN == pending.nextDataSN else {
+            throw ConnectionError.protocolError(
+                "Data-In DataSN \(dataIn.dataSN), expected \(pending.nextDataSN)")
+        }
+        pending.nextDataSN &+= 1
         let offset = Int(dataIn.bufferOffset)
+        guard offset == pending.receivedBytes else {
+            throw ConnectionError.protocolError(
+                "Data-In at offset \(offset), expected \(pending.receivedBytes)")
+        }
         let end = offset + dataIn.dataSegment.count
         guard end <= Int(expected) else {
             throw ConnectionError.protocolError(
@@ -547,16 +616,23 @@ public actor ISCSIConnection {
             )
         }
         pending.readBuffer.setSub(dataIn.dataSegment, offset)
+        pending.receivedBytes = end
 
         if dataIn.statusPresent {
             // Phase-collapsed completion: no separate SCSI Response follows.
             pendingTasks.removeValue(forKey: dataIn.initiatorTaskTag)
             var result = SCSITaskResult(status: dataIn.status)
             result.data = pending.readBuffer
+            result.residualCount = dataIn.residualCount
+            result.residualIsOverflow = dataIn.residualOverflow
+            var valid = pending.readBuffer.count
             if dataIn.residualUnderflow {
-                let valid = pending.readBuffer.count - Int(min(dataIn.residualCount, UInt32(pending.readBuffer.count)))
+                valid -= Int(min(dataIn.residualCount, UInt32(pending.readBuffer.count)))
                 result.data = pending.readBuffer.prefix(valid)
-                result.residualCount = dataIn.residualCount
+            }
+            if dataIn.status == 0x00 && pending.receivedBytes != valid {
+                throw ConnectionError.protocolError(
+                    "read completed GOOD with \(pending.receivedBytes) of \(valid) bytes delivered")
             }
             pending.completion.complete(.success(result))
         }
@@ -569,11 +645,25 @@ public actor ISCSIConnection {
         guard case .write(let data) = pending.task.direction else {
             throw ConnectionError.protocolError("R2T for non-write task")
         }
+        // §11.8.3: R2TSN numbering is sequential for the task.
+        guard r2t.r2tSN == pending.nextR2TSN else {
+            throw ConnectionError.protocolError(
+                "R2T R2TSN \(r2t.r2tSN), expected \(pending.nextR2TSN)")
+        }
+        pending.nextR2TSN &+= 1
         let start = Int(r2t.bufferOffset)
         let length = Int(r2t.desiredDataTransferLength)
+        // §11.8: an R2T must not solicit more than MaxBurstLength, and
+        // honoring one would make us violate the send-side MUST of §13.12.
+        guard length <= Int(parameters.maxBurstLength) else {
+            throw ConnectionError.protocolError(
+                "R2T requests \(length) bytes, MaxBurstLength is \(parameters.maxBurstLength)")
+        }
         guard start + length <= data.count else {
             throw ConnectionError.protocolError("R2T requests bytes beyond write buffer")
         }
+        // A terminated task still answers its R2Ts: the target must collect
+        // the solicited data before it can complete the abort (§11.5).
         try await sendDataOutSequence(
             itt: r2t.initiatorTaskTag,
             lun: pending.task.lun,
@@ -615,13 +705,18 @@ public actor ISCSIConnection {
     private func handleNopIn(_ nop: NopInPDU) async throws {
         if nop.initiatorTaskTag != 0xFFFF_FFFF {
             // Echo of one of our pings — but only if we actually sent one.
-            guard let completion = pendingPings.removeValue(forKey: nop.initiatorTaskTag) else {
+            if let completion = pendingPings.removeValue(forKey: nop.initiatorTaskTag) {
+                try advanceStatSN(nop.statSN)
+                completion.complete(.success(()))
+            } else if retiredPings.remove(nop.initiatorTaskTag) != nil {
+                // Ping cancelled locally; the echo is conforming — absorb it.
+                try advanceStatSN(nop.statSN)
+            } else {
                 throw ConnectionError.protocolError("NOP-In echo for unknown ITT")
             }
-            try advanceStatSN(nop.statSN)
-            completion.complete(.success(()))
         } else if nop.isPing {
-            // Target-initiated ping: MUST echo the TTT and its payload.
+            // Target-initiated ping: MUST echo the TTT, LUN, and payload —
+            // the payload clipped to what the target can receive (§11.18.3).
             var reply = NopOutPDU()
             reply.immediate = true
             reply.initiatorTaskTag = 0xFFFF_FFFF
@@ -629,9 +724,12 @@ public actor ISCSIConnection {
             reply.lun = nop.lun
             reply.cmdSN = cmdSN
             reply.expStatSN = expStatSN
-            reply.dataSegment = nop.dataSegment
+            reply.dataSegment = Data(
+                nop.dataSegment.prefix(Int(parameters.targetMaxRecvDataSegmentLength)))
             try await sendRaw(serializer.serialize(reply))
         }
+        // Else: both tags reserved — a pure ExpCmdSN/MaxCmdSN update
+        // (§11.19.1); the window was already folded in by handle().
     }
 
     private func handleTextResponse(_ resp: TextResponsePDU) async throws {
@@ -650,10 +748,16 @@ public actor ISCSIConnection {
             entry.completion.complete(.failure(error))
             throw error
         }
-        if resp.continued {
+        if !resp.final {
+            // The exchange continues whenever F=0 — with C=1 (text cut
+            // mid-pair) or without it (target has more parts, §11.10.4's
+            // long-SendTargets shape). §11.11.4: a non-final response carries
+            // a valid TTT, and the empty F=1 follow-up copies the TTT *and*
+            // the LUN.
+            guard resp.targetTransferTag != 0xFFFF_FFFF else {
+                throw ConnectionError.protocolError("non-final text response with reserved TTT")
+            }
             pendingText[resp.initiatorTaskTag] = entry
-            // Ask for the rest: empty text request, same ITT, target's TTT.
-            //
             // Through the command window, like every other CmdSN consumer. This
             // used to bump `cmdSN` directly, which meant a target could drive it
             // past `maxCmdSN` simply by sending continuations — and once CmdSN is
@@ -663,6 +767,7 @@ public actor ISCSIConnection {
             var req = TextRequestPDU()
             req.initiatorTaskTag = resp.initiatorTaskTag
             req.targetTransferTag = resp.targetTransferTag
+            req.lun = resp.lun
             req.cmdSN = cmdSN
             req.expStatSN = expStatSN
             cmdSN &+= 1
@@ -678,17 +783,66 @@ public actor ISCSIConnection {
         }
     }
 
+    /// §11.9.1 event 1: send a Logout Request in answer to the target's
+    /// demand, then close once the Logout Response arrives (or the target's
+    /// own deadline passes without one). The read loop keeps running so the
+    /// response can actually be received.
+    private func honorTargetLogoutRequest(deadlineSeconds: UInt16) async throws {
+        guard pendingLogout == nil else { return } // a logout is already in flight
+        let completion = Awaitable<LogoutResponsePDU>()
+        pendingLogout = completion
+
+        var req = LogoutRequestPDU()
+        req.immediate = true
+        req.reason = .closeSession
+        req.initiatorTaskTag = allocateITT()
+        req.cid = loginConfig.cid
+        req.cmdSN = cmdSN
+        req.expStatSN = expStatSN
+        try await sendRaw(serializer.serialize(req))
+
+        let seconds = deadlineSeconds == 0 ? 5 : Int(min(deadlineSeconds, 30))
+        let limit = Duration.seconds(seconds)
+        Task { [weak self] in
+            await self?.awaitLogoutThenClose(completion, within: limit)
+        }
+    }
+
+    private func awaitLogoutThenClose(
+        _ completion: Awaitable<LogoutResponsePDU>, within limit: Duration
+    ) async {
+        _ = try? await withDeadline(limit) { [weak self] in
+            guard let self else { throw ConnectionError.closed }
+            _ = try await self.suspend(completion)
+        }
+        await close(reason: .targetRequestedLogout)
+    }
+
     private func handleReject(_ reject: RejectPDU) throws {
         // The rejected PDU's header rides in the data segment; fail that
         // operation if identifiable, otherwise the connection is unusable.
         if reject.dataSegment.count >= 48 {
             let itt = reject.dataSegment.beU32(16)
-            if let pending = pendingTasks.removeValue(forKey: itt) {
-                pending.completion.complete(.failure(ConnectionError.taskRejected(reject.reason)))
+            if let pending = pendingTasks[itt] {
+                if !pending.terminated {
+                    pending.terminated = true
+                    pending.completion.complete(.failure(ConnectionError.taskRejected(reject.reason)))
+                }
+                // The entry stays: §11.17.1 obliges the target to follow with
+                // a CHECK CONDITION response for the terminated task, and
+                // that response retires the ITT.
                 return
             }
             if let ping = pendingPings.removeValue(forKey: itt) {
                 ping.complete(.failure(ConnectionError.taskRejected(reject.reason)))
+                return
+            }
+            if let completion = pendingTMFs.removeValue(forKey: itt) {
+                completion.complete(.failure(ConnectionError.taskRejected(reject.reason)))
+                return
+            }
+            if let entry = pendingText.removeValue(forKey: itt) {
+                entry.completion.complete(.failure(ConnectionError.taskRejected(reject.reason)))
                 return
             }
         }
@@ -696,24 +850,40 @@ public actor ISCSIConnection {
     }
 
     private func abortOnCancel(itt: UInt32) async {
-        guard state == .fullFeature, let pending = pendingTasks.removeValue(forKey: itt) else { return }
+        guard state == .fullFeature, let pending = pendingTasks[itt], !pending.terminated else { return }
         // Unblock the caller *first*. Waiting for the ABORT TASK response
         // before resolving the cancelled task turns a bounded cancellation
         // into an unbounded hang: a target sick enough to ignore commands can
         // just as easily ignore task management, and then nothing ever
         // completes the continuation. The abort is a courtesy to the target,
         // not a precondition for giving up on the task.
+        //
+        // The entry stays in `pendingTasks`, flagged, because the target may
+        // legally deliver the task's response or data until it answers the
+        // TMF (§11.5) — those PDUs are absorbed, not protocol errors.
+        pending.terminated = true
         pending.completion.complete(.failure(CancellationError()))
         let lun = pending.task.lun
-        Task { await self.sendBestEffortAbort(itt: itt, lun: lun) }
+        let refCmdSN = pending.cmdSN
+        Task { await self.sendBestEffortAbort(itt: itt, lun: lun, refCmdSN: refCmdSN) }
     }
 
     /// Tell the target to drop a task we have stopped waiting for. Bounded,
     /// because this runs detached and a stuck TMF would leak the task forever.
-    private func sendBestEffortAbort(itt: UInt32, lun: UInt64) async {
+    private func sendBestEffortAbort(itt: UInt32, lun: UInt64, refCmdSN: UInt32) async {
         _ = try? await withDeadline(.seconds(5)) { [weak self] in
             guard let self else { return }
-            _ = try? await self.taskManagement(.abortTask, lun: lun, referencedTaskTag: itt)
+            _ = try? await self.taskManagement(
+                .abortTask, lun: lun, referencedTaskTag: itt, refCmdSN: refCmdSN)
+        }
+        // §11.5: after the TMF response (or our deadline) no further response
+        // for the aborted task may be delivered; drop the tombstone.
+        retireTerminatedTask(itt: itt)
+    }
+
+    private func retireTerminatedTask(itt: UInt32) {
+        if let pending = pendingTasks[itt], pending.terminated {
+            pendingTasks.removeValue(forKey: itt)
         }
     }
 
@@ -736,6 +906,7 @@ public actor ISCSIConnection {
         pendingText = [:]
         pendingLogout?.complete(.failure(reason))
         pendingLogout = nil
+        retiredPings = []
         for w in windowWaiters { w.complete(.failure(reason)) }
         windowWaiters = []
         for w in closeWaiters { w.resume(returning: reason) }

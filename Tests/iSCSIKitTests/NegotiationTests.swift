@@ -186,13 +186,8 @@ struct NegotiationTests {
         #expect(engine.rejected.contains("HeaderDigest"))
     }
 
-    @Test func notUnderstoodFallsBackToDefault() throws {
-        var engine = NegotiationEngine()
-        _ = engine.proposeOperational(desired: DesiredParameters(), sessionType: .normal)
-        _ = try engine.process(TextParameters([(key: "MaxOutstandingR2T", value: "NotUnderstood")]))
-        let p = try engine.finalParameters(desired: DesiredParameters())
-        #expect(p.maxOutstandingR2T == 1)
-    }
+    // NotUnderstood for an RFC-defined key is a protocol error (§6.2);
+    // see notUnderstoodForStandardKeyIsProtocolError in RFCComplianceTests.
 
     @Test func unsolicitedRejectIsProtocolViolation() {
         var engine = NegotiationEngine()

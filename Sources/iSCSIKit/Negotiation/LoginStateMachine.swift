@@ -111,6 +111,9 @@ public struct LoginStateMachine: Sendable {
     private var incomingText = Data()
     private var outgoingRemainder = Data()
     private var pendingFlags: (transit: Bool, nsg: LoginStage) = (false, .securityNegotiation)
+    /// CSG of the request most recently emitted; a success response must echo
+    /// it (§11.12.3 ties every exchange to a stage).
+    private var lastCSG: LoginStage = .securityNegotiation
 
     public init(config: LoginConfig, cmdSN: UInt32 = 0) {
         self.config = config
@@ -145,17 +148,20 @@ public struct LoginStateMachine: Sendable {
     ) -> LoginRequestPDU {
         var pdu = baseRequest()
         pdu.currentStage = currentStage
+        lastCSG = currentStage
+        // NSG is reserved when T=0 (§11.12.3) and reserved fields go out as
+        // zero (§11.1); .securityNegotiation is the zero encoding.
         if text.count > Self.loginTextLimit {
             outgoingRemainder = text.dropFirst(Self.loginTextLimit)
             pendingFlags = (transit, nsg)
             pdu.continued = true
             pdu.transit = false
-            pdu.nextStage = currentStage
+            pdu.nextStage = .securityNegotiation
             pdu.dataSegment = text.prefix(Self.loginTextLimit)
         } else {
             outgoingRemainder = Data()
             pdu.transit = transit
-            pdu.nextStage = transit ? nsg : currentStage
+            pdu.nextStage = transit ? nsg : .securityNegotiation
             pdu.dataSegment = text
         }
         return pdu
@@ -268,6 +274,27 @@ public struct LoginStateMachine: Sendable {
             stage = .done
             return .redirect(address: address, permanent: response.statusDetail == 2)
         }
+        // A success response must be an answer to the request we sent: it
+        // echoes our ISID and ITT, operates at protocol version 0x00
+        // (§11.13.1), and belongs to the stage we are negotiating (§11.12.3).
+        if response.isSuccess {
+            guard response.isid.bytes == config.isid.bytes else {
+                throw NegotiationError.protocolViolation("login response ISID does not echo ours")
+            }
+            guard response.initiatorTaskTag == 0 else {
+                throw NegotiationError.protocolViolation(
+                    "login response ITT \(response.initiatorTaskTag), expected 0")
+            }
+            guard response.versionActive == 0 else {
+                throw NegotiationError.protocolViolation(
+                    "target active version \(response.versionActive), only 0x00 exists")
+            }
+            guard response.currentStage == lastCSG else {
+                throw NegotiationError.protocolViolation(
+                    "login response CSG \(response.currentStage) for a request in \(lastCSG)")
+            }
+        }
+
         guard response.isSuccess else {
             // The stage is half the diagnosis. A rejection while awaiting the
             // CHAP *result* means the target took our response and refused it;
@@ -326,8 +353,9 @@ public struct LoginStateMachine: Sendable {
         if response.continued {
             var pdu = baseRequest()
             pdu.currentStage = response.currentStage
+            lastCSG = response.currentStage
             pdu.transit = false
-            pdu.nextStage = response.currentStage
+            pdu.nextStage = .securityNegotiation // NSG reserved when T=0
             return .send(pdu)
         }
         let text = try TextParameters.decode(incomingText)

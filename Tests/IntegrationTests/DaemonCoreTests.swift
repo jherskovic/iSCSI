@@ -91,3 +91,15 @@ final class HarnessBox: @unchecked Sendable {
     func add(_ task: Task<Void, Never>) { lock.lock(); tasks.append(task); lock.unlock() }
     func cancelAll() { lock.lock(); let t = tasks; tasks = []; lock.unlock(); t.forEach { $0.cancel() } }
 }
+
+@Suite("Integration: REPORT LUNS parsing")
+struct ReportLUNsParsingTests {
+    /// SPC LUN entries come in peripheral or flat-space format; both must
+    /// round-trip to the right LUN number, and other formats must be skipped.
+    @Test func peripheralAndFlatEntriesParsed() {
+        #expect(DaemonCore.lunNumber(fromReportLUNsEntry: Data([0, 5, 0, 0, 0, 0, 0, 0])) == 5)
+        #expect(DaemonCore.lunNumber(fromReportLUNsEntry: Data([0x41, 0x2C, 0, 0, 0, 0, 0, 0])) == 300)
+        #expect(DaemonCore.lunNumber(fromReportLUNsEntry: Data([0x80, 0, 0, 0, 0, 0, 0, 0])) == nil)
+        #expect(DaemonCore.lunNumber(fromReportLUNsEntry: Data([0x01, 5, 0, 0, 0, 0, 0, 0])) == nil)
+    }
+}
