@@ -83,9 +83,9 @@
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
-			dstSubfolderSpec = 13;
+			dstSubfolderSpec = 6;
 			files = (
-				1444E1C65A4A9776F569DAEF /* DockTilePlugin.bundle in Embed Dependencies */,
+				FAC47E03255D0C4C5784255D /* iscsid in Embed Dependencies */,
 			);
 			name = "Embed Dependencies";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -104,9 +104,9 @@
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
-			dstSubfolderSpec = 6;
+			dstSubfolderSpec = 13;
 			files = (
-				FAC47E03255D0C4C5784255D /* iscsid in Embed Dependencies */,
+				1444E1C65A4A9776F569DAEF /* DockTilePlugin.bundle in Embed Dependencies */,
 			);
 			name = "Embed Dependencies";
 			runOnlyForDeploymentPostprocessing = 0;

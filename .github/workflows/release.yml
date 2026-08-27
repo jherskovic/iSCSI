@@ -19,6 +19,16 @@ name: Release
 # Required repository secrets — docs/releasing.md has the recipe for each:
 #   DEVELOPER_ID_CERT_P12       base64 of the .p12 (identity + private key)
 #   DEVELOPER_ID_CERT_PASSWORD  its export password
+#   APPLE_DEV_CERT_P12          base64 of an Apple Development .p12 (identity +
+#                                private key). xcodebuild archive always wants
+#                                a Development-category identity — Developer ID
+#                                only gets used later, at export — and without
+#                                this imported already, an ephemeral runner
+#                                mints a fresh one every run against Apple's
+#                                tiny per-account quota for that certificate
+#                                type. Four releases in a row failed that way
+#                                before this secret existed.
+#   APPLE_DEV_CERT_PASSWORD     its export password
 #   ASC_KEY_P8                  base64 of the App Store Connect .p8
 #   ASC_KEY_ID                  the key's ID
 #   ASC_ISSUER_ID               the issuer UUID
@@ -59,7 +69,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # First, and all six at once.
+      # First, and all eight at once.
       #
       # Each credential used to be checked by the step that needed it, so a
       # repository with nothing configured failed on the certificate and said
@@ -71,6 +81,8 @@ jobs:
         env:
           DEVELOPER_ID_CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
           DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          APPLE_DEV_CERT_P12: ${{ secrets.APPLE_DEV_CERT_P12 }}
+          APPLE_DEV_CERT_PASSWORD: ${{ secrets.APPLE_DEV_CERT_PASSWORD }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -83,6 +95,7 @@ jobs:
           missing=""
           count=0
           for name in DEVELOPER_ID_CERT_P12 DEVELOPER_ID_CERT_PASSWORD \
+                      APPLE_DEV_CERT_P12 APPLE_DEV_CERT_PASSWORD \
                       ASC_KEY_P8 ASC_KEY_ID ASC_ISSUER_ID SPARKLE_ED_PRIVATE_KEY; do
             eval "value=\${$name:-}"
             if [ -z "$value" ]; then
@@ -93,12 +106,12 @@ jobs:
             fi
           done
           if [ "$count" -gt 0 ]; then
-            echo "::error::$count of 6 repository secrets are not set:$missing"
+            echo "::error::$count of 8 repository secrets are not set:$missing"
             echo "Add them under Settings -> Secrets and variables -> Actions."
             echo "docs/releasing.md has the command that produces each one."
             exit 1
           fi
-          echo "all six present"
+          echo "all eight present"
 
       - name: Toolchain
         run: |
@@ -170,6 +183,12 @@ jobs:
           KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
           KEYCHAIN_PASSWORD=$(uuidgen)
           echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          # Needed again by the Apple Development import step, to re-run
+          # set-key-partition-list after its identity lands in the same
+          # keychain. A step's local variables do not survive to the next
+          # step; GITHUB_ENV is what does. The keychain itself is thrown away
+          # with the runner at the end of the job either way.
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           # -lut without -l: no auto-lock timeout partway through a 40-minute
@@ -271,6 +290,101 @@ jobs:
             echo "::error::the .p12 imported, but holds no 'Developer ID Application'"
             echo "identity for team $TEAM_ID. Check which certificate was exported —"
             echo "an Apple Development certificate cannot sign a Developer ID release."
+            exit 1
+          fi
+
+      # Same throwaway keychain as above — this step runs after it on purpose,
+      # since that step is what creates $KEYCHAIN (and $KEYCHAIN_PASSWORD).
+      #
+      # This is the actual fix for four releases failing in a row with "Your
+      # account has reached the maximum number of certificates": xcodebuild
+      # archive always wants a Development-category identity regardless of
+      # CODE_SIGN_STYLE — Developer ID only gets used later, at -exportArchive,
+      # which is an Xcode constraint rather than a choice made here. (Manual
+      # signing style and pinning CODE_SIGN_IDENTITY to Developer ID
+      # Application under Automatic were both tried and rejected by Xcode
+      # outright — see the CODE_SIGN_STYLE comment in apps/project.yml.) Every
+      # past CI run left -allowProvisioningUpdates to mint a fresh Apple
+      # Development certificate for the archive, and an ephemeral runner can
+      # never reuse one across runs, so each run burned one of Apple's tiny
+      # per-account slots for that certificate type until none were left.
+      # Importing one persisted identity here means the archive step only ever
+      # needs to refresh its provisioning *profile* via the ASC key — which an
+      # API key CAN do for an ordinary Development profile, unlike a Developer
+      # ID one — and profile refreshes are not quota-limited.
+      - name: Import the Apple Development certificate
+        env:
+          CERT_P12: ${{ secrets.APPLE_DEV_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEV_CERT_PASSWORD }}
+          TEAM_ID: "4A27X5PJP3"
+        run: |
+          set -euo pipefail
+          [ -n "$CERT_P12" ] || { echo "::error::APPLE_DEV_CERT_P12 is not set"; exit 1; }
+          [ -n "${KEYCHAIN:-}" ] || { echo "::error::\$KEYCHAIN is unset — did the Developer ID import step run first?"; exit 1; }
+
+          if ! printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/appledev.p12" 2>/dev/null; then
+            echo "::error::APPLE_DEV_CERT_P12 is not valid base64."
+            echo "Re-set it with:  base64 < AppleDevelopment.p12 | gh secret set APPLE_DEV_CERT_P12"
+            exit 1
+          fi
+
+          # Same three indistinguishable failure modes as the Developer ID
+          # import above, and the same reasoning for checking them explicitly
+          # rather than trusting security import's one error message for all
+          # three.
+          macalg=$(/usr/bin/openssl asn1parse -inform der -in "$RUNNER_TEMP/appledev.p12" 2>/dev/null \
+                   | awk '/OBJECT/ && /:sha/ {print $NF}' | tail -1 || true)
+          if [ -z "$macalg" ]; then
+            echo "::error::APPLE_DEV_CERT_P12 did not decode to a PKCS#12 file"
+            echo "($(wc -c < "$RUNNER_TEMP/appledev.p12" | tr -d ' ') bytes, no MAC found)."
+            echo "Re-set it with:  base64 < AppleDevelopment.p12 | gh secret set APPLE_DEV_CERT_P12"
+            exit 1
+          fi
+          if [ "$macalg" != ":sha1" ] && [ "$macalg" != "sha1" ]; then
+            echo "::error::this .p12 uses a $macalg MAC. macOS can only import SHA-1 PKCS#12."
+            echo "It was almost certainly written by OpenSSL 3 rather than exported from"
+            echo "Keychain Access. Either re-export from Keychain Access, or convert it:"
+            echo "  openssl pkcs12 -legacy -export -in modern.p12 -out legacy.p12 ..."
+            exit 1
+          fi
+
+          import_p12() {
+            security import "$RUNNER_TEMP/appledev.p12" -k "$KEYCHAIN" -P "$1" \
+              -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productsign \
+              >/dev/null 2>&1
+          }
+
+          if import_p12 "$CERT_PASSWORD"; then
+            echo "  certificate imported"
+          else
+            TRIMMED=$(printf '%s' "$CERT_PASSWORD" | tr -d '\r\n')
+            if [ "$TRIMMED" != "$CERT_PASSWORD" ] && import_p12 "$TRIMMED"; then
+              echo "::warning::APPLE_DEV_CERT_PASSWORD has a trailing newline. It worked"
+              echo "once trimmed, but re-set it to be rid of this: gh secret set APPLE_DEV_CERT_PASSWORD"
+            else
+              echo "::error::the .p12 is well-formed and SHA-1 MACed, so APPLE_DEV_CERT_PASSWORD"
+              echo "does not match the password the .p12 was exported with. This is the export"
+              echo "password chosen in Keychain Access, not a login password and not the"
+              echo "certificate's name."
+              exit 1
+            fi
+          fi
+          rm -f "$RUNNER_TEMP/appledev.p12"
+
+          # Re-run rather than reuse the first call's effect: the partition
+          # list applies to whichever private keys are in the keychain at the
+          # moment it runs, and this identity's key was not there yet then.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+          if ! security find-identity -v -p codesigning "$KEYCHAIN" \
+               | grep -q "Apple Development: .*($TEAM_ID)"; then
+            echo "::error::the .p12 imported, but holds no 'Apple Development' identity"
+            echo "for team $TEAM_ID. A Developer ID Application certificate cannot stand"
+            echo "in for this one — xcodebuild archive always wants a Development-category"
+            echo "identity, regardless of CODE_SIGN_STYLE."
             exit 1
           fi
 

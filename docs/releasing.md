@@ -43,10 +43,10 @@ extension produces a DMG that installs fine and cannot mount anything.
 
 ## The secrets
 
-Six repository secrets, under Settings → Secrets and variables → Actions. All
-six live on the runner for the length of one job, in `$RUNNER_TEMP` and a
+Eight repository secrets, under Settings → Secrets and variables → Actions. All
+eight live on the runner for the length of one job, in `$RUNNER_TEMP` and a
 throwaway keychain, and are deleted in a step that runs even when the build
-fails. The workflow checks for all six before it does anything else and names
+fails. The workflow checks for all eight before it does anything else and names
 every one that is missing, so a repository with none configured says so in
 twenty seconds rather than failing on the first one it happens to need.
 
@@ -57,8 +57,10 @@ that keeps them out of shell history too.
 
 ```sh
 base64 < DeveloperID.p12          | gh secret set DEVELOPER_ID_CERT_P12
+base64 < AppleDevelopment.p12     | gh secret set APPLE_DEV_CERT_P12
 base64 < AuthKey_XXXXXXXX.p8      | gh secret set ASC_KEY_P8
 gh secret set DEVELOPER_ID_CERT_PASSWORD   # paste at the prompt
+gh secret set APPLE_DEV_CERT_PASSWORD      # paste at the prompt
 gh secret set ASC_KEY_ID                   # paste at the prompt
 gh secret set ASC_ISSUER_ID                # paste at the prompt
 ```
@@ -81,6 +83,72 @@ without error and then cannot sign anything.
 If this leaks: revoke the certificate in the developer portal and issue a new
 one. Builds already notarized keep working, because notarization tickets outlive
 the certificate that produced them.
+
+### `APPLE_DEV_CERT_P12` and `APPLE_DEV_CERT_PASSWORD`
+
+A second, unrelated identity — **Apple Development**, not Developer ID
+Application. `xcodebuild archive` always signs with a Development-category
+identity no matter what `CODE_SIGN_STYLE` says; Developer ID only gets applied
+later, at `-exportArchive`. That's an Xcode constraint, confirmed the hard way
+below, not a choice this project made.
+
+Without this secret, the archive step has nothing to reuse, so
+`-allowProvisioningUpdates` mints a fresh Apple Development certificate on
+every CI run. An ephemeral runner's keychain — and the private key inside it —
+dies with the runner, so nothing is ever reused, and each run spent one of
+Apple's tiny per-account slots for that certificate type. Four releases in a
+row (`v0.5.0`, repeatedly) failed archive with
+
+    error: Choose a certificate to revoke. Your account has reached the
+           maximum number of certificates.
+
+before anyone noticed the pattern. Importing one persisted identity fixes it
+the same way `DEVELOPER_ID_CERT_P12` already does for export: the archive step
+then only needs to *refresh its provisioning profile* via the ASC key each run,
+which an API key can do for an ordinary Development profile (unlike a Developer
+ID one — see below), and profile refreshes are not quota-limited.
+
+```sh
+base64 < AppleDevelopment.p12 | pbcopy      # paste as APPLE_DEV_CERT_P12
+rm AppleDevelopment.p12
+```
+
+Same disclosure-triangle pitfall as the Developer ID export above: export the
+*identity*, not the bare certificate.
+
+Before creating a new one, free a slot: revoke an old Apple Development
+certificate for team `4A27X5PJP3` in the developer portal. The ones minted by
+the failed CI runs are identifiable by their creation timestamps matching those
+runs — their private keys died with the runner and can never sign anything
+again. **Do not revoke every Development certificate on that team** — a
+SIP-off VM or another machine building this project locally with automatic
+signing may hold a live one for its own dev loop.
+
+Unlike the Developer ID certificate, this one has a normal ~1-year Apple
+expiry, so it needs occasional rotation: re-export before it lapses, or the
+archive step starts minting again and the account limit resets the clock on
+this whole investigation.
+
+If this leaks: revoke it in the developer portal and issue a new one the same
+way. It cannot sign a Developer ID release, so the blast radius is a local
+build capability, not a shipped one.
+
+**Two things that look like fixes and are not**, so nobody re-runs this
+investigation:
+
+- Setting `signingStyle: manual` in the export options, or `CODE_SIGN_STYLE:
+  Manual` in `apps/project.yml`, to sidestep automatic signing entirely. The
+  profiles in `packaging/profiles/` are Xcode-managed, and manual signing
+  refuses those outright: *"is Xcode managed, but signing settings require a
+  manually managed profile."* Measured against this exact repo — see the
+  comment above the credential switch in `scripts/release.sh`.
+- Keeping `CODE_SIGN_STYLE: Automatic` but pinning `CODE_SIGN_IDENTITY:
+  "Developer ID Application"` on the shipped targets for Release, to make the
+  archive itself use the identity export was already going to apply. Xcode
+  rejects the combination outright: *"is automatically signed for development,
+  but a conflicting code signing identity Developer ID Application has been
+  manually specified."* Measured locally with `xcodebuild archive`, no CI
+  round trip needed to find out.
 
 ### `ASC_KEY_P8`, `ASC_KEY_ID`, `ASC_ISSUER_ID`
 
