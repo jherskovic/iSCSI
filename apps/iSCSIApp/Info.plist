@@ -32,6 +32,11 @@
     <false/>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
+    <!-- Draws icon.png straight into the Dock tile while the app isn't
+         running, bypassing macOS 26's forced squircle backdrop. See
+         DockTilePlugin/Sources/DockTilePlugin.swift. -->
+    <key>NSDockTilePlugIn</key>
+    <string>iSCSI Initiator Dock.docktileplugin</string>
     <key>NSHumanReadableCopyright</key>
     <string>iSCSI Initiator</string>
 </dict>

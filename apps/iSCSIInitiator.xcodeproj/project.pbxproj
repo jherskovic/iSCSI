@@ -8,8 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		005DB4F0958B24DB903379EA /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 472754F976FFDF196B86A23E /* iSCSIKit */; };
+		05669A9DDEEF7BD7FB2751AA /* DockIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 02251FB6F05C94DD8CC6FA18 /* DockIcon.png */; };
 		05C744922CDB7C96CBE2A9E5 /* iSCSIApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FC18B26402E15EC48C74856 /* iSCSIApp.swift */; };
 		0A1E5B3A505EB26A5F1C8F16 /* UpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 506DA6C808D5BBEAD9778417 /* UpdateController.swift */; };
+		1444E1C65A4A9776F569DAEF /* DockTilePlugin.bundle in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 5EB27683EAC334E9BFAF5333 /* DockTilePlugin.bundle */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1673E5B748C232A8D518AA47 /* FSKitSettingsLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F548C397A6CAF9CAF9061B5 /* FSKitSettingsLink.swift */; };
 		197D1925D2B3619796CC96B7 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E2704969A8A1DF93C000BEE0 /* Sparkle */; };
 		19AEC47ED3920AE1C239870B /* MenuBarContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B7C2E394D634AD1AF184FFC /* MenuBarContent.swift */; };
@@ -30,6 +32,7 @@
 		834DE1E9C3D343D8B7027A79 /* iSCSIDaemonKit in Frameworks */ = {isa = PBXBuildFile; productRef = 31DCE2C37A7F2B58783C7457 /* iSCSIDaemonKit */; };
 		83E3A3242A55B4C0F8AA573B /* ExtensionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB19582709CC88A804AB9C0C /* ExtensionController.swift */; };
 		8BA66503B292639C7301422A /* iSCSIFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 0DDBDF75A6BD78684978EBD4 /* iSCSIFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		933B3ED56B00307F4D48ECDA /* DockTilePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 447034B50BC81EF6CDC2C448 /* DockTilePlugin.swift */; };
 		9FAF8F9B4328CBD250375CA0 /* LastPortal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CFABF815361ED5F578A112C /* LastPortal.swift */; };
 		A5942087ABDE23B87B1E18A0 /* SetupCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF2DEFBFF72FCC0059FE6E5 /* SetupCoordinator.swift */; };
 		A62AA91BCC64D9EF76D8FB54 /* FSKitSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF1BC41F137227EA4CAFCF0D /* FSKitSteps.swift */; };
@@ -59,6 +62,13 @@
 			remoteGlobalIDString = BB773D208684E53219196A1E;
 			remoteInfo = iSCSIFSExtension;
 		};
+		9545C726B6D9EC5AD7F92A54 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4FDC03CF97A85A16B4901D8D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5C5E64BF26A60E3BD8D74510;
+			remoteInfo = DockTilePlugin;
+		};
 		F22C56B624CCE2FBCF9A7BFE /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4FDC03CF97A85A16B4901D8D /* Project object */;
@@ -69,6 +79,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		4B109D8B8A862AE568DFEC0B /* Embed Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				1444E1C65A4A9776F569DAEF /* DockTilePlugin.bundle in Embed Dependencies */,
+			);
+			name = "Embed Dependencies";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		88431C9E9715B3A0F05651E8 /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -104,6 +125,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		02251FB6F05C94DD8CC6FA18 /* DockIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = DockIcon.png; sourceTree = "<group>"; };
 		05248BE0BC00DDCB8993C611 /* Uninstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Uninstaller.swift; sourceTree = "<group>"; };
 		0710492659A0FA46BDD2108A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = iSCSIBootstrap.cpp; sourceTree = "<group>"; };
@@ -121,11 +143,13 @@
 		3CFABF815361ED5F578A112C /* LastPortal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LastPortal.swift; sourceTree = "<group>"; };
 		3D7813599A3D7B14A72BA71F /* me.herko.iSCSIInitiator.daemon.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = me.herko.iSCSIInitiator.daemon.plist; sourceTree = "<group>"; };
 		3DC08C498B489B3118E2CF64 /* iSCSIDext.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = iSCSIDext.iig; sourceTree = "<group>"; };
+		447034B50BC81EF6CDC2C448 /* DockTilePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockTilePlugin.swift; sourceTree = "<group>"; };
 		4C16A5233C6A1510F7298B94 /* iscsid */ = {isa = PBXFileReference; includeInIndex = 0; path = iscsid; sourceTree = BUILT_PRODUCTS_DIR; };
 		4D00ADBA0B6BA390CD8BA86F /* AttachmentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentManager.swift; sourceTree = "<group>"; };
 		506DA6C808D5BBEAD9778417 /* UpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateController.swift; sourceTree = "<group>"; };
 		576E38B77C9C8D46244A84E2 /* FSKitSettingsLinkCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FSKitSettingsLinkCheck.swift; sourceTree = "<group>"; };
 		5DF2DEFBFF72FCC0059FE6E5 /* SetupCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupCoordinator.swift; sourceTree = "<group>"; };
+		5EB27683EAC334E9BFAF5333 /* DockTilePlugin.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DockTilePlugin.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		5F8B8631D4F5E81291847966 /* iSCSIApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iSCSIApp.entitlements; sourceTree = "<group>"; };
 		63687E9A8247C4F8AD9C2785 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		66A066551C98F53B7638A06D /* UninstallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UninstallView.swift; sourceTree = "<group>"; };
@@ -186,6 +210,7 @@
 		0643FA97BE3313A2903E9FDC /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				5EB27683EAC334E9BFAF5333 /* DockTilePlugin.bundle */,
 				90DA087A85B91E84CD0AB5D4 /* iSCSIApp.app */,
 				4C16A5233C6A1510F7298B94 /* iscsid */,
 				F9E5E4079C9AAECB94704229 /* iSCSIDext.dext */,
@@ -212,6 +237,14 @@
 			path = iSCSIApp;
 			sourceTree = "<group>";
 		};
+		25CFA7F55AEF6CDA5E72EC71 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				447034B50BC81EF6CDC2C448 /* DockTilePlugin.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
 		2DBB9BD9979EA5791B8473D2 /* LaunchDaemons */ = {
 			isa = PBXGroup;
 			children = (
@@ -223,6 +256,7 @@
 		42F85755989DD49B28E3E3E8 = {
 			isa = PBXGroup;
 			children = (
+				7BD5F19A61EDDE7F1B796926 /* DockTilePlugin */,
 				7D5EE8DCF2317E5F31344E7F /* iSCSI */,
 				1CBA2062DEE18E43B82F443B /* iSCSIApp */,
 				82044F9EDFEF684FEA65361F /* iSCSIDext */,
@@ -272,6 +306,15 @@
 				66A066551C98F53B7638A06D /* UninstallView.swift */,
 			);
 			path = Windows;
+			sourceTree = "<group>";
+		};
+		7BD5F19A61EDDE7F1B796926 /* DockTilePlugin */ = {
+			isa = PBXGroup;
+			children = (
+				02251FB6F05C94DD8CC6FA18 /* DockIcon.png */,
+				25CFA7F55AEF6CDA5E72EC71 /* Sources */,
+			);
+			path = DockTilePlugin;
 			sourceTree = "<group>";
 		};
 		7D5EE8DCF2317E5F31344E7F /* iSCSI */ = {
@@ -388,6 +431,24 @@
 			productReference = 4C16A5233C6A1510F7298B94 /* iscsid */;
 			productType = "com.apple.product-type.tool";
 		};
+		5C5E64BF26A60E3BD8D74510 /* DockTilePlugin */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 07B7BC3954BB2A19BC10A768 /* Build configuration list for PBXNativeTarget "DockTilePlugin" */;
+			buildPhases = (
+				61057E166CA182DD3061FBDE /* Sources */,
+				03B55A81FB30E950337C5E10 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = DockTilePlugin;
+			packageProductDependencies = (
+			);
+			productName = DockTilePlugin;
+			productReference = 5EB27683EAC334E9BFAF5333 /* DockTilePlugin.bundle */;
+			productType = "com.apple.product-type.bundle";
+		};
 		7575591A2E9C965DCDD0C6A4 /* iSCSIApp */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 955C6A1C6B5CD9EEBA760D48 /* Build configuration list for PBXNativeTarget "iSCSIApp" */;
@@ -398,12 +459,14 @@
 				201B6C258FD3F5D038449D48 /* Frameworks */,
 				A0DF6D550191F3515B39ED6B /* Embed ExtensionKit Extensions */,
 				8D86EC2D3CC5E531688B6BCB /* Embed Dependencies */,
+				4B109D8B8A862AE568DFEC0B /* Embed Dependencies */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				8F4CDBCF3CEC0013BBBCF081 /* PBXTargetDependency */,
 				BCCC7CDAAC07564DF81BAAF2 /* PBXTargetDependency */,
+				EE995E5D7EC002C53A1E5201 /* PBXTargetDependency */,
 			);
 			name = iSCSIApp;
 			packageProductDependencies = (
@@ -451,6 +514,10 @@
 						DevelopmentTeam = 4A27X5PJP3;
 						ProvisioningStyle = Automatic;
 					};
+					5C5E64BF26A60E3BD8D74510 = {
+						DevelopmentTeam = 4A27X5PJP3;
+						ProvisioningStyle = Automatic;
+					};
 					7575591A2E9C965DCDD0C6A4 = {
 						DevelopmentTeam = 4A27X5PJP3;
 						ProvisioningStyle = Automatic;
@@ -482,12 +549,21 @@
 				7575591A2E9C965DCDD0C6A4 /* iSCSIApp */,
 				40341F59728743EEC8E716E0 /* iscsid */,
 				34B4B33589792E2B507EFB6B /* iSCSIDext */,
+				5C5E64BF26A60E3BD8D74510 /* DockTilePlugin */,
 				BB773D208684E53219196A1E /* iSCSIFSExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		03B55A81FB30E950337C5E10 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				05669A9DDEEF7BD7FB2751AA /* DockIcon.png in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		850FAA65C189AFE85C13C1B3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -517,6 +593,14 @@
 				3982D9B9A332FCB9061C3BFA /* iSCSIDext.iig in Sources */,
 				4E0D9AEC2C32868C1A6D1BB6 /* iSCSIUserClient.cpp in Sources */,
 				E71D3B1A098B46CBAB3D75F8 /* iSCSIUserClient.iig in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		61057E166CA182DD3061FBDE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				933B3ED56B00307F4D48ECDA /* DockTilePlugin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -571,6 +655,11 @@
 			isa = PBXTargetDependency;
 			target = 40341F59728743EEC8E716E0 /* iscsid */;
 			targetProxy = F22C56B624CCE2FBCF9A7BFE /* PBXContainerItemProxy */;
+		};
+		EE995E5D7EC002C53A1E5201 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5C5E64BF26A60E3BD8D74510 /* DockTilePlugin */;
+			targetProxy = 9545C726B6D9EC5AD7F92A54 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -631,6 +720,23 @@
 			};
 			name = Debug;
 		};
+		758752674B05DE0B68032832 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = DockTilePlugin/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator.docktile;
+				PRODUCT_NAME = "iSCSI Initiator Dock";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				WRAPPER_EXTENSION = docktileplugin;
+			};
+			name = Debug;
+		};
 		91904E97D7A8CBEE0FD2C848 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -646,6 +752,23 @@
 				SDKROOT = macosx;
 			};
 			name = Debug;
+		};
+		A1828D23DB1F37C14B8EB9DC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = DockTilePlugin/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = me.herko.iSCSIInitiator.docktile;
+				PRODUCT_NAME = "iSCSI Initiator Dock";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				WRAPPER_EXTENSION = docktileplugin;
+			};
+			name = Release;
 		};
 		A4B38DC0FC49892B92F43BA8 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -682,7 +805,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 4A27X5PJP3;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -702,7 +825,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.5.0;
+				MARKETING_VERSION = 0.5.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -821,7 +944,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 4A27X5PJP3;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -835,7 +958,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 0.5.0;
+				MARKETING_VERSION = 0.5.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -849,6 +972,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		07B7BC3954BB2A19BC10A768 /* Build configuration list for PBXNativeTarget "DockTilePlugin" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				758752674B05DE0B68032832 /* Debug */,
+				A1828D23DB1F37C14B8EB9DC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		358ABFA3CF3B4A6C4ACD0CB5 /* Build configuration list for PBXNativeTarget "iSCSIDext" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

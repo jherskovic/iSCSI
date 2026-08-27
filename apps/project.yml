@@ -38,8 +38,8 @@ settings:
     # entitlement request to Apple — see docs/entitlements.md.
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.5.0"
-    CURRENT_PROJECT_VERSION: "35"
+    MARKETING_VERSION: "0.5.1"
+    CURRENT_PROJECT_VERSION: "36"
 
 targets:
   # ---- Container app ----
@@ -90,6 +90,10 @@ targets:
         embed: true
         copy:
           destination: executables
+      - target: DockTilePlugin
+        embed: true
+        copy:
+          destination: plugins
     settings:
       base:
         PRODUCT_NAME: "iSCSI Initiator"
@@ -166,6 +170,28 @@ targets:
         PRODUCT_NAME: me.herko.iSCSIInitiator.dext
         # iig compiles the .iig files; DriverKit + SCSIControllerDriverKit link.
         OTHER_LDFLAGS: "-framework DriverKit -framework SCSIControllerDriverKit"
+
+  # ---- Dock tile plug-in ----
+  # Draws icon.png straight into the Dock tile, un-squircled. macOS 26 forces
+  # regular app icons — including Icon Composer's own already-square
+  # composite — into a rounded backdrop; a dock tile plug-in owns the tile's
+  # content view instead, so nothing further processes the flat design.
+  # WRAPPER_EXTENSION + SKIP_INSTALL: a loadable bundle, not an app product;
+  # `embed: true` / `copy: {destination: plugins}` on iSCSIApp puts it in
+  # Contents/PlugIns, which is where the Dock's plug-in loader looks.
+  DockTilePlugin:
+    type: bundle
+    platform: macOS
+    sources:
+      - path: DockTilePlugin/Sources
+      - path: DockTilePlugin/DockIcon.png
+    settings:
+      base:
+        PRODUCT_NAME: "iSCSI Initiator Dock"
+        PRODUCT_BUNDLE_IDENTIFIER: me.herko.iSCSIInitiator.docktile
+        INFOPLIST_FILE: DockTilePlugin/Info.plist
+        WRAPPER_EXTENSION: docktileplugin
+        SKIP_INSTALL: YES
 
   # ---- FSKit extension (Backend A): iSCSI-backed block-device file ----
   # extensionkit-extension, not app-extension: FSKit modules are ExtensionKit

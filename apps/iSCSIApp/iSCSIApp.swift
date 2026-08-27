@@ -9,11 +9,37 @@
 //  already know it is there.
 //
 
+import AppKit
 import SwiftUI
 
 @main
 struct ISCSIInitiatorApp: App {
     @StateObject private var model = AppModel()
+
+    init() {
+        // The dock tile plug-in only covers the tile while the app is NOT
+        // running; install the same un-squircled icon for the running case.
+        // Deferred so NSApp exists.
+        DispatchQueue.main.async { Self.installDockIcon() }
+    }
+
+    /// Draws icon.png straight into the Dock tile, escaping macOS 26's
+    /// forced squircle backdrop. The image lives in the dock tile plug-in
+    /// bundle so it ships only once.
+    @MainActor
+    private static func installDockIcon() {
+        guard let url = Bundle.main.builtInPlugInsURL?.appendingPathComponent(
+            "iSCSI Initiator Dock.docktileplugin/Contents/Resources/DockIcon.png"),
+            let image = NSImage(contentsOf: url)
+        else { return }
+        let tile = NSApplication.shared.dockTile
+        let view = NSImageView(frame: NSRect(origin: .zero, size: tile.size))
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.autoresizingMask = [.width, .height]
+        view.image = image
+        tile.contentView = view
+        tile.display()
+    }
 
     var body: some Scene {
         Window("iSCSI Initiator", id: "main") {
