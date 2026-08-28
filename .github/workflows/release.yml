@@ -380,11 +380,27 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN"
 
           if ! security find-identity -v -p codesigning "$KEYCHAIN" \
-               | grep -q "Apple Development: .*($TEAM_ID)"; then
+               | grep -q "Apple Development:"; then
             echo "::error::the .p12 imported, but holds no 'Apple Development' identity"
-            echo "for team $TEAM_ID. A Developer ID Application certificate cannot stand"
-            echo "in for this one — xcodebuild archive always wants a Development-category"
-            echo "identity, regardless of CODE_SIGN_STYLE."
+            echo "at all. A Developer ID Application certificate cannot stand in for this"
+            echo "one — xcodebuild archive always wants a Development-category identity,"
+            echo "regardless of CODE_SIGN_STYLE."
+            exit 1
+          fi
+
+          # Not the CN: on an Apple ID that belongs to more than one team, an
+          # "Apple Development" certificate's human-readable name can carry an
+          # unrelated team's ID (observed: an individual team's ID in the CN
+          # on a cert issued for, and fully usable under, this organization
+          # team). OU is the field codesign and Xcode's provisioning matching
+          # actually key off, so that is what has to match $TEAM_ID.
+          DEV_SUBJECT=$(security find-certificate -c "Apple Development" -p "$KEYCHAIN" 2>/dev/null \
+                        | openssl x509 -noout -subject 2>/dev/null || true)
+          if ! printf '%s' "$DEV_SUBJECT" | grep -qE "OU[[:space:]]*=[[:space:]]*${TEAM_ID}(,|$)"; then
+            echo "::error::the .p12 imported an 'Apple Development' identity, but its OU"
+            echo "does not match team $TEAM_ID ($DEV_SUBJECT). OU is the field codesign"
+            echo "and Xcode's provisioning matching actually use — the CN's parenthetical"
+            echo "team name is cosmetic and can be wrong on a multi-team Apple ID."
             exit 1
           fi
 

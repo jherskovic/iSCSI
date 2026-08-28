@@ -116,6 +116,24 @@ rm AppleDevelopment.p12
 Same disclosure-triangle pitfall as the Developer ID export above: export the
 *identity*, not the bare certificate.
 
+Don't identify the right certificate by its display name. On an Apple ID that
+belongs to more than one team, `security find-identity` can print an "Apple
+Development" identity's CN with a *different* team's ID in the parenthetical —
+observed here as `Apple Development: Jorge Herskovic (GZ9Z7LX9G9)`, an
+individual team, on a certificate that is fully usable under, and was in fact
+issued for, the `4A27X5PJP3` organization team. `OU` is the field codesign and
+Xcode's provisioning matching actually key off, and it is trustworthy where
+the CN is not:
+
+```sh
+security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject
+```
+
+Look for `OU=4A27X5PJP3` in that line, not a matching parenthetical on the CN.
+`release.yml`'s import-verification step checks `OU` for the same reason,
+after an earlier version of it checked the CN and rejected a perfectly good
+certificate.
+
 Before creating a new one, free a slot: revoke an old Apple Development
 certificate for team `4A27X5PJP3` in the developer portal. The ones minted by
 the failed CI runs are identifiable by their creation timestamps matching those
