@@ -112,11 +112,18 @@ jobs:
       # looked clean. This makes that impossible to reintroduce.
       - name: The generated project matches project.yml
         run: |
-          cd apps && xcodegen generate
+          # SWIFT_DETERMINISTIC_HASHING=1: without it, xcodegen's ordering of
+          # same-named build phases (two "Embed Dependencies" copy-files
+          # phases, one per embed destination) comes from Swift Dictionary
+          # iteration order, which is randomized per process — making this
+          # drift check a coin flip between two equally valid orderings of an
+          # unchanged project.yml. Confirmed by running xcodegen generate six
+          # times in a row without it and getting a spurious diff on half.
+          cd apps && SWIFT_DETERMINISTIC_HASHING=1 xcodegen generate
           cd ..
           if ! git diff --quiet -- apps/iSCSIInitiator.xcodeproj/project.pbxproj; then
             echo "::error::apps/project.yml and the committed .pbxproj have diverged."
-            echo "Run 'cd apps && xcodegen generate' and commit the result."
+            echo "Run 'cd apps && SWIFT_DETERMINISTIC_HASHING=1 xcodegen generate' and commit the result."
             git --no-pager diff -- apps/iSCSIInitiator.xcodeproj/project.pbxproj
             exit 1
           fi

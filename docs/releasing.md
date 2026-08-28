@@ -11,7 +11,7 @@
 #    notarizations have already run.
 $EDITOR apps/project.yml
 
-cd apps && xcodegen generate && cd ..     # keep the .pbxproj in step
+cd apps && SWIFT_DETERMINISTIC_HASHING=1 xcodegen generate && cd ..   # keep the .pbxproj in step
 git commit -am "Version 0.3.3"
 git push
 

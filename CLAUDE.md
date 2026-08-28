@@ -54,9 +54,14 @@ cd apps && xcodegen generate && open iSCSIInitiator.xcodeproj
 
 `apps/project.yml` is the source of truth; `iSCSIInitiator.xcodeproj/project.pbxproj`
 is **generated and committed**, and CI regenerates it and fails on any diff. So
-after touching `project.yml`, run `xcodegen generate` and commit the result.
-That check is the highest-value one in the repo: a hand-patched `.pbxproj` once
-produced an app with no filesystem extension, from a build that looked clean.
+after touching `project.yml`, run `SWIFT_DETERMINISTIC_HASHING=1 xcodegen generate`
+and commit the result. That check is the highest-value one in the repo: a
+hand-patched `.pbxproj` once produced an app with no filesystem extension, from
+a build that looked clean. The env var matters: without it, xcodegen orders
+same-named build phases (two "Embed Dependencies" copy-files phases, one per
+embed destination) by Swift's per-process-randomized `Dictionary` iteration,
+so an unmodified `project.yml` can regenerate into a spuriously different
+`.pbxproj` — and CI, which does set the env var, uses it as its baseline.
 
 Two schemes. **iSCSI Initiator** is what ships (app + FSKit extension +
 `iscsid` inside the bundle). **iSCSIDext-dev** builds the parked DriverKit

@@ -269,7 +269,14 @@ say "regenerating the Xcode project"
 PBX_WAS_DIRTY=0
 [ -n "$(git status --porcelain -- "$PBXPROJ")" ] && PBX_WAS_DIRTY=1
 
-( cd apps && xcodegen generate >/dev/null )
+# Without this, xcodegen's ordering of same-named build phases (two
+# "Embed Dependencies" copy-files phases, one per embed destination) comes
+# from Swift Dictionary iteration order, which is randomized per process.
+# That made this drift gate a coin flip: identical project.yml, two runs,
+# two different but equally valid .pbxproj byte orderings. Confirmed by
+# running xcodegen generate six times in a row without it and getting a
+# spurious diff on half of them.
+( cd apps && SWIFT_DETERMINISTIC_HASHING=1 xcodegen generate >/dev/null )
 
 if [ "$PBX_WAS_DIRTY" -eq 1 ]; then
     printf '\033[33m  drift gate SKIPPED — %s was already modified\033[0m\n' "$PBXPROJ"
