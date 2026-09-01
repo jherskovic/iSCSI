@@ -76,7 +76,11 @@ public struct ControllerStatus: Sendable, Equatable {
 /// SGL on every command, so data-less ones carry a null transport SGL
 /// exactly as the Linux host does.
 public enum NVMeCommands {
-    public static let connectDataSize = 4096
+    /// `struct nvmf_connect_data`: HOSTID (16), CNTLID (2), reserved, SUBNQN
+    /// at 256, HOSTNQN at 512, reserved to 1024. nvmet answers "Data SGL
+    /// Length Invalid" (SC 0Fh) to any other length — as the NAS did when
+    /// this was 4096.
+    public static let connectDataSize = 1024
 
     /// CC value that enables the controller: EN, CSS = NVM, MPS = 0 (4 KiB),
     /// AMS = round robin, IOSQES = 6 (64 B), IOCQES = 4 (16 B).
@@ -84,7 +88,7 @@ public enum NVMeCommands {
 
     // MARK: Fabrics
 
-    /// Fabrics Connect. The 4 KiB data (HOSTID, CNTLID, SUBNQN, HOSTNQN) is
+    /// Fabrics Connect. The 1 KiB data (HOSTID, CNTLID, SUBNQN, HOSTNQN) is
     /// always in-capsule. `queueEntries` is the real size; SQSIZE on the
     /// wire is 0's based. KATO is only meaningful on the admin queue (QID 0)
     /// and must be 0 on I/O queues. CATTR stays 0: SQ flow control on.

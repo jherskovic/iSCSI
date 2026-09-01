@@ -48,14 +48,14 @@ let package = Package(
         // Scriptable iSCSI target used by integration tests (and runnable standalone).
         .target(
             name: "MockTarget",
-            dependencies: ["iSCSIKit"],
+            dependencies: ["iSCSIKit", "NVMeKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // Daemon core as a library so it can be unit-tested; the executable is
         // a thin XPC/launchd launcher on top.
         .target(
             name: "iSCSIDaemon",
-            dependencies: ["iSCSIKit"],
+            dependencies: ["iSCSIKit", "NVMeKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // No FSKit dependency, deliberately and verifiably: the extension keeps
@@ -74,6 +74,7 @@ let package = Package(
             name: "iscsictl",
             dependencies: [
                 "iSCSIKit",
+                "NVMeKit",
                 // dext-attach drives DaemonCore + DextBridge directly.
                 "iSCSIDaemon",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -111,7 +112,7 @@ let package = Package(
         ),
         .testTarget(
             name: "IntegrationTests",
-            dependencies: ["iSCSIKit", "MockTarget", "iSCSIDaemon", "iSCSIVolume"],
+            dependencies: ["iSCSIKit", "NVMeKit", "MockTarget", "iSCSIDaemon", "iSCSIVolume"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

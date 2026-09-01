@@ -41,14 +41,18 @@ public enum ISCSIError {
         case misalignedIO = 41
         case outOfRange = 42
         case checkCondition = 43
+        /// An NVMe controller answered with a non-success status; the SCT/SC
+        /// pair rides in `senseKey`.
+        case nvmeStatus = 44
 
         case protocolViolation = 50
         case daemonInternal = 60
     }
 
-    /// User-info key carrying SCSI sense bytes as hex, when there are any.
-    /// The one piece of evidence that makes a check condition diagnosable, and
-    /// it is otherwise lost the moment the error crosses the boundary.
+    /// User-info key carrying the device's own status bytes: SCSI sense as
+    /// hex, or an NVMe "sct/sc/opcode" line. The one piece of evidence that
+    /// makes a device error diagnosable, and it is otherwise lost the moment
+    /// the error crosses the boundary.
     public static let senseKey = "me.herko.iSCSIInitiator.SenseData"
     /// User-info key carrying the original Swift error's description, for the
     /// cases where the mapping below is not specific enough to be useful.
@@ -174,6 +178,38 @@ public enum ISCSIError {
                                + "(SCSI status 0x%02X).", status),
                         "The sense data attached to this error identifies the cause.",
                         sense.map(hex))
+            case .nvmeStatus(let sct, let sc, let opcode):
+                let status = String(format: "sct 0x%02x sc 0x%02x opcode 0x%02x", sct, sc, opcode)
+                switch (opcode, sct, sc) {
+                case (0x7F, 0x01, 0x84):   // Fabrics Connect: Invalid Host
+                    return (.nvmeStatus,
+                            "The subsystem refused this Mac's host NQN.",
+                            "Add this Mac's host NQN (shown when editing the target) to the "
+                            + "subsystem's allowed hosts on the NAS.", status)
+                case (0x7F, 0x01, 0x91):   // Fabrics Connect: Authentication Required
+                    return (.nvmeStatus,
+                            "The subsystem requires in-band authentication (DH-HMAC-CHAP), "
+                            + "which this version does not support.",
+                            "Turn off host authentication for this subsystem on the NAS.", status)
+                case (0x7F, 0x01, 0x82):   // Fabrics Connect: Invalid Parameters
+                    return (.nvmeStatus,
+                            "The subsystem rejected the connection parameters.",
+                            "Check that the subsystem NQN is correct and that the NAS is "
+                            + "serving it on this address and port.", status)
+                case (_, 0x00, 0x0B):      // Invalid Namespace or Format
+                    return (.nvmeStatus,
+                            "The subsystem has no namespace with that ID.",
+                            "Namespace IDs start at 1. Use Discover, or check the namespace "
+                            + "list for this subsystem on the NAS.", status)
+                case (_, 0x00, 0x82):      // Namespace Not Ready
+                    return (.deviceNotReady, "The namespace is not ready.",
+                            "It may still be starting up. Try again in a moment.", status)
+                default:
+                    return (.nvmeStatus,
+                            String(format: "The NVMe controller returned status 0x%02X/0x%02X "
+                                   + "for opcode 0x%02X.", sct, sc, opcode),
+                            "The status bytes attached to this error identify the cause.", status)
+                }
             case .invalidGeometry(let blockSize, let blockCount, let reason):
                 // Points at the target: nothing user- or initiator-side to fix.
                 return (.deviceNotReady,

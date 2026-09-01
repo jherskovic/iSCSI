@@ -61,7 +61,10 @@ struct ResourceBoundsTests {
             _ = try cache.read(offset: offset, length: chunk)
             offset += UInt64(chunk)
         }
-        let grew = footprint() &- before
+        // A footprint can shrink between samples (the VM returns pages), and
+        // an unsigned wrap then reads as a 16 EiB "growth".
+        let after = footprint()
+        let grew = after > before ? after - before : 0
 
         #expect(grew < UInt64(maxCached) * 4,
                 "512 MiB streamed through an 8 MiB cache grew the process by \(mib(grew)) MiB")
@@ -95,7 +98,10 @@ struct ResourceBoundsTests {
             cache.willWrite(offset: offset, length: payload.count)
             cache.didWrite(payload, at: offset)
         }
-        let grew = footprint() &- before
+        // A footprint can shrink between samples (the VM returns pages), and
+        // an unsigned wrap then reads as a 16 EiB "growth".
+        let after = footprint()
+        let grew = after > before ? after - before : 0
 
         #expect(grew < 32 << 20,
                 "4096 write-through cycles grew the process by \(mib(grew)) MiB")
@@ -122,7 +128,10 @@ struct ResourceBoundsTests {
             _ = try await device.read(offset: offset, length: 4096)
             try await device.write(offset: offset, data: Data(repeating: 0xEE, count: 4096))
         }
-        let grew = footprint() &- before
+        // A footprint can shrink between samples (the VM returns pages), and
+        // an unsigned wrap then reads as a 16 EiB "growth".
+        let after = footprint()
+        let grew = after > before ? after - before : 0
 
         #expect(grew < 32 << 20,
                 "2000 completed commands grew the process by \(mib(grew)) MiB")

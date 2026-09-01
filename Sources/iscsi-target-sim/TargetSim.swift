@@ -3,23 +3,35 @@ import Foundation
 import MockTarget
 import iSCSIKit
 
-/// A local iSCSI target, for two things the real NAS cannot do: measure over
-/// loopback (no transport ceiling, and the target-side negotiation knobs are
-/// ours to set) and break things on purpose — dropped connections, corrupted
-/// payloads, stalls, and target power loss with a volatile write cache, which
-/// the surviving harness can then inspect.
+/// A local iSCSI (or, with --nvme, NVMe/TCP) target, for two things the real
+/// NAS cannot do: measure over loopback (no transport ceiling, and the
+/// target-side negotiation knobs are ours to set) and break things on
+/// purpose — dropped connections, corrupted payloads, stalls, and target
+/// power loss with a volatile write cache, which the surviving harness can
+/// then inspect. Both protocols share the disk, the cache model and the
+/// control socket, so `crash` proves FUA the same way for either.
 ///
-/// Not a production target: one LUN, one connection per session, no session
-/// reinstatement, no persistent reservations, no ERL>0.
+/// Not a production target: one LUN/namespace, one connection per
+/// session/queue, no session reinstatement, no persistent reservations, no
+/// ERL>0, no in-band NVMe authentication.
 @main
 struct TargetSim: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "iscsi-target-sim",
-        abstract: "Local iSCSI target for performance and fault-injection testing."
+        abstract: "Local iSCSI or NVMe/TCP target for performance and fault-injection testing."
     )
 
-    @Option(help: "iSCSI port to serve. 3260 needs root; use 3261+ otherwise.")
-    var port: UInt16 = 3260
+    @Flag(help: "Serve NVMe/TCP instead of iSCSI.")
+    var nvme = false
+
+    @Option(help: "Port to serve. Defaults to 3260 (iSCSI) or 4420 (--nvme).")
+    var port: UInt16?
+
+    @Option(help: "Subsystem NQN (with --nvme).")
+    var subsystemName: String = "nqn.2026-08.me.herko.sim:disk0"
+
+    @Option(help: "Host NQN allowed to connect (with --nvme; repeatable). None means any host.")
+    var allowedHost: [String] = []
 
     @Option(help: "Control socket port (loopback only). 0 disables it.")
     var controlPort: UInt16 = 3262
@@ -83,31 +95,45 @@ struct TargetSim: AsyncParsableCommand {
         }
 
         let faultBox = FaultBox()
-        var config = MockTargetConfig()
-        config.targetName = targetName
-        config.maxRecvDataSegmentLength = mrdsl
-        config.firstBurstLength = firstBurst
-        config.maxBurstLength = maxBurst
-        config.digestPick = digest
-        config.requireChap = requireChap
-        config.chapUser = chapUser
-        config.chapSecret = chapSecret
-        config.discoveryTargets = [(name: targetName, addresses: ["127.0.0.1:\(port),1"])]
-        let frozen = config
-
-        let server = try MockTargetServer(
-            port: port,
-            disk: disk,
-            faultBox: faultBox,
-            config: { frozen }
-        )
+        let port = self.port ?? (nvme ? 4420 : 3260)
+        let server: MockTargetServer
+        if nvme {
+            var config = MockNVMeConfig()
+            config.subsystemNQN = subsystemName
+            config.allowedHosts = allowedHost.isEmpty ? nil : allowedHost
+            config.acceptDigests = digest == "CRC32C"
+            config.discoveryEntries = [(subnqn: subsystemName, traddr: "127.0.0.1", trsvcid: String(port))]
+            let subsystem = MockNVMeSubsystem(config: config, disk: disk, faultBox: faultBox)
+            server = try MockTargetServer(port: port) { await subsystem.serve($0) }
+        } else {
+            var config = MockTargetConfig()
+            config.targetName = targetName
+            config.maxRecvDataSegmentLength = mrdsl
+            config.firstBurstLength = firstBurst
+            config.maxBurstLength = maxBurst
+            config.digestPick = digest
+            config.requireChap = requireChap
+            config.chapUser = chapUser
+            config.chapSecret = chapSecret
+            config.discoveryTargets = [(name: targetName, addresses: ["127.0.0.1:\(port),1"])]
+            let frozen = config
+            server = try MockTargetServer(port: port, disk: disk, faultBox: faultBox, config: { frozen })
+        }
         let bound = try await server.start()
 
         let backingLabel = backingFile ?? "ram"
-        note("serving \(targetName) on port \(bound)")
-        note("lun: \(capacityBlocks) x \(blockSize) bytes (\(capacityMib) MiB), backing=\(backingLabel)")
-        note("negotiation: MRDSL=\(mrdsl) FirstBurst=\(firstBurst) MaxBurst=\(maxBurst) digest=\(digest)")
-        note("write cache: volatile, \(cacheMib) MiB, commits on FUA and SYNCHRONIZE CACHE only")
+        if nvme {
+            note("serving NVMe/TCP subsystem \(subsystemName) on port \(bound)"
+                 + (allowedHost.isEmpty ? " (any host)" : " (allowed hosts: \(allowedHost.joined(separator: ", ")))"))
+            note("namespace 1: \(capacityBlocks) x \(blockSize) bytes (\(capacityMib) MiB), backing=\(backingLabel)")
+            note("digests: \(digest == "CRC32C" ? "accepted when offered" : "refused")")
+            note("write cache: volatile, \(cacheMib) MiB, commits on FUA and Flush only")
+        } else {
+            note("serving \(targetName) on port \(bound)")
+            note("lun: \(capacityBlocks) x \(blockSize) bytes (\(capacityMib) MiB), backing=\(backingLabel)")
+            note("negotiation: MRDSL=\(mrdsl) FirstBurst=\(firstBurst) MaxBurst=\(maxBurst) digest=\(digest)")
+            note("write cache: volatile, \(cacheMib) MiB, commits on FUA and SYNCHRONIZE CACHE only")
+        }
 
         let stopSignal = StopSignal()
         if controlPort != 0 {

@@ -31,6 +31,26 @@ public struct NVMeHostIdentity: Sendable, Equatable {
         hostID = withUnsafeBytes(of: uuid.uuid) { Data($0) }
     }
 
+    /// An explicit NQN. In the uuid form the HOSTID is that UUID, as the
+    /// spec asks; otherwise it is derived from the name, so the same NQN
+    /// always presents the same HOSTID.
+    public init(nqn: String) throws {
+        guard NQN.isValid(nqn) else {
+            throw NVMeTCPError.malformed("\(nqn) is not a valid NQN")
+        }
+        if nqn.hasPrefix(NQN.uuidPrefix),
+           let uuid = UUID(uuidString: String(nqn.dropFirst(NQN.uuidPrefix.count))) {
+            self.init(uuid: uuid)
+        } else {
+            self.init(nqn: nqn, hostID: Data(SHA256.hash(data: Data(nqn.utf8)).prefix(16)))
+        }
+    }
+
+    private init(nqn: String, hostID: Data) {
+        self.nqn = nqn
+        self.hostID = hostID
+    }
+
     /// A stable identity with nothing to persist: a UUID derived from the
     /// platform UUID through SHA-256 under a fixed namespace, so it survives
     /// reinstalls and `removeAllData`, cannot drift the way a hostname-based

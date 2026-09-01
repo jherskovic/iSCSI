@@ -9,7 +9,7 @@ import iSCSIKit
 /// An ASCII field: up to the first NUL, whitespace trimmed (SN/MN/FR are
 /// space-padded; NQNs and discovery strings are NUL-padded, and nvmet's
 /// TRADDR can carry trailing spaces).
-func asciiField(_ data: Data, _ offset: Int, _ length: Int) -> String {
+package func asciiField(_ data: Data, _ offset: Int, _ length: Int) -> String {
     let raw = data.sub(offset, length)
     let end = raw.firstIndex(of: 0) ?? raw.endIndex
     return String(decoding: raw[raw.startIndex ..< end], as: UTF8.self)

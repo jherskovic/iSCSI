@@ -23,6 +23,10 @@ public enum BlockDeviceError: Error, Equatable, Sendable {
     /// READ CAPACITY described a device that cannot exist; nothing the
     /// initiator does will make this target usable.
     case invalidGeometry(blockSize: Int, blockCount: UInt64, reason: String)
+    /// An NVMe controller completed a command with a non-success status:
+    /// Status Code Type, Status Code, and the opcode it answered. Lives in
+    /// this enum, not NVMeKit, so `ISCSIError.classify` can see it.
+    case nvmeStatus(sct: UInt8, sc: UInt8, opcode: UInt8)
 }
 
 /// Concrete block device over an `ISCSISession`. Reads/writes are chunked so a

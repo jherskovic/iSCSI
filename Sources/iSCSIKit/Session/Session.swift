@@ -324,6 +324,11 @@ public struct DiscoveredTarget: Sendable, Equatable {
     /// "host:port,tpgt" entries; may be empty when the target only answers
     /// on the portal we asked.
     public var addresses: [String]
+
+    public init(name: String, addresses: [String]) {
+        self.name = name
+        self.addresses = addresses
+    }
 }
 
 public enum Discovery {

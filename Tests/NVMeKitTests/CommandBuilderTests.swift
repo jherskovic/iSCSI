@@ -16,13 +16,13 @@ struct CommandBuilderTests {
         #expect(b.u8(1) & 0xC0 == 0x40)                // SGL
         #expect(b.leU16(2) == 0x0102)
         #expect(b.u8(4) == 0x01)                       // FCTYPE Connect
-        #expect(b.leU64(24) == 0 && b.leU32(32) == 4096 && b.u8(39) == 0x01)  // in-capsule SGL
+        #expect(b.leU64(24) == 0 && b.leU32(32) == 1024 && b.u8(39) == 0x01)  // in-capsule SGL
         #expect(b.leU16(40) == 0)                      // RECFMT
         #expect(b.leU16(42) == 0)                      // QID
         #expect(b.leU16(44) == 31)                     // SQSIZE is 0's based
         #expect(b.u8(46) == 0)                         // CATTR: SQ flow control stays on
         #expect(b.leU32(48) == 20_000)                 // KATO in ms
-        #expect(data.count == 4096)
+        #expect(data.count == 1024)                    // sizeof(struct nvmf_connect_data)
         #expect(data.sub(0, 16) == hostID)
         #expect(data.leU16(16) == 0xFFFF)
         #expect(String(decoding: data.sub(256, 21), as: UTF8.self) == "nqn.2026-08.test:disk")
