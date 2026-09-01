@@ -36,6 +36,15 @@ let package = Package(
             dependencies: ["CCRC32C"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // NVMe/TCP initiator engine, a sibling of iSCSIKit: PDU codec, capsules,
+        // controller/queue actors, block device. Depends on iSCSIKit for the
+        // transport, CRC32C, deadline, session policy and BlockDeviceBackend
+        // seam — nothing iSCSI-specific — so no shared file had to move.
+        .target(
+            name: "NVMeKit",
+            dependencies: ["iSCSIKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         // Scriptable iSCSI target used by integration tests (and runnable standalone).
         .target(
             name: "MockTarget",
@@ -87,12 +96,17 @@ let package = Package(
         // scripts/fuzz.sh rebuilds it with -sanitize=fuzzer,address.
         .executableTarget(
             name: "pdu-fuzz",
-            dependencies: ["iSCSIKit"],
+            dependencies: ["iSCSIKit", "NVMeKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
             name: "iSCSIKitTests",
             dependencies: ["iSCSIKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "NVMeKitTests",
+            dependencies: ["NVMeKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
