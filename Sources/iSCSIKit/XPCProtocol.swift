@@ -128,7 +128,14 @@ import Foundation
     func discoverTargets(host: String, port: NSNumber, chapUser: String?,
                          chapSecret: String?, reply: @escaping (Data?, Error?) -> Void)
 
-    /// REPORT LUNS against an established session. Reply: JSON `[LUNInfo]`.
+    /// NVMe/TCP discovery: read the discovery log page at this portal. Reply:
+    /// JSON `[DiscoveredTargetInfo]`, `targetIQN` carrying each subsystem
+    /// NQN. Its own method rather than a flag on `discoverTargets`: discovery
+    /// happens before there is a name to tell the protocols apart by.
+    func discoverSubsystems(host: String, port: NSNumber, reply: @escaping (Data?, Error?) -> Void)
+
+    /// REPORT LUNS, or for an NVMe session the active namespace list, against
+    /// an established session. Reply: JSON `[LUNInfo]` (`lun` = NSID).
     func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void)
 
     /// Every live session with its negotiated parameters, recovery count and

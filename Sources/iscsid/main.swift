@@ -29,15 +29,20 @@ if let raw = ProcessInfo.processInfo.environment["ISCSI_TASK_TIMEOUT_SEC"], let 
     policy.taskTimeout = seconds > 0 ? .seconds(seconds) : nil
 }
 
+// The NVMe host identity is derived from the platform UUID: nothing to
+// persist, nothing removeAllData can lose, nothing a hostname change moves.
+let nvmeHost = HostIdentity.nvmeHost()
+
 let core = DaemonCore(
     initiatorName: initiatorName,
     writeThrough: writeThrough,
-    policy: policy
+    policy: policy,
+    hostIdentity: nvmeHost
 ) { host, port in
     try await NetworkTransport.connect(host: host, port: port)
 }
 
-let delegate = ISCSIListenerDelegate(core: core)
+let delegate = ISCSIListenerDelegate(core: core, hostNQN: nvmeHost.nqn)
 let listener = NSXPCListener(machServiceName: iscsiDaemonServiceName)
 listener.delegate = delegate
 listener.resume()
@@ -49,6 +54,7 @@ let toLabel = policy.taskTimeout.map { "\($0)" } ?? "none"
 var banner = "iscsid: listening on " + iscsiDaemonServiceName
 banner += " (writeThrough=" + wtLabel + ", taskTimeout=" + toLabel + ")"
 DaemonLog.lifecycle(banner)
+DaemonLog.lifecycle("iscsid: initiator " + initiatorName + ", NVMe host " + nvmeHost.nqn)
 dispatchMain()
 #else
 FileHandle.standardError.write(Data("iscsid requires macOS\n".utf8))  // DaemonLog is macOS-only

@@ -1,13 +1,16 @@
 import Foundation
+import NVMeKit
 import iSCSIKit
 
 /// The daemon's session registry and block-I/O engine, independent of the XPC
 /// transport so it can be unit-tested directly. Each session handle maps to a
-/// live ISCSISession + ISCSIBlockDevice.
+/// live session (iSCSI or NVMe/TCP) and the block device over it. Which
+/// protocol a login speaks is decided in exactly one place, `login`, from
+/// the target name's prefix.
 public actor DaemonCore {
     struct SessionEntry {
-        let session: ISCSISession
-        let device: ISCSIBlockDevice
+        let session: any FabricSession
+        let device: any BlockDeviceBackend
         let targetIQN: String
         let lun: UInt64
         let flushPolicy: FlushPolicy
@@ -26,25 +29,34 @@ public actor DaemonCore {
     private var sessions: [String: SessionEntry] = [:]
     private var handleCounter: UInt64 = 0
     private let initiatorName: String
+    /// The NVMe host NQN and HOSTID presented in every Connect.
+    private let hostIdentity: NVMeHostIdentity
     /// How to build a transport to a portal. Injected so tests can use
-    /// MemoryPipe and production uses NetworkTransport.
+    /// MemoryPipe and production uses NetworkTransport. NVMe calls it twice
+    /// per attach (admin queue, I/O queue) and twice per recovery.
     private let transportFactory: @Sendable (String, UInt16) async throws -> any ConnectionTransport
     /// Whether writes carry FUA. See the note at the call site in `login`.
     private let writeThrough: Bool
-    /// Keepalive cadence, recovery backoff, and the per-task deadline.
+    /// Keepalive cadence, recovery backoff, and the per-task deadline. One
+    /// policy for both protocols: NVMe's Keep Alive runs on `nopInterval`.
     private let policy: SessionPolicy
 
     public init(
         initiatorName: String,
         writeThrough: Bool = true,
         policy: SessionPolicy = SessionPolicy(),
+        hostIdentity: NVMeHostIdentity? = nil,
         transportFactory: @escaping @Sendable (String, UInt16) async throws -> any ConnectionTransport
     ) {
         self.initiatorName = initiatorName
+        self.hostIdentity = hostIdentity ?? HostIdentity.nvmeHost()
         self.writeThrough = writeThrough
         self.policy = policy
         self.transportFactory = transportFactory
     }
+
+    /// The host NQN this daemon presents, for the app to show.
+    public var hostNQN: String { hostIdentity.nqn }
 
     /// iSCSIKit narrates the login exchange through a closure rather than a
     /// logger of its own — see `LoginConfig.trace`. This is where the daemon
@@ -61,6 +73,12 @@ public actor DaemonCore {
         )
     }
 
+    /// NVMe/TCP discovery at a portal: the discovery log page's subsystems.
+    public func discoverSubsystems(host: String, port: UInt16) async throws -> [DiscoveredTarget] {
+        let transport = try await transportFactory(host, port)
+        return try await NVMeDiscovery.getLogPage(transport: transport, host: hostIdentity)
+    }
+
     public func login(
         host: String,
         port: UInt16,
@@ -72,29 +90,23 @@ public actor DaemonCore {
         // A record's stored policy wins; nil is a record-less login
         // (iscsictl direct), which follows the ISCSI_WRITE_THROUGH default.
         let durability = flushPolicy ?? (writeThrough ? FlushPolicy.writeThrough : FlushPolicy.never)
-        var config = LoginConfig(
-            initiatorName: initiatorName,
-            sessionType: .normal,
-            targetName: targetIQN,
-            chap: chap,
-            trace: Self.authTrace
-        )
-        // Resolved credentials must be used: a nil `chap` downstream means
-        // "offer AuthMethod=None", so dropping them would silently downgrade
-        // the session rather than fail.
-        config.requiresAuthentication = chap != nil
-        config.desired.offerDigests = true
-        let factory = transportFactory
-        let session = ISCSISession(login: config, policy: policy) {
-            try await factory(host, port)
-        }
-        try await session.activate()
         // Write-through by default: FSKit delivers no barrier signal, so a
         // volatile target cache can lose an acknowledged write APFS believes
         // was barriered. FUA trades throughput for crash consistency; it is a
         // no-op when the target's cache is already disabled.
-        let device = ISCSIBlockDevice(session: session, lun: lun,
-                                      writeThrough: durability == .writeThrough)
+        let writeThrough = durability == .writeThrough
+
+        // The one place the protocol is decided: an NQN attaches over
+        // NVMe/TCP, anything else is iSCSI.
+        let session: any FabricSession
+        let device: any BlockDeviceBackend
+        if IQN.isNQN(targetIQN) {
+            (session, device) = try await attachNVMe(host: host, port: port, subsystemNQN: targetIQN,
+                                                     nsid: lun, chap: chap, writeThrough: writeThrough)
+        } else {
+            (session, device) = try await attachISCSI(host: host, port: port, targetIQN: targetIQN,
+                                                      lun: lun, chap: chap, writeThrough: writeThrough)
+        }
         _ = try await device.readCapacity() // fail fast if the LUN is bad
 
         // Log the cache policy once per session: WCE set without
@@ -113,7 +125,7 @@ public actor DaemonCore {
         case .interval(let seconds): policyLabel = "flush every \(seconds)s"
         case .never: policyLabel = "no periodic flush (cache declared non-volatile)"
         }
-        var line = "iscsid: " + targetIQN + " lun " + String(lun)
+        var line = "iscsid: " + targetIQN + (IQN.isNQN(targetIQN) ? " nsid " : " lun ") + String(lun)
         line += ": write cache " + cacheLabel + ", " + policyLabel
         DaemonLog.session(line)
 
@@ -150,6 +162,57 @@ public actor DaemonCore {
             }
         }
         return handle
+    }
+
+    private func attachISCSI(
+        host: String, port: UInt16, targetIQN: String, lun: UInt64,
+        chap: CHAP.Credentials?, writeThrough: Bool
+    ) async throws -> (any FabricSession, any BlockDeviceBackend) {
+        var config = LoginConfig(
+            initiatorName: initiatorName,
+            sessionType: .normal,
+            targetName: targetIQN,
+            chap: chap,
+            trace: Self.authTrace
+        )
+        // Resolved credentials must be used: a nil `chap` downstream means
+        // "offer AuthMethod=None", so dropping them would silently downgrade
+        // the session rather than fail.
+        config.requiresAuthentication = chap != nil
+        config.desired.offerDigests = true
+        let factory = transportFactory
+        let session = ISCSISession(login: config, policy: policy) {
+            try await factory(host, port)
+        }
+        try await session.activate()
+        let device = ISCSIBlockDevice(session: session, lun: lun, writeThrough: writeThrough)
+        return (ISCSIFabricSession(session: session), device)
+    }
+
+    private func attachNVMe(
+        host: String, port: UInt16, subsystemNQN: String, nsid: UInt64,
+        chap: CHAP.Credentials?, writeThrough: Bool
+    ) async throws -> (any FabricSession, any BlockDeviceBackend) {
+        // NSIDs are 32-bit; a larger value is a bad record, not a wire
+        // request, and 0xFFFFFFFF clamped from it would mean "every namespace".
+        guard let namespace = UInt32(exactly: nsid) else {
+            throw BlockDeviceError.nvmeStatus(sct: 0, sc: 0x0B, opcode: NVMeOpcode.Admin.identify)
+        }
+        if chap != nil {
+            // There is no CHAP on NVMe-oF; the editor never stores one for an
+            // NQN, so this is a hand-edited record. Say so rather than fail.
+            DaemonLog.auth("\(subsystemNQN): ignoring CHAP credentials — access to an NVMe "
+                           + "subsystem is by host NQN (\(hostIdentity.nqn)), not CHAP")
+        }
+        var config = NVMeControllerConfig(host: hostIdentity, subsystemNQN: subsystemNQN)
+        config.requestDigests = true
+        let factory = transportFactory
+        let controller = NVMeController(config: config, policy: policy) {
+            try await factory(host, port)
+        }
+        try await controller.activate()
+        let device = NVMeBlockDevice(controller: controller, nsid: namespace, writeThrough: writeThrough)
+        return (NVMeFabricSession(controller: controller), device)
     }
 
     /// One tick of an `.interval` session's timer: SYNCHRONIZE CACHE, but only
@@ -222,7 +285,7 @@ public actor DaemonCore {
             let blockSize = await entry.device.blockSize
             let blockCount = await entry.device.blockCount
             let recoveries = await entry.session.recoveryCount
-            let negotiated = await entry.session.parameters?.displayPairs ?? [:]
+            let negotiated = await entry.session.displayPairs
             out.append(SessionInfo(
                 handle: handle,
                 targetIQN: entry.targetIQN,
@@ -238,28 +301,11 @@ public actor DaemonCore {
         return out.sorted { $0.handle < $1.handle }
     }
 
-    /// REPORT LUNS against an established session, for the GUI's LUN picker.
+    /// REPORT LUNS (or the active namespace list) against an established
+    /// session, for the GUI's LUN picker.
     public func reportLUNs(_ handle: String) async throws -> [LUNInfo] {
         guard let entry = sessions[handle] else { throw SessionError.notActive }
-        // LUN 0: REPORT LUNS is answered by the target, and LUN 0 is the one
-        // guaranteed to exist.
-        let result = try await entry.session.executeChecked(
-            SCSITask(lun: 0, cdb: CDB.reportLuns(), direction: .read(expectedLength: 1024)))
-
-        // SPC LUN list: 4-byte list length (in bytes), 4 reserved, then one
-        // 8-byte LUN per entry.
-        let data = result.data
-        guard data.count >= 8 else { return [] }
-        let listLength = Int(data.beU32(0))
-        var luns: [LUNInfo] = []
-        var offset = 8
-        while offset + 8 <= min(data.count, 8 + listLength) {
-            if let lun = Self.lunNumber(fromReportLUNsEntry: Data(data.sub(offset, 8))) {
-                luns.append(LUNInfo(lun: lun))
-            }
-            offset += 8
-        }
-        return luns
+        return try await entry.session.listUnits()
     }
 
     /// Decode one 8-byte REPORT LUNS entry (SAM-2 first-level field):
@@ -283,7 +329,7 @@ public actor DaemonCore {
         Array(sessions.keys).sorted()
     }
 
-    private func device(_ handle: String) throws -> ISCSIBlockDevice {
+    private func device(_ handle: String) throws -> any BlockDeviceBackend {
         guard let entry = sessions[handle] else { throw BlockDeviceError.notReady }
         return entry.device
     }

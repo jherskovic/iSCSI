@@ -97,6 +97,10 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     func setMutualCHAPSecret(targetID: String, secret: String, reply: @escaping (Error?) -> Void) { reply(nil) }
     func deleteMutualCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void) { reply(nil) }
     func hasMutualCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void) { reply(false) }
+    func discoverSubsystems(host: String, port: NSNumber, reply: @escaping (Data?, Error?) -> Void) {
+        reply(nil, nil)
+    }
+
     func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func removeAllData(reply: @escaping (Error?) -> Void) { reply(nil) }
