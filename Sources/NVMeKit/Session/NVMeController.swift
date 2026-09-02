@@ -34,6 +34,9 @@ public actor NVMeController {
     /// C2HData for the whole transfer, so this bounds the transfer size.
     static let ioPDULimit = (1 << 20) + 4096
     static let adminPDULimit = 64 << 10
+    /// The largest single Read a block device may issue: what fits in one
+    /// inbound PDU with room for the header and digests.
+    public static let maxIOTransferBytes = ioPDULimit - 4096
 
     private let makeTransport: TransportFactory
     private let config: NVMeControllerConfig

@@ -74,6 +74,23 @@ struct NVMeHappyPathTests {
         await fleet.shutdown()
     }
 
+    /// nvmet answers a read with a single C2HData for the whole transfer, so
+    /// a device cap above the queue's inbound PDU limit would make every
+    /// large read a protocol error. The device clamps the cap instead.
+    @Test func aTransferCapAboveThePDULimitIsClamped() async throws {
+        var config = MockNVMeConfig()
+        config.c2hChunkBytes = 4 << 20          // the whole read in one PDU, as nvmet does
+        let disk = RAMDisk(blockSize: 4096, capacityBlocks: 2048)
+        let fleet = NVMeFleet(config: config, disk: disk)
+        let controller = try await activatedController(
+            fleet: fleet, policy: testPolicy(retries: 0, recoveryAttempts: 1))
+        let device = NVMeBlockDevice(controller: controller, nsid: 1, maxTransferBytes: 4 << 20)
+        let payload = Data((0 ..< (2 << 20)).map { UInt8(($0 &* 7) & 0xFF) })
+        try await device.write(offset: 0, data: payload)
+        #expect(try await device.read(offset: 0, length: 2 << 20) == payload)
+        await fleet.shutdown()
+    }
+
     @Test func successFlagOnC2HDataCompletesTheRead() async throws {
         var config = MockNVMeConfig()
         config.emitSuccessFlag = true

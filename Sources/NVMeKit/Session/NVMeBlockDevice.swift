@@ -12,8 +12,11 @@ public actor NVMeBlockDevice: BlockDeviceBackend {
     private var capacityKnown = false
 
     /// Cap per-command transfer, further clamped to MDTS. 256 KiB for the
-    /// same reasons as iSCSI (docs/queue-depth.md). NLB is 16-bit, which
-    /// this never approaches at any block size in use.
+    /// same reasons as iSCSI (docs/queue-depth.md), and never above what one
+    /// inbound PDU can carry: nvmet answers a read with a single C2HData for
+    /// the whole transfer, so a larger cap would make every large read a
+    /// protocol error. NLB is 16-bit, which this never approaches at any
+    /// block size in use.
     private let requestedMaxTransferBytes: Int
 
     /// When true, every Write carries Force Unit Access. Backend A gets no
@@ -25,7 +28,7 @@ public actor NVMeBlockDevice: BlockDeviceBackend {
                 writeThrough: Bool = false) {
         self.controller = controller
         self.nsid = nsid
-        self.requestedMaxTransferBytes = maxTransferBytes
+        self.requestedMaxTransferBytes = min(maxTransferBytes, NVMeController.maxIOTransferBytes)
         self.writeThrough = writeThrough
     }
 
