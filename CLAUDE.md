@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A user-space iSCSI initiator for macOS 26/27 on Apple Silicon. macOS ships no
-initiator and the old open-source option is a dead kext, so the iSCSI/TCP
-protocol engine lives in a Swift daemon and something else turns the LUN into a
-block device. Two things follow from that split and explain most of the code:
+A user-space iSCSI and NVMe/TCP initiator for macOS 26/27 on Apple Silicon.
+macOS ships no initiator and the old open-source option is a dead kext, so the
+iSCSI/TCP and NVMe/TCP protocol engines live in a Swift daemon and something
+else turns the LUN (or namespace) into a block device. Two things follow from that split and explain most of the code:
 
 - **DriverKit extensions cannot open sockets** (no BSD sockets, no
   Network.framework, any DriverKit SDK through 25.x). That is why there is a
@@ -23,6 +23,7 @@ swift build
 swift test                                # both test targets
 swift test --filter iSCSIKitTests         # one target
 swift test --filter Digest                # regex over suite and test names
+swift test --filter NVMe                  # everything NVMe/TCP, unit and integration
 swift test --no-parallel                  # what CI runs
 ```
 
@@ -78,8 +79,16 @@ swift run iscsi-target-sim --port 3260 --capacity-mib 1024 &
 swift run iscsictl discover 127.0.0.1
 swift run iscsictl verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --write  # DESTRUCTIVE
 printf 'crash\n' | nc 127.0.0.1 3262      # target power loss with a dirty cache
-scripts/fuzz.sh 60                        # ASan fuzz of the PDU decoder
+scripts/fuzz.sh 60                        # ASan fuzz of both PDU decoders
+
+swift run iscsi-target-sim --nvme --capacity-mib 1024 &        # NVMe/TCP on 4420
+swift run iscsictl nvme discover 127.0.0.1
+swift run iscsictl nvme verify 127.0.0.1 --subsystem nqn.2026-08.me.herko.sim:disk0 --write  # DESTRUCTIVE
 ```
+
+Against the NAS (TrueNAS SCALE 25.10, `nvmet` on 4420), `iscsictl nvme
+discover 192.168.20.1` is read-only; `verify --write` is not. The host NQN
+both commands print is what goes in the subsystem's allowed-hosts list.
 
 ### Releasing
 
@@ -109,6 +118,8 @@ shipping one.
 iscsictl / app / FSKit extension ──XPC──► iscsid (LaunchDaemon)
                                             │ iSCSIKit: PDU codec, negotiation,
                                             │ CHAP, CRC32C, session engine
+                                            │ NVMeKit: NVMe/TCP PDUs, capsules,
+                                            │ controller + queue actors
                                             └─ Network.framework ──TCP──► target
 LUN ──► FSKit file ──hdiutil CRawDiskImage──► /dev/diskN        (Backend A, ships)
 LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Backend B, parked)
@@ -118,6 +129,16 @@ LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Bac
   sockets, no filesystem, no policy — that is what makes every path unit-testable
   and fuzzable, and what lets `MemoryPipe` stand in for TCP in tests. Keep new
   I/O out of it.
+- **`Sources/NVMeKit` is the NVMe/TCP twin of iSCSIKit** under the same rules,
+  depending on iSCSIKit only for the transport, CRC32C, `withDeadline`, the
+  session policy and `BlockDeviceBackend`. The daemon tells the protocols
+  apart by the target name's prefix — `nqn.` is NVMe — in `DaemonCore.login`
+  and nowhere else; `TargetRecord.targetIQN` carries the NQN and `lun` the
+  namespace ID, with **no stored discriminator** (a new non-optional key
+  would make every existing `targets.json` undecodable). The host NQN is
+  derived from the platform UUID in `HostIdentity`; **never change that
+  derivation** — TrueNAS allowed-hosts lists key on it, exactly the way the
+  initiator-name change once broke the iSCSI ACLs.
 - **`iSCSIDaemon` is the daemon core as a library**; `iscsid` is a thin
   XPC/launchd launcher on top, so the interesting logic is testable.
 - **`iSCSIVolume` is the FSKit extension's data path without the FSKit** —

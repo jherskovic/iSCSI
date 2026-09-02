@@ -3,6 +3,7 @@
 //  The list people spend their time in: one row per target, attach or detach.
 //
 
+import AppKit
 import SwiftUI
 import iSCSIKit
 
@@ -65,8 +66,8 @@ struct TargetsView: View {
             Label("No Targets", systemImage: "externaldrive.badge.plus")
         } description: {
             Text(model.isReady
-                 ? "Add the address of an iSCSI target, or use Discover to find "
-                 + "what a storage device is offering."
+                 ? "Add the address of an iSCSI or NVMe/TCP target, or use Discover "
+                 + "to find what a storage device is offering."
                  : "Finish setup first — the background service and filesystem "
                  + "extension have to be running before a target can be attached.")
         }
@@ -129,7 +130,8 @@ private struct TargetRow: View {
             return "\(row.target.host) — "
                  + ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
         }
-        return "\(row.target.host):\(row.target.port) · LUN \(row.target.lun)"
+        return "\(row.target.host):\(row.target.port) · "
+             + "\(row.target.isNVMe ? "NSID" : "LUN") \(row.target.lun)"
     }
 }
 
@@ -151,6 +153,9 @@ struct TargetEditor: View {
     @State private var mutualChapSecret: String
     @State private var hasStoredSecret = false
     @State private var hasStoredMutualSecret = false
+    /// This Mac's NVMe host NQN, from the daemon, for the user to copy into
+    /// a subsystem's allowed hosts. nil until fetched, or on an old daemon.
+    @State private var hostNQN: String?
 
     /// nil = FUA on every write, N > 0 = flush every N seconds, 0 = never.
     /// Mirrors `TargetRecord.flushIntervalSeconds` exactly.
@@ -182,29 +187,83 @@ struct TargetEditor: View {
         _flushInterval = State(initialValue: target?.flushIntervalSeconds)
     }
 
+    /// The protocol is the name's prefix and nothing else: `nqn.` is
+    /// NVMe/TCP. The picker is a view onto that fact, not a second field —
+    /// flipping it rewrites the prefix, and only touches the port and unit
+    /// number when they still hold the other protocol's defaults.
+    private var isNVMe: Bool { IQN.isNQN(targetIQN) }
+
+    private var protocolPicker: Binding<Bool> {
+        Binding(get: { isNVMe }, set: { nvme in
+            guard nvme != isNVMe else { return }
+            let trimmed = targetIQN.trimmingCharacters(in: .whitespaces)
+            if nvme {
+                targetIQN = trimmed.hasPrefix("iqn.") || trimmed.isEmpty ? "nqn." : trimmed
+                if port == "3260" { port = "4420" }
+                if lun == "0" { lun = "1" }
+            } else {
+                targetIQN = trimmed == "nqn." ? "" : trimmed
+                if port == "4420" { port = "3260" }
+                if lun == "1" { lun = "0" }
+            }
+        })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
                 Section {
+                    Picker("Protocol", selection: protocolPicker) {
+                        Text("iSCSI").tag(false)
+                        Text("NVMe/TCP").tag(true)
+                    }
+                    .pickerStyle(.segmented)
                     TextField("Name", text: $displayName, prompt: Text("Photos archive"))
                     TextField("Address", text: $host, prompt: Text("nas.local"))
                     TextField("Port", text: $port)
-                    TextField("Target", text: $targetIQN,
-                              prompt: Text("iqn.2026-08.com.example:disk0"))
-                    TextField("LUN", text: $lun)
+                    TextField(isNVMe ? "Subsystem NQN" : "Target", text: $targetIQN,
+                              prompt: Text(isNVMe ? "nqn.2011-06.com.truenas:uuid:…:disk0"
+                                                  : "iqn.2026-08.com.example:disk0"))
+                    TextField(isNVMe ? "Namespace ID" : "LUN", text: $lun)
                 }
 
-                Section("Authentication") {
-                    TextField("CHAP user", text: $chapUser)
-                    SecureField(hasStoredSecret ? "Saved — type to replace" : "CHAP secret",
-                                text: $chapSecret)
-                    // Enforced, not just advised. RFC 7143 §12.1.1 sets 12 bytes
-                    // as the floor, and the error a target returns for a short
-                    // secret says only "authentication failure", which sends
-                    // people looking in the wrong place.
-                    Text("Secrets must be at least 12 characters.")
-                        .font(.caption)
-                        .foregroundStyle(secretTooShort ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                if isNVMe {
+                    Section("Access") {
+                        // NVMe-oF has no CHAP. The subsystem decides by host
+                        // NQN, so the one thing to show here is ours.
+                        HStack {
+                            Text("This Mac's host NQN")
+                            Spacer()
+                            Text(hostNQN ?? "—")
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .lineLimit(1).truncationMode(.middle)
+                            if let hostNQN {
+                                Button("Copy") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(hostNQN, forType: .string)
+                                }
+                                .buttonStyle(.link)
+                            }
+                        }
+                        Text("Add it to the subsystem's allowed hosts on the storage device, "
+                             + "or allow any host there. Namespace IDs start at 1.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Section("Authentication") {
+                        TextField("CHAP user", text: $chapUser)
+                        SecureField(hasStoredSecret ? "Saved — type to replace" : "CHAP secret",
+                                    text: $chapSecret)
+                        // Enforced, not just advised. RFC 7143 §12.1.1 sets 12 bytes
+                        // as the floor, and the error a target returns for a short
+                        // secret says only "authentication failure", which sends
+                        // people looking in the wrong place.
+                        Text("Secrets must be at least 12 characters.")
+                            .font(.caption)
+                            .foregroundStyle(secretTooShort ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    }
                 }
 
                 // Hidden while CHAP.mutualIsOffered is false. The fields are
@@ -212,7 +271,7 @@ struct TargetEditor: View {
                 // exchange is correct on the wire and the only target available
                 // to test against will not answer a challenge. See the note on
                 // CHAP.mutualIsOffered.
-                if CHAP.mutualIsOffered {
+                if CHAP.mutualIsOffered && !isNVMe {
                 Section("Verify the target") {
                     TextField("Mutual CHAP user", text: $mutualChapUser,
                               prompt: Text("optional"))
@@ -291,6 +350,7 @@ struct TargetEditor: View {
                 hasStoredMutualSecret =
                     (try? await DaemonConnection.hasMutualCHAPSecret(targetID: id)) ?? false
             }
+            hostNQN = try? await DaemonConnection.info().hostNQN
         }
     }
 
@@ -346,11 +406,19 @@ struct TargetEditor: View {
             && mutualChapSecret.isEmpty && !hasStoredMutualSecret
     }
 
+    /// An NQN that is only its prefix, or an NVMe namespace 0 (reserved),
+    /// would fail at attach with an error that points elsewhere.
+    private var nvmeIncomplete: Bool {
+        guard isNVMe else { return false }
+        return targetIQN.trimmingCharacters(in: .whitespaces) == "nqn." || UInt64(lun) == 0
+    }
+
     private var isValid: Bool {
         !displayName.trimmingCharacters(in: .whitespaces).isEmpty
             && !host.trimmingCharacters(in: .whitespaces).isEmpty
             && !targetIQN.trimmingCharacters(in: .whitespaces).isEmpty
             && UInt16(port) != nil && UInt64(lun) != nil
+            && !nvmeIncomplete
             && !secretTooShort && !credentialIncomplete && !mutualHalfConfigured
     }
 
@@ -358,15 +426,18 @@ struct TargetEditor: View {
         // The id is stable for the life of the target: the keychain item and the
         // mount point are both derived from it, so regenerating it on edit would
         // orphan the secret and strand the mount.
+        // NVMe records carry no CHAP at all — nilled, not merely hidden, so a
+        // record flipped from iSCSI does not keep a user the daemon would
+        // then find no secret for.
         let record = TargetRecord(
             id: existing?.id ?? UUID().uuidString,
             displayName: displayName.trimmingCharacters(in: .whitespaces),
             host: host.trimmingCharacters(in: .whitespaces),
-            port: UInt16(port) ?? 3260,
+            port: UInt16(port) ?? (isNVMe ? 4420 : 3260),
             targetIQN: targetIQN.trimmingCharacters(in: .whitespaces),
-            lun: UInt64(lun) ?? 0,
-            chapUser: chapUser.isEmpty ? nil : chapUser,
-            mutualChapUser: mutualChapUser.isEmpty ? nil : mutualChapUser,
+            lun: UInt64(lun) ?? (isNVMe ? 1 : 0),
+            chapUser: (isNVMe || chapUser.isEmpty) ? nil : chapUser,
+            mutualChapUser: (isNVMe || mutualChapUser.isEmpty) ? nil : mutualChapUser,
             autoAttach: existing?.autoAttach ?? false,
             flushIntervalSeconds: flushInterval,
             // No UI: readahead depth adapts. An override hand-written into
@@ -376,8 +447,8 @@ struct TargetEditor: View {
         LastPortal.remember(host: record.host, port: record.port)
         Task {
             await model.save(record,
-                             secret: chapSecret.isEmpty ? nil : chapSecret,
-                             mutualSecret: mutualChapSecret.isEmpty ? nil : mutualChapSecret)
+                             secret: (isNVMe || chapSecret.isEmpty) ? nil : chapSecret,
+                             mutualSecret: (isNVMe || mutualChapSecret.isEmpty) ? nil : mutualChapSecret)
             dismiss()
         }
     }
