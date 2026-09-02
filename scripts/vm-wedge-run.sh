@@ -85,12 +85,19 @@ rc=$?
 sed 's/^/    /' "$LOGS/wedge-newfs.out"
 [ "$rc" -eq 0 ] || { say "NEWFS-FAILED rc=$rc"; exit 1; }
 say "newfs ok"
-sleep 3
 
+# POLL, do not sleep a fixed interval.  The synthesized APFS container can take
+# well over 3s to appear on this build; a fixed `sleep 3` reported NO-VOLDEV on
+# a run whose volume showed up moments later, costing the whole run.
 if [ "$FS" = "exfat" ]; then
   VOLDEV="/dev/$DISK"
 else
-  VOLDEV=$(diskutil info scratchTest 2>/dev/null | awk '/Device Node:/{print $3}')
+  VOLDEV=""
+  for _ in $(seq 1 30); do
+    VOLDEV=$(diskutil info scratchTest 2>/dev/null | awk '/Device Node:/{print $3}')
+    [ -n "$VOLDEV" ] && break
+    sleep 1
+  done
 fi
 [ -z "$VOLDEV" ] && { say NO-VOLDEV; diskutil list | sed 's/^/    /'; exit 1; }
 say "volume device: $VOLDEV"

@@ -547,6 +547,87 @@ beta, and the API offers nothing new to work with.
   `kmutil load -b com.apple.iokit.IOSCSIParallelFamily` is still required
   each boot.
 
+## macOS 27.0 26A5425a: still wedges, and two things changed (2026-09-02)
+
+Re-run on a NEWER 27.0 build than the 2026-08-19 session — **26A5425a**
+(xnu-13432.1.9), on a fresh SIP-off UTM VM at 192.168.0.47, `boot-args=
+amfi_get_out_of_my_way=0x1`, `systemextensionsctl developer` **off**. Dext
+**build 34**, wedge leg (`ISCSI_DEXT_SCRATCH_DISK 1`, `maxSegmentCount = 1`,
+`maxTransferSize = 1 × 64 KiB`), and this time compiled against the
+**DriverKit 27.0 SDK** rather than 25.5. The scratch disk presented exactly as
+before: 536,870,912 bytes, 512-byte blocks, Fixed, "iSCSI Virtual".
+
+**The defect is unchanged.** 33 zero-size `IOBreaker::getBreakSize` returns —
+the same count as 26A5416b — with an argument tuple identical to every prior
+run:
+
+    maxBlkR=65535 maxBlkW=0 maxByteR=1 maxByteW=65536
+    maxSegR=1 maxSegW=0 maxSegByte=512
+
+and the same caller stack (`getNextStage` ← `AsyncReadWriteComplete` ←
+`AsyncReadWriteCompletion` ← … ← `UserCompleteParallelTask`). Every probe
+blocked: first access, raw read of `/dev/rdisk5`, `getattr`, `dkflush --write`.
+
+| | 26.6.2 | 27.0 26A5416b | 27.0 **26A5425a** |
+|---|---|---|---|
+| zero-size breaks | 35 | 33 | **33** |
+| argument tuple | — | same | **same** |
+| `newfs_apfs` | succeeds | succeeds | **succeeds** |
+| `mount_apfs` | succeeds | succeeds | **succeeds** |
+| first access / raw read | block | block | **block** |
+| `dkflush --write` | — | — | **blocks** |
+
+### Two deltas worth recording
+
+**1. The breaks fire during `newfs`, not the mount checkpoint — and `newfs`
+still reports success.** Timeline from the run:
+
+    14:11:48  newfs starts
+    14:11:50  all 33 zero-size breaks, in one second
+    14:11:51  newfs reports ok
+    14:12:10  synthesized container appears (19 s later)
+    14:12:10  mount ok
+    14:12:10  first probe blocks
+
+Parts 2 and 3 attribute the zero-breaks to the mount checkpoint. On this build
+they precede it. The 19-second gap between `newfs` returning and the volume
+device appearing is itself new: `vm-wedge-run.sh`'s fixed `sleep 3` bailed with
+`NO-VOLDEV` on a first attempt whose volume showed up moments later, costing a
+run. The script now polls (committed alongside this).
+
+**2. The "controller is provably healthy" evidence can no longer be
+collected.** `ukopen IOHIDSystem` — the unrelated-service control that exists
+precisely to prove IOKit is live while storage is wedged — was **already
+blocked at the FIRST control set**, before anything touched the mounted volume,
+and stayed blocked at mid and late. So did `ukopen iSCSIDext`. On this build the
+whole machine degrades too fast for any control to survive, which means the
+Feedback draft's "a user-client open, a 16 MiB map and an `ExternalMethod` each
+return in 0 ms while wedged" claim **cannot be reproduced here** and must stay
+scoped to the builds where it was measured. Treat that section of the FB draft
+as historical, not current.
+
+### Deployment findings for 26A5425a
+
+- **`IOSCSIParallelFamily` now loads at boot on its own.** `kmutil load -b
+  com.apple.iokit.IOSCSIParallelFamily` was required on 26.x and on 26A5416b;
+  on this build the disk appeared with no such call.
+- **Xcode refuses to sign any of the three targets** — the DriverKit family,
+  FSKit Module and System Extension capabilities are approval-gated and this
+  team does not hold them, so provisioning fails before codesign runs. Build
+  with `CODE_SIGNING_ALLOWED=NO … ENABLE_DEBUG_DYLIB=NO` and codesign
+  inside-out by hand with an Apple Development identity, passing each target's
+  entitlements. SIP off + the AMFI boot-arg means they are never validated.
+- **Developer mode off makes the FIRST activation interactive** (System
+  Settings → Login Items & Extensions → Driver Extensions; it cannot be done
+  over ssh). The 33 → 34 *upgrade* was auto-approved with no interaction.
+- **dtrace over ssh needs `ssh -tt`.** Without a pty its stdout is
+  block-buffered and nothing crosses the wire — indistinguishable from the
+  tracer failing to arm, and it cost a whole run. This matters doubly because
+  ssh output is one of only two channels that survive the wedge.
+
+Raw artifacts (trace, run log) kept off-repo at
+`~/Library/Logs/iSCSI-wedge-26A5425a/` on the development host.
+
 ## Still untested
 
 - Whether the *pageout swallowing* specifically (as opposed to the >16 KiB
