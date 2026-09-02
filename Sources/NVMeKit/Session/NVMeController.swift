@@ -298,10 +298,18 @@ public actor NVMeController {
             try await existing.value
             return
         }
-        onEvent?(.connectionLost(reason: error.map { "\($0)" } ?? "no active controller"))
-        await dropQueues()
-
+        // `recoveryTask` MUST be assigned before the first suspension point.
+        // Actor isolation does not span an `await`: with the teardown out here,
+        // a second caller reaching the guard while this one was inside
+        // `dropQueues()` also saw nil, and both rebuilt the controller —
+        // double-counting the recovery and tearing down a pair the other was
+        // bringing up. Everything that suspends therefore lives inside the
+        // task, which is published synchronously below.
+        // Observed in production 2026-09-02; see docs/resilience.md.
         let task = Task { [policy, onEvent] in
+            onEvent?(.connectionLost(reason: error.map { "\($0)" } ?? "no active controller"))
+            await self.dropQueues()
+
             var lastError = error.map { "\($0)" } ?? "initial"
             for attempt in 0 ..< policy.maxRecoveryAttempts {
                 onEvent?(.recoveryAttempt(number: attempt + 1, of: policy.maxRecoveryAttempts))
