@@ -359,9 +359,14 @@ NVMe-oF support landed as the NVMe/TCP twin of the iSCSI engine
 digests, identify, namespace listing, reads at queue depth 8, writes by every
 path (in-capsule, R2T-solicited, a 1 MiB write pipelined as four commands),
 FUA and Flush with byte-exact readback, and Keep Alive carrying a session
-past KATO. Not yet exercised there: the app's attach (`nvme://` through
-FSKit) and a crash-consistency run through the app. What it deliberately
-does not do:
+past KATO. Then through the shipping stack on the SIP-off VM
+(`scripts/vm-nvme-verify.sh`): `mount -F` with an `nvme://` URL, `hdiutil`,
+APFS on the NAS namespace — integrity after a cache purge, fsync'd files,
+`verifyVolume` clean, the daemon logging `write cache ENABLED, write-through
+(FUA)` — and the crash-consistency pair against `iscsi-target-sim --nvme`:
+write-through lost 0 blocks and verified 32/32 files after the target's
+power cut; the no-flush control lost 9192 blocks and the volume with them.
+What it deliberately does not do:
 
 - **No in-band authentication.** NVMe 2.0's DH-HMAC-CHAP (TP 8006) is not
   implemented; a subsystem that demands it gets a clear error ("turn off host

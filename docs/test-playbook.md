@@ -114,7 +114,17 @@ and the XPC surface over an NVMe record.
 Layer 3: `swift run iscsictl nvme discover <nas>` then `nvme verify
 --subsystem <nqn> --nsid 1 [--write]` — read-only without `--write`. The
 simulator is `iscsi-target-sim --nvme`; the control socket and `crash` are
-shared, so the FUA proof is the same command as for iSCSI.
+shared, so the FUA proof is the same command as for iSCSI. The whole app
+path without the GUI is `scripts/vm-nvme-verify.sh` on the SIP-off VM: the
+NAS namespace through `mount -F`/`hdiutil`/APFS, then both crash arms
+against the simulator (first run 2026-09-01, all as expected).
+
+One deploy gotcha it depends on: replacing the app bundle in place (rsync
+over `/Applications/iSCSI Initiator.app`) keeps the `pluginkit` row, but
+`mount -F` then fails with "Unable to invoke task" and fskitd logs "No
+extension with fsShortName found" — the row still names the old appex's
+UUID. `pluginkit -a <appex>`, `pluginkit -e use -i me.herko.iSCSIInitiator.fsext`,
+then `sudo killall fskitd` brings it back without a reboot.
 
 ## Fuzzing
 
