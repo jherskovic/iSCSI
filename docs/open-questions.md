@@ -355,8 +355,13 @@ is wrong, and the death latch counts consecutive failures.
 
 NVMe-oF support landed as the NVMe/TCP twin of the iSCSI engine
 (`docs/architecture.md`, "NVMeKit"), verified against TrueNAS SCALE 25.10's
-`nvmet` from the test VM: discovery, connect with both digests, identify,
-namespace listing, reads. What it deliberately does not do:
+`nvmet` from the test VM with `iscsictl nvme`: discovery, connect with both
+digests, identify, namespace listing, reads at queue depth 8, writes by every
+path (in-capsule, R2T-solicited, a 1 MiB write pipelined as four commands),
+FUA and Flush with byte-exact readback, and Keep Alive carrying a session
+past KATO. Not yet exercised there: the app's attach (`nvme://` through
+FSKit) and a crash-consistency run through the app. What it deliberately
+does not do:
 
 - **No in-band authentication.** NVMe 2.0's DH-HMAC-CHAP (TP 8006) is not
   implemented; a subsystem that demands it gets a clear error ("turn off host
