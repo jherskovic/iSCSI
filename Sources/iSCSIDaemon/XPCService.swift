@@ -24,9 +24,14 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     /// consulted on every read/write, per-connection so contention is nil.
     private let owned = OSAllocatedUnfairLock(initialState: Set<String>())
 
-    public init(core: DaemonCore, targets: TargetStore = TargetStore()) {
+    /// The host NQN, held as a plain value so `daemonInfo` stays synchronous
+    /// and off the actor — it must answer even when the engine is wedged.
+    private let hostNQN: String?
+
+    public init(core: DaemonCore, targets: TargetStore = TargetStore(), hostNQN: String? = nil) {
         self.core = core
         self.targets = targets
+        self.hostNQN = hostNQN
     }
 
     /// Readahead budget per owned handle, resolved once at login (like
@@ -214,7 +219,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
             version: info?["CFBundleShortVersionString"] as? String ?? "dev",
             build: info?["CFBundleVersion"] as? String ?? "0",
             pid: ProcessInfo.processInfo.processIdentifier,
-            authorizationRelaxed: relaxed
+            authorizationRelaxed: relaxed,
+            hostNQN: hostNQN
         )
         do {
             reply(try JSONEncoder().encode(payload), nil)
@@ -353,6 +359,22 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
+    public func discoverSubsystems(host: String, port: NSNumber, reply: @escaping (Data?, Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            do {
+                let found = try await core.discoverSubsystems(host: host, port: port.uint16Value)
+                let info = found.map {
+                    DiscoveredTargetInfo(targetIQN: $0.name, addresses: $0.addresses)
+                }
+                box.value(try JSONEncoder().encode(info), nil)
+            } catch {
+                box.value(nil, ISCSIError.nsError(from: error,
+                                                  context: "Discovering NVMe subsystems at \(host)"))
+            }
+        }
+    }
+
     public func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void) {
         if let denied = checkOwned(session) { reply(nil, denied); return }
         let box = SendableBox(reply)
@@ -427,9 +449,11 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 /// XPC listener delegate that hands each connection an ISCSIXPCService.
 public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let core: DaemonCore
+    private let hostNQN: String?
 
-    public init(core: DaemonCore) {
+    public init(core: DaemonCore, hostNQN: String? = nil) {
         self.core = core
+        self.hostNQN = hostNQN
     }
 
     public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
@@ -439,7 +463,7 @@ public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unch
 
         let iface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
         connection.exportedInterface = iface
-        connection.exportedObject = ISCSIXPCService(core: core)
+        connection.exportedObject = ISCSIXPCService(core: core, hostNQN: hostNQN)
         connection.resume()
         return true
     }

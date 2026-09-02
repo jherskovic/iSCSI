@@ -128,7 +128,12 @@ final class AttachmentManager: ObservableObject {
         // Idempotent: attaching something already attached should report the
         // existing volume, not fail or stack a second mount on the same path.
         if !Self.isMounted(hidden.path) {
-            let url = "iscsi://\(portal)/\(target.targetIQN)/\(target.lun)"
+            // The scheme names the protocol for anyone reading a mount table;
+            // the extension itself ignores it and the daemon decides from the
+            // name. `-t iSCSI` below is the FSKit module's short name, not a
+            // protocol, and stays.
+            let scheme = IQN.isNQN(target.targetIQN) ? "nvme" : "iscsi"
+            let url = "\(scheme)://\(portal)/\(target.targetIQN)/\(target.lun)"
             let result = try Self.run("/sbin/mount",
                                       ["-F", "-t", "iSCSI", url, hidden.path])
             if result.status != 0 {

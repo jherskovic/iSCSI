@@ -351,6 +351,56 @@ is wrong, and the death latch counts consecutive failures.
 
 ---
 
+## 10. NVMe/TCP: what was deferred (2026-09-01)
+
+NVMe-oF support landed as the NVMe/TCP twin of the iSCSI engine
+(`docs/architecture.md`, "NVMeKit"), verified against TrueNAS SCALE 25.10's
+`nvmet` from the test VM with `iscsictl nvme`: discovery, connect with both
+digests, identify, namespace listing, reads at queue depth 8, writes by every
+path (in-capsule, R2T-solicited, a 1 MiB write pipelined as four commands),
+FUA and Flush with byte-exact readback, and Keep Alive carrying a session
+past KATO. Then through the shipping stack on the SIP-off VM
+(`scripts/vm-nvme-verify.sh`): `mount -F` with an `nvme://` URL, `hdiutil`,
+APFS on the NAS namespace — integrity after a cache purge, fsync'd files,
+`verifyVolume` clean, the daemon logging `write cache ENABLED, write-through
+(FUA)` — and the crash-consistency pair against `iscsi-target-sim --nvme`:
+write-through lost 0 blocks and verified 32/32 files after the target's
+power cut; the no-flush control lost 9192 blocks and the volume with them.
+Then six hours of verified mixed I/O on that path (`docs/soak-nvme-2026-09-01.md`):
+3.5 M verified reads, 0 errors, 0 connection losses, memory flat.
+What it deliberately does not do:
+
+- **No in-band authentication.** NVMe 2.0's DH-HMAC-CHAP (TP 8006) is not
+  implemented; a subsystem that demands it gets a clear error ("turn off host
+  authentication for this subsystem"). Access control is the subsystem's
+  allowed-hosts list, keyed on the host NQN the app shows. Same threat model
+  the README states for iSCSI: a trusted segment or a tunnel. Unlike item 3b,
+  this door is real — NVMe/TCP has a standard TLS 1.3 profile (TP 8011) and
+  `nvmet` supports it — so both are worth doing when a target insists.
+- **One I/O queue.** More would need a connection and a CID space per queue.
+  Nothing measured yet says the single queue is the ceiling; the iSCSI side
+  is single-connection for the same reason and reaches line rate.
+- **No Abort.** `nvmet` does not implement Abort usefully, so a command that
+  outlives its deadline drops the queue pair and the next command rebuilds it
+  — the NVMe form of the iSCSI task-timeout policy.
+- **Discovery on the data port.** The IANA discovery port is 8009; TrueNAS
+  serves discovery on 4420 and leaves 8009 closed, so the app's default
+  follows TrueNAS. Ask the user for the port, as with iSCSI.
+- **Both queues go down together.** Losing either connection destroys the
+  controller. Reconnecting an I/O queue to a surviving admin queue would be
+  cheaper; it has not been needed.
+- **`nvmet`'s SUCCESS flag.** It sets SUCCESS on the last C2HData only when
+  the host disabled SQ flow control at Connect (CATTR), which this initiator
+  never does; the flag is still handled, and the mock can emit it.
+- **Untested against anything but `nvmet`.** As item 3 says of iSCSI. Other
+  targets may pad data (CPDA ≠ 0, refused here as Linux does), advertise
+  ICDOFF ≠ 0 (every write then goes by R2T), or set MDTS.
+- **Namespaces with per-block metadata** (LBAF with MS ≠ 0) are refused with
+  a geometry error; a zvol never has them.
+- **ANA / multipath** is ignored: one portal, one path.
+- **Host identity is the platform UUID's derivative.** A VM cloned with its
+  UUID presents the same host NQN. `removeAllData` does not touch it.
+
 ## A note on method
 
 Four things were got wrong during this work and three had the same cause:

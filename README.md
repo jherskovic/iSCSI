@@ -6,10 +6,10 @@
 [![tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jherskovic/iSCSI/badges/tests.json)](https://github.com/jherskovic/iSCSI/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jherskovic/iSCSI/badges/coverage.json)](https://github.com/jherskovic/iSCSI/actions/workflows/ci.yml)
 
-A modern iSCSI initiator for macOS 26/27 on Apple Silicon. macOS ships no
-initiator; the old open-source option is a dead kext. This project puts the
-iSCSI/TCP protocol engine in a user-space Swift daemon and presents the LUN as
-a real block device. The current FSKit/`hdiutil` backend in this project is a bit hacky,
+A modern iSCSI and NVMe/TCP initiator for macOS 26/27 on Apple Silicon. macOS
+ships no initiator for either; the old open-source iSCSI option is a dead kext.
+This project puts the iSCSI/TCP and NVMe/TCP protocol engines in a user-space
+Swift daemon and presents the LUN or namespace as a real block device. The current FSKit/`hdiutil` backend in this project is a bit hacky,
 but it works: you can mount LUNs as APFS, with the block device provided by Apple's
 DiskImages framework. A DriverKit virtual SCSI HBA is the eventual goal once Apple lifts
 some very real throughput limits (see `docs/architecture.md`).
@@ -266,11 +266,22 @@ Sources/
     XPCModels        Codable DTOs that cross as Data, not NSSecureCoding
     ISCSIError       one error domain; sense bytes and recovery text survive XPC
     MountpointTag    sha256(portal|target|lun) — a compatibility contract
-  MockTarget/        scriptable target: protocol engine, volatile write cache,
-                     TCP listener (drives both the tests and the simulator)
-  iscsi-target-sim/  standalone local target + loopback control socket
+  NVMeKit/           the NVMe/TCP twin of iSCSIKit, same rules, depends on it
+                     for the transport, CRC32C, deadline and the block seam
+    PDU/             the 9 NVMe/TCP PDU types, framer (data at PDO, digests)
+    Capsule/         SQE/SGL/CQE layouts, every command builder, the
+                     Identify/discovery-log parsers
+    Session/         NVMeQueue (one connection = one queue pair),
+                     NVMeController (admin + I/O queue, keep-alive, recovery),
+                     NVMeBlockDevice, NVMeDiscovery
+    Support/         little-endian accessors, the platform-derived host NQN
+  MockTarget/        scriptable iSCSI target and NVMe/TCP subsystem: protocol
+                     engines, one volatile write cache, one TCP listener
+                     (drives both the tests and the simulator)
+  iscsi-target-sim/  standalone local target (+ --nvme) + loopback control socket
   iscsictl/          control CLI (discover, verify, read-bench, write-bench,
-                     wipe); --debug traces every PDU and narrates the login
+                     wipe, and nvme discover|verify|read-bench); --debug
+                     traces every PDU and narrates the login
   iscsid/            daemon: owns sessions, vends block I/O over XPC
   iSCSIDaemon/       daemon core, target store, keychain, XPC authorization
   iSCSIVolume/       the volume's data path: LUNStore, the local BackingStore
@@ -282,13 +293,16 @@ apps/
   iSCSIFSExtension/  FSKit module presenting the LUN as a file
   iSCSIDext/         DriverKit virtual SCSI HBA (parked, ISCSI_BACKEND_B)
 Tests/
-  iSCSIKitTests/     201 tests
-  IntegrationTests/  167 tests: happy paths, hostile scripts, recovery, TCP
-                     loopback, crash consistency, stalled-target resilience,
-                     XPC authorization, handle scoping, target persistence,
+  iSCSIKitTests/     iSCSI unit tests (PDUs, negotiation, CHAP, errors)
+  NVMeKitTests/      NVMe/TCP unit tests (framing, PDUs, SQE/CQE, builders,
+                     Identify and discovery-log parsing, host identity)
+  IntegrationTests/  happy paths, hostile scripts, recovery, TCP loopback,
+                     crash consistency, stalled-target resilience, XPC
+                     authorization, handle scoping, target persistence,
                      authentication tracing, write chunk concurrency, the
                      volume's read-modify-write and cache paths, keychain
-                     query shape, and resource bounds
+                     query shape, resource bounds — and the same suites
+                     again over NVMe/TCP, plus the daemon serving both
 scripts/
   release.sh         notarized DMG + Sparkle signature + appcast
   coverage-badges.sh the tests/coverage badges CI pushes to the badges branch
@@ -311,6 +325,12 @@ scripts/fuzz.sh 60                  # 60s ASan fuzz of the PDU decoder
 swift run iscsictl discover 192.168.1.50
 swift run iscsictl verify 192.168.1.50 --target iqn.2000-01.com.example:disk0 \
     --lun 0 --write        # DESTRUCTIVE — scratch LUN only
+
+# The same over NVMe/TCP (TrueNAS SCALE 25.04+, port 4420). The host NQN it
+# prints is what to add to the subsystem's allowed hosts:
+swift run iscsictl nvme discover 192.168.1.50
+swift run iscsictl nvme verify 192.168.1.50 \
+    --subsystem nqn.2011-06.com.truenas:uuid:...:disk0 --nsid 1 --write   # DESTRUCTIVE
 ```
 
 Or against the local simulator, which needs no NAS and can be broken on
@@ -321,6 +341,9 @@ power with a volatile write cache):
 swift run iscsi-target-sim --port 3260 --capacity-mib 1024 &
 swift run iscsictl verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --write
 printf 'crash\n' | nc 127.0.0.1 3262     # target power loss, on demand
+
+swift run iscsi-target-sim --nvme --capacity-mib 1024 &     # the same, as NVMe/TCP on 4420
+swift run iscsictl nvme verify 127.0.0.1 --subsystem nqn.2026-08.me.herko.sim:disk0 --write
 ```
 
 `docs/open-questions.md` lists what is known to be untested, unexplained, or

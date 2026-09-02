@@ -37,6 +37,14 @@ public enum IQN {
         return trimmed.isEmpty ? "host" : trimmed
     }
 
+    /// True for an NVMe Qualified Name. iSCSI names begin `iqn.`, `eui.` or
+    /// `naa.` and NQNs begin `nqn.`, so a target's name alone says which
+    /// protocol it speaks — the one discriminator the daemon, the app and
+    /// the extension all use, and nothing is stored to say it twice.
+    public static func isNQN(_ name: String) -> Bool {
+        name.hasPrefix("nqn.")
+    }
+
     /// A default initiator name for this host, guaranteed valid.
     ///
     /// The naming authority must be a domain the author owns on the given

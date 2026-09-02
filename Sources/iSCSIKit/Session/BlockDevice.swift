@@ -11,8 +11,14 @@ public protocol BlockDeviceBackend: Sendable {
     func read(offset: UInt64, length: Int) async throws -> Data
     /// Write `data` at `offset` (block-aligned, whole blocks).
     func write(offset: UInt64, data: Data) async throws
-    /// Flush the device cache (SCSI SYNCHRONIZE CACHE).
+    /// Flush the device cache (SCSI SYNCHRONIZE CACHE, NVMe Flush).
     func flush() async throws
+    /// Geometry, fetched on first use and cached; `blockSize`/`blockCount`
+    /// are the non-throwing view of the same answer.
+    func readCapacity() async throws -> (blockSize: Int, blockCount: UInt64)
+    /// Whether the device has a volatile write cache (SCSI WCE, NVMe VWC),
+    /// so FUA and flushes decide durability. nil when the device did not say.
+    func writeCacheEnabled() async throws -> Bool?
 }
 
 public enum BlockDeviceError: Error, Equatable, Sendable {
@@ -23,6 +29,10 @@ public enum BlockDeviceError: Error, Equatable, Sendable {
     /// READ CAPACITY described a device that cannot exist; nothing the
     /// initiator does will make this target usable.
     case invalidGeometry(blockSize: Int, blockCount: UInt64, reason: String)
+    /// An NVMe controller completed a command with a non-success status:
+    /// Status Code Type, Status Code, and the opcode it answered. Lives in
+    /// this enum, not NVMeKit, so `ISCSIError.classify` can see it.
+    case nvmeStatus(sct: UInt8, sc: UInt8, opcode: UInt8)
 }
 
 /// Concrete block device over an `ISCSISession`. Reads/writes are chunked so a

@@ -24,24 +24,37 @@ public struct DaemonInfo: Codable, Sendable, Equatable {
     /// built with DEBUG. Surfaced so the UI can say so rather than looking
     /// identical to a hardened one.
     public let authorizationRelaxed: Bool
+    /// The NVMe host NQN this daemon presents, for the user to add to a
+    /// subsystem's allowed hosts. Optional so an app and a daemon of
+    /// different builds decode each other's reply.
+    public var hostNQN: String?
 
-    public init(version: String, build: String, pid: Int32, authorizationRelaxed: Bool) {
+    public init(version: String, build: String, pid: Int32, authorizationRelaxed: Bool,
+                hostNQN: String? = nil) {
         self.version = version
         self.build = build
         self.pid = pid
         self.authorizationRelaxed = authorizationRelaxed
+        self.hostNQN = hostNQN
     }
 }
 
 /// A target the user has configured. Persisted by the daemon; the CHAP *secret*
 /// is deliberately not a field — it lives in the keychain and is referenced by
 /// `id`, so a targets file that leaks discloses no credentials.
+///
+/// One record type for both protocols: for an NVMe/TCP target `targetIQN`
+/// holds the subsystem NQN and `lun` the namespace ID. The `nqn.` prefix is
+/// what says so (`isNVMe`); there is no stored discriminator, because a new
+/// non-optional key would make every existing targets.json undecodable.
 public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var displayName: String
     public var host: String
     public var port: UInt16
+    /// The target name: an IQN, or for NVMe the subsystem NQN.
     public var targetIQN: String
+    /// The LUN, or for NVMe the namespace ID (which starts at 1).
     public var lun: UInt64
     /// CHAP username, if the target requires authentication. Keyed by `id` in
     /// the keychain rather than by username, because two targets can legitimately
@@ -78,6 +91,9 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
         self.flushIntervalSeconds = flushIntervalSeconds
         self.workloadProfile = workloadProfile
     }
+
+    /// Derived from the name, never stored.
+    public var isNVMe: Bool { IQN.isNQN(targetIQN) }
 }
 
 /// How much speculation a LUN's access pattern justifies.
@@ -206,6 +222,9 @@ public struct SessionInfo: Codable, Sendable, Equatable, Identifiable {
         guard let blockSize, let blockCount else { return nil }
         return UInt64(blockSize) * blockCount
     }
+
+    /// Derived from the name, never stored.
+    public var isNVMe: Bool { IQN.isNQN(targetIQN) }
 
     public init(handle: String, targetIQN: String, lun: UInt64,
                 blockSize: Int? = nil, blockCount: UInt64? = nil,

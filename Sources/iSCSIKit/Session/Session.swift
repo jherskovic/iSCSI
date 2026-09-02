@@ -218,14 +218,9 @@ public actor ISCSISession {
         await old.close()
     }
 
-    /// ERL0 session recovery: tear down, back off, re-login. Coalesces
-    /// concurrent callers onto a single recovery task.
-    private func recover(after error: ConnectionError?) async throws {
-        if let existing = recoveryTask {
-            try await existing.value
-            return
-        }
-        onEvent?(.connectionLost(reason: error.map { "\($0)" } ?? "no active connection"))
+    /// The teardown half of recovery. Extracted so it can run *inside* the
+    /// recovery task rather than ahead of it — see the note in `recover`.
+    private func tearDownForRecovery() async {
         if let old = connection {
             connection = nil
             loginResult = nil
@@ -233,9 +228,27 @@ public actor ISCSISession {
         }
         keepaliveTask?.cancel()
         keepaliveTask = nil
+    }
 
+    /// ERL0 session recovery: tear down, back off, re-login. Coalesces
+    /// concurrent callers onto a single recovery task.
+    private func recover(after error: ConnectionError?) async throws {
+        if let existing = recoveryTask {
+            try await existing.value
+            return
+        }
+        // `recoveryTask` MUST be assigned before the first suspension point.
+        // Actor isolation does not span an `await`: with the teardown out here,
+        // a second caller reaching the guard while this one was inside
+        // `old.close()` also saw nil, and both re-logged-in. Everything that
+        // suspends therefore lives inside the task, which is published
+        // synchronously below. The NVMe twin had the same hole and was
+        // observed taking it in production — see docs/resilience.md.
         let time2Wait = lastTime2Wait
         let task = Task { [policy, onEvent] in
+            onEvent?(.connectionLost(reason: error.map { "\($0)" } ?? "no active connection"))
+            await self.tearDownForRecovery()
+
             var lastError = error.map { "\($0)" } ?? "initial"
             for attempt in 0 ..< policy.maxRecoveryAttempts {
                 onEvent?(.recoveryAttempt(number: attempt + 1,
@@ -324,6 +337,11 @@ public struct DiscoveredTarget: Sendable, Equatable {
     /// "host:port,tpgt" entries; may be empty when the target only answers
     /// on the portal we asked.
     public var addresses: [String]
+
+    public init(name: String, addresses: [String]) {
+        self.name = name
+        self.addresses = addresses
+    }
 }
 
 public enum Discovery {

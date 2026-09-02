@@ -2,7 +2,7 @@
 
 Four layers, from pure logic up to a mounted disk under fault injection.
 
-## Layer 1 — unit (`iSCSIKitTests`, 86 tests, runs anywhere)
+## Layer 1 — unit (`iSCSIKitTests` and `NVMeKitTests`, runs anywhere)
 
 - PDU golden byte vectors + encode/decode round-trips for every PDU type.
 - Framing: byte-at-a-time feed, multi-PDU chunks, digest round-trips, header
@@ -92,6 +92,43 @@ and returns nothing at all.
 **One run per setting measures the array, not the setting.** Throughput on this
 target moved 2.4x day over day and 48% within a morning at fixed settings.
 Interleave (A/B/A/B in one session) before believing any MB/s comparison.
+
+## The same again, over NVMe/TCP (2026-09-01)
+
+Layer 1 has `NVMeKitTests`: framing (data at PDO, digests, PLEN bound), every
+PDU round trip with golden bytes, SQE/SGL/CQE layouts, every command builder,
+Identify Controller/Namespace geometry rules, the active namespace list and
+the discovery log page, and the host identity derivation.
+
+Layer 2 mirrors the iSCSI suites one for one against `MockNVMeSubsystem`
+over `MemoryPipe` (`NVMeHarness.swift`; a fresh pipe per connection, because
+a controller is two of them): `NVMeHappyPathTests`, `NVMeCrashConsistency-
+Tests` (all five arms), `NVMeRecoveryTests` (I/O-queue drop, admin-queue
+drop, target reboot, exhaustion, a mute peer caught by Keep Alive, logout),
+`NVMeWriteConcurrencyTests`, `NVMeHostileTests` (PFV/CPDA refusal, TermReq,
+unknown CID, C2HData and R2T overruns, digest-caught corruption and its
+negative control), `NVMeLoopbackTCPTests` over a real socket, and
+`NVMeDaemonTests` for the daemon serving both protocols from one registry
+and the XPC surface over an NVMe record.
+
+Layer 3: `swift run iscsictl nvme discover <nas>` then `nvme verify
+--subsystem <nqn> --nsid 1 [--write]` — read-only without `--write`. The
+simulator is `iscsi-target-sim --nvme`; the control socket and `crash` are
+shared, so the FUA proof is the same command as for iSCSI. The whole app
+path without the GUI is `scripts/vm-nvme-verify.sh` on the SIP-off VM: the
+NAS namespace through `mount -F`/`hdiutil`/APFS, then both crash arms
+against the simulator (first run 2026-09-01, all as expected).
+
+The six-hour soak of the same path is `scripts/vm-nvme-soak.sh`; the first
+run is written up in `docs/soak-nvme-2026-09-01.md` (23 cycles, 3.5 M
+verified reads, 0 errors, 0 connection losses, memory flat).
+
+One deploy gotcha it depends on: replacing the app bundle in place (rsync
+over `/Applications/iSCSI Initiator.app`) keeps the `pluginkit` row, but
+`mount -F` then fails with "Unable to invoke task" and fskitd logs "No
+extension with fsShortName found" — the row still names the old appex's
+UUID. `pluginkit -a <appex>`, `pluginkit -e use -i me.herko.iSCSIInitiator.fsext`,
+then `sudo killall fskitd` brings it back without a reboot.
 
 ## Fuzzing
 

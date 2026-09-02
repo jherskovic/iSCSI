@@ -41,7 +41,7 @@ extension ISCSICtl {
     /// leaves a reference to a type that is no longer there.
     static var enabledSubcommands: [any ParsableCommand.Type] {
         var commands: [any ParsableCommand.Type] =
-            [Discover.self, Verify.self, ReadBench.self, WriteBench.self, Wipe.self]
+            [Discover.self, Verify.self, ReadBench.self, WriteBench.self, Wipe.self, NVMe.self]
         #if ISCSI_BACKEND_B
         commands += [DextAttach.self, DextStatsCommand.self]
         #endif

@@ -6,6 +6,8 @@
 //
 //    iscsi://proto/lun0                      -> local sparse file, no network
 //    iscsi://[user@]host[:port]/<iqn>/<lun>  -> real session via iscsid (XPC)
+//    nvme://host[:port]/<nqn>/<nsid>         -> the same, over NVMe/TCP; the
+//                                               daemon decides from the name
 //
 //  ⚠️ There is NO barrier signal: `synchronize` is never called
 //  (docs/backend-a-fskit-notes.md). The only durability hook is `closeItem`
@@ -144,10 +146,12 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             return try BackingStore(path: localPath)
         }
         let url = generic.url
-        // Path is /<target-iqn>/<lun>; the IQN itself contains no slashes.
+        // Path is /<target>/<lun>: an IQN and LUN, or an NQN and namespace ID.
+        // Neither name contains a slash. The scheme is not consulted — the
+        // daemon tells the protocols apart by the name's prefix.
         let parts = url.path.split(separator: "/").map(String.init)
         guard parts.count >= 1 else {
-            fsLog.error("iscsi URL needs /<target-iqn>[/<lun>]")
+            fsLog.error("mount URL needs /<target>[/<lun-or-nsid>]")
             throw POSIXError(.EINVAL)
         }
         let target = parts[0]

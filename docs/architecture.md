@@ -32,6 +32,8 @@ This is the same wall that stalled the old `iscsi-osx` kext port.
 │                    │                                          │
 │                    ├─ iSCSIKit: PDU codec, negotiation,      │
 │                    │  CHAP, CRC32C, session engine           │
+│                    ├─ NVMeKit: NVMe/TCP PDUs, capsules,      │
+│                    │  controller + queue actors, discovery   │
 │                    │                                          │
 │      Backend A ──► FSKit file ──hdiutil CRawDiskImage──► /dev/diskN
 │      Backend B ──► shared-memory ring + IOUserClient ─┐      │
@@ -67,6 +69,68 @@ Transport-free protocol core, so every path is unit-testable and fuzzable:
 
 Scope is a "daily-driver" initiator: single connection per session, ERL0, no
 MC/S, no iSNS. Those are deliberate future work.
+
+## NVMeKit (done, 2026-09-01)
+
+The NVMe/TCP twin of iSCSIKit, in its own target so neither engine knows the
+other exists. It depends on iSCSIKit for what is protocol-neutral there — the
+byte-stream `ConnectionTransport`, CRC32C (the same polynomial, init, final
+XOR and little-endian wire form NVMe/TCP's HDGST/DDGST use), `withDeadline`,
+`SessionPolicy`/`SessionEvent`, and the `BlockDeviceBackend` seam — so no
+shared file had to move. Wire constants were cross-checked against Linux
+`include/linux/nvme.h` and `nvme-tcp.h`, and then against `nvmet` itself:
+the one thing the NAS caught that the spec reading did not was the Connect
+data block being 1024 bytes, answered as "Data SGL Length Invalid".
+
+- **PDU layer** — the 9 PDU types, a serializer and an incremental deframer.
+  Data is located by PDO (which absorbs the header digest and any
+  controller-side alignment), HDGST covers CH+PSH, DDGST covers DATA only,
+  and PLEN is bounded before a byte of payload is buffered. HPDA is always 0
+  and a controller demanding CPDA is refused, as the Linux host does.
+- **Capsules** — 64-byte SQE builders for every command sent (Fabrics
+  Connect/Property Get/Property Set, Identify, Set Features, Get Log Page,
+  Keep Alive, Read/Write/Flush) with the two SGL encodings NVMe/TCP uses
+  (Data Block/offset `0x01` in-capsule, Transport Data Block `0x5A` for
+  everything else, a null one on data-less commands because nvmet requires
+  PSDT=SGL on all of them); CQE and status decoding; the Identify
+  Controller/Namespace, active-namespace-list and discovery-log parsers, all
+  pure and fuzzed.
+- **Session** — `NVMeQueue` (an actor) is one connection, which is one queue
+  pair: ICReq/ICResp, Connect, command capsules with in-capsule or
+  R2T-solicited write data and C2HData-collected read data, the SUCCESS
+  flag, C2HTermReq, and an in-flight bound of SQSIZE−1. `NVMeController`
+  brings up the admin queue (Connect → CAP → CC.EN → CSTS.RDY → Identify
+  Controller → Set Features Number of Queues) and one I/O queue with the
+  returned CNTLID, runs Keep Alive on the admin queue every `nopInterval`
+  with KATO twice that, and on loss of either queue tears both down and
+  rebuilds a fresh pair — `ISCSISession`'s recovery without Time2Wait. There
+  is no usable Abort on NVMe-oF, so a command deadline drops the pair.
+  `NVMeBlockDevice` is `ISCSIBlockDevice`'s chunking and 8-in-flight bound
+  over Read/Write/Flush, FUA on every write under write-through, clamped to
+  MDTS. `NVMeDiscovery` is an admin-only controller on the well-known
+  discovery NQN reading log page 70h.
+- **Identity** — the host NQN is `nqn.2014-08.org.nvmexpress:uuid:<uuid>`
+  with the UUID derived from the platform UUID under a fixed namespace:
+  nothing persisted, nothing `removeAllData` can lose, nothing a hostname
+  change moves, and the hardware UUID itself never leaves the machine.
+  `iscsictl nvme` derives the same one, so the NAS allow-list entry is added
+  once.
+
+**What the daemon sees.** One rule: a target name beginning `nqn.` is
+NVMe/TCP, anything else is iSCSI. `DaemonCore.login` is the only place that
+rule is applied; `TargetRecord`'s `targetIQN` carries the NQN and `lun` the
+namespace ID, with no stored discriminator (a new non-optional key would
+make every existing `targets.json` undecodable), `MountpointTag` is
+unchanged because an NQN never collides with an IQN, and the FSKit extension
+and `LUNStore` do not know which protocol is underneath. The daemon holds
+each session as `FabricSession` (logout, recovery count, display pairs,
+unit list) plus `BlockDeviceBackend`; the XPC block-I/O surface is untouched
+and gained exactly one method, `discoverSubsystems`, because discovery
+happens before there is a name to branch on.
+
+Scope: one I/O queue; no in-band authentication (DH-HMAC-CHAP) and no TLS —
+access control is the subsystem's allowed-hosts list; no ANA/multipath;
+namespaces with per-block metadata are refused. See `open-questions.md` §10.
 
 ## The DriverKit throughput caveat (the load-bearing risk)
 

@@ -126,6 +126,32 @@ struct ISCSIErrorTests {
         #expect(Set(raw).count == raw.count)
     }
 
+    @Test("a Connect refused for the host NQN says what to add on the NAS")
+    func nvmeInvalidHostIsActionable() {
+        let error = ISCSIError.nsError(from: BlockDeviceError.nvmeStatus(sct: 1, sc: 0x84, opcode: 0x7F))
+        #expect(error.code == ISCSIError.Code.nvmeStatus.rawValue)
+        #expect(error.localizedDescription.contains("host NQN"))
+        #expect(error.localizedRecoverySuggestion?.contains("allowed hosts") == true)
+        #expect((error.userInfo[ISCSIError.senseKey] as? String) == "sct 0x01 sc 0x84 opcode 0x7f")
+    }
+
+    @Test("an invalid namespace ID points at NSIDs starting at 1")
+    func nvmeInvalidNamespaceIsActionable() {
+        let error = ISCSIError.nsError(from: BlockDeviceError.nvmeStatus(sct: 0, sc: 0x0B, opcode: 0x06))
+        #expect(error.code == ISCSIError.Code.nvmeStatus.rawValue)
+        #expect(error.localizedRecoverySuggestion?.contains("start at 1") == true)
+    }
+
+    @Test("an unclassified NVMe status still carries its bytes")
+    func nvmeGenericStatusCarriesEvidence() {
+        let error = ISCSIError.nsError(from: BlockDeviceError.nvmeStatus(sct: 2, sc: 0x81, opcode: 0x02))
+        #expect(error.code == ISCSIError.Code.nvmeStatus.rawValue)
+        #expect(error.localizedDescription.contains("0x02/0x81"))
+        #expect((error.userInfo[ISCSIError.senseKey] as? String)?.contains("opcode 0x02") == true)
+        let notReady = ISCSIError.nsError(from: BlockDeviceError.nvmeStatus(sct: 0, sc: 0x82, opcode: 0x02))
+        #expect(notReady.code == ISCSIError.Code.deviceNotReady.rawValue)
+    }
+
     @Test("context is prefixed so the message says what was being attempted")
     func contextIsPrefixed() {
         let error = ISCSIError.nsError(from: TransportError.connectFailed("refused"),

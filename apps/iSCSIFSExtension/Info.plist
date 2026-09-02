@@ -44,9 +44,13 @@
         <false/>
         <key>FSRequiresSecurityScopedPathURLResources</key>
         <false/>
+        <!-- nvme:// is the same module, the same path shape (/<nqn>/<nsid>)
+             and the same daemon call; the daemon picks the protocol from the
+             nqn. prefix. Listed so the mount URL can say what it is. -->
         <key>FSSupportedSchemes</key>
         <array>
             <string>iscsi</string>
+            <string>nvme</string>
         </array>
         <!-- Declares that the module supports the mount/activate operation.
              Without it, mount(8) rejects the module with "Filesystem <name>

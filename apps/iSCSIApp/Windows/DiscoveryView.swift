@@ -15,6 +15,9 @@ struct DiscoveryView: View {
 
     @State private var host = LastPortal.suggestedHost
     @State private var port = String(LastPortal.port)
+    /// Which discovery to run. Not stored anywhere: a target's protocol is
+    /// its name's prefix, and Discover only decides which portal to ask.
+    @State private var isNVMe = false
     @State private var chapUser = ""
     @State private var chapSecret = ""
     @State private var found: [DiscoveredTargetInfo] = []
@@ -26,24 +29,40 @@ struct DiscoveryView: View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
                 Section {
+                    Picker("Protocol", selection: $isNVMe) {
+                        Text("iSCSI").tag(false)
+                        Text("NVMe/TCP").tag(true)
+                    }
+                    .pickerStyle(.segmented)
                     TextField("Address", text: $host, prompt: Text("nas.local"))
                         .onSubmit(search)
                     TextField("Port", text: $port)
                 } header: {
                     Text("Portal")
                 } footer: {
-                    Text("Some devices require credentials before they will list "
-                         + "their targets. Leave these empty if yours does not.")
+                    Text(isNVMe
+                         ? "NVMe/TCP subsystems list themselves to any host that can reach "
+                           + "the port. Whether this Mac may attach is decided per subsystem "
+                           + "by its host NQN, shown when you edit the target."
+                         : "Some devices require credentials before they will list "
+                           + "their targets. Leave these empty if yours does not.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
-                Section("Authentication (optional)") {
-                    TextField("CHAP user", text: $chapUser)
-                    SecureField("CHAP secret", text: $chapSecret)
+                if !isNVMe {
+                    Section("Authentication (optional)") {
+                        TextField("CHAP user", text: $chapUser)
+                        SecureField("CHAP secret", text: $chapSecret)
+                    }
                 }
             }
             .formStyle(.grouped)
-            .frame(maxHeight: 260)
+            .frame(maxHeight: 300)
+            .onChange(of: isNVMe) { _, nvme in
+                // Swap the port only when it still holds the other protocol's
+                // default; a port the user typed is theirs.
+                if port == String(nvme ? 3260 : 4420) { port = String(nvme ? 4420 : 3260) }
+            }
 
             HStack {
                 if let failure {
@@ -103,6 +122,8 @@ struct DiscoveryView: View {
         model.targets.contains { $0.targetIQN == target.targetIQN }
     }
 
+    private var defaultPort: UInt16 { isNVMe ? 4420 : 3260 }
+
     private func search() {
         isSearching = true
         failure = nil
@@ -114,14 +135,20 @@ struct DiscoveryView: View {
                 defer {
                     if !found.isEmpty {
                         LastPortal.remember(host: host.trimmingCharacters(in: .whitespaces),
-                                            port: UInt16(port) ?? 3260)
+                                            port: UInt16(port) ?? defaultPort)
                     }
                 }
-                found = try await DaemonConnection.discoverTargets(
-                    host: host.trimmingCharacters(in: .whitespaces),
-                    port: UInt16(port) ?? 3260,
-                    chapUser: chapUser.isEmpty ? nil : chapUser,
-                    chapSecret: chapSecret.isEmpty ? nil : chapSecret)
+                if isNVMe {
+                    found = try await DaemonConnection.discoverSubsystems(
+                        host: host.trimmingCharacters(in: .whitespaces),
+                        port: UInt16(port) ?? defaultPort)
+                } else {
+                    found = try await DaemonConnection.discoverTargets(
+                        host: host.trimmingCharacters(in: .whitespaces),
+                        port: UInt16(port) ?? defaultPort,
+                        chapUser: chapUser.isEmpty ? nil : chapUser,
+                        chapSecret: chapSecret.isEmpty ? nil : chapSecret)
+                }
             } catch {
                 found = []
                 let ns = error as NSError
@@ -138,19 +165,20 @@ struct DiscoveryView: View {
         // Carry the discovery credentials onto the target: a portal that needed
         // them to list its targets will need them to log in, and asking twice
         // for the same secret is the kind of thing that makes people give up.
+        // NSID 0 is reserved: an NVMe subsystem's first namespace is 1.
         let record = TargetRecord(
             id: UUID().uuidString,
             displayName: shortName(from: target.targetIQN),
             host: host.trimmingCharacters(in: .whitespaces),
-            port: UInt16(port) ?? 3260,
+            port: UInt16(port) ?? defaultPort,
             targetIQN: target.targetIQN,
-            lun: 0,
-            chapUser: chapUser.isEmpty ? nil : chapUser)
-        Task { await model.save(record, secret: chapSecret.isEmpty ? nil : chapSecret) }
+            lun: isNVMe ? 1 : 0,
+            chapUser: (isNVMe || chapUser.isEmpty) ? nil : chapUser)
+        Task { await model.save(record, secret: (isNVMe || chapSecret.isEmpty) ? nil : chapSecret) }
     }
 
-    /// IQNs end in a human-chosen name after the last colon; that is a far
-    /// better default label than the whole 60-character identifier.
+    /// IQNs and NQNs end in a human-chosen name after the last colon; that is
+    /// a far better default label than the whole 60-character identifier.
     private func shortName(from iqn: String) -> String {
         iqn.split(separator: ":").last.map(String.init) ?? iqn
     }

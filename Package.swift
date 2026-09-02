@@ -36,17 +36,26 @@ let package = Package(
             dependencies: ["CCRC32C"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // NVMe/TCP initiator engine, a sibling of iSCSIKit: PDU codec, capsules,
+        // controller/queue actors, block device. Depends on iSCSIKit for the
+        // transport, CRC32C, deadline, session policy and BlockDeviceBackend
+        // seam — nothing iSCSI-specific — so no shared file had to move.
+        .target(
+            name: "NVMeKit",
+            dependencies: ["iSCSIKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         // Scriptable iSCSI target used by integration tests (and runnable standalone).
         .target(
             name: "MockTarget",
-            dependencies: ["iSCSIKit"],
+            dependencies: ["iSCSIKit", "NVMeKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // Daemon core as a library so it can be unit-tested; the executable is
         // a thin XPC/launchd launcher on top.
         .target(
             name: "iSCSIDaemon",
-            dependencies: ["iSCSIKit"],
+            dependencies: ["iSCSIKit", "NVMeKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // No FSKit dependency, deliberately and verifiably: the extension keeps
@@ -65,6 +74,7 @@ let package = Package(
             name: "iscsictl",
             dependencies: [
                 "iSCSIKit",
+                "NVMeKit",
                 // dext-attach drives DaemonCore + DextBridge directly.
                 "iSCSIDaemon",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -87,7 +97,7 @@ let package = Package(
         // scripts/fuzz.sh rebuilds it with -sanitize=fuzzer,address.
         .executableTarget(
             name: "pdu-fuzz",
-            dependencies: ["iSCSIKit"],
+            dependencies: ["iSCSIKit", "NVMeKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
@@ -96,8 +106,13 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
+            name: "NVMeKitTests",
+            dependencies: ["NVMeKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
             name: "IntegrationTests",
-            dependencies: ["iSCSIKit", "MockTarget", "iSCSIDaemon", "iSCSIVolume"],
+            dependencies: ["iSCSIKit", "NVMeKit", "MockTarget", "iSCSIDaemon", "iSCSIVolume"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

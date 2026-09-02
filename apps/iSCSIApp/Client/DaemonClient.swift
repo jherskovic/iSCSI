@@ -109,6 +109,17 @@ extension DaemonConnection {
         }
     }
 
+    /// NVMe/TCP discovery: the subsystems a portal's discovery log page lists,
+    /// with `targetIQN` carrying each subsystem NQN. No credentials: NVMe-oF
+    /// discovery has none, and access is decided per subsystem by host NQN.
+    static func discoverSubsystems(host: String, port: UInt16) async throws -> [DiscoveredTargetInfo] {
+        try await decode([DiscoveredTargetInfo].self) { proxy, finish in
+            proxy.discoverSubsystems(host: host, port: NSNumber(value: port)) { data, error in
+                finish(data, error)
+            }
+        }
+    }
+
     /// Check reachability and credentials without holding a session. See the
     /// protocol note — this exists because handles are connection-scoped and
     /// this client opens a connection per call.

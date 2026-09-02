@@ -45,7 +45,7 @@ private struct SessionSummary: View {
                 .font(.system(.body, design: .monospaced))
                 .lineLimit(1).truncationMode(.middle)
             HStack(spacing: 10) {
-                Label("LUN \(session.lun)", systemImage: "number")
+                Label("\(session.isNVMe ? "NSID" : "LUN") \(session.lun)", systemImage: "number")
                 if let bytes = session.byteCount {
                     Label(ByteCountFormatter.string(fromByteCount: Int64(bytes),
                                                     countStyle: .file),
@@ -75,8 +75,8 @@ private struct SessionDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 group("Device") {
-                    row("Target", session.targetIQN)
-                    row("LUN", String(session.lun))
+                    row(session.isNVMe ? "Subsystem" : "Target", session.targetIQN)
+                    row(session.isNVMe ? "Namespace ID" : "LUN", String(session.lun))
                     if let size = session.blockSize { row("Block size", "\(size) bytes") }
                     if let count = session.blockCount { row("Blocks", String(count)) }
                     if let bytes = session.byteCount {

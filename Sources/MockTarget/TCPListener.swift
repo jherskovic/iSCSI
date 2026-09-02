@@ -3,15 +3,17 @@ import Foundation
 import Network
 import iSCSIKit
 
-/// A TCP listener serving one `MockTarget` per accepted connection: an
+/// A TCP listener serving one target connection per accepted socket: an
 /// ephemeral port for socket-level tests, a fixed port for the standalone
-/// simulator. Tracks live connections so `drop` can kill them.
+/// simulator. Tracks live connections so `drop` can kill them. What serves
+/// a connection is injected, so the same listener fronts an iSCSI
+/// `MockTarget` or an NVMe/TCP `MockNVMeSubsystem`.
 public actor MockTargetServer {
+    public typealias Handler = @Sendable (any ConnectionTransport) async -> Void
+
     private let listener: NWListener
     private let queue = DispatchQueue(label: "mocktarget.listener")
-    private let makeConfig: @Sendable () -> MockTargetConfig
-    private let disk: RAMDisk
-    private let faultBox: FaultBox
+    private let serve: Handler
     public private(set) var port: UInt16 = 0
 
     private struct LiveConnection {
@@ -30,15 +32,21 @@ public actor MockTargetServer {
     public private(set) var acceptedCount = 0
     public private(set) var refusedWhilePaused = 0
 
+    /// The iSCSI form: one `MockTarget` per connection over a shared disk.
     public init(
         port: UInt16 = 0,
         disk: RAMDisk = RAMDisk(),
         faultBox: FaultBox = FaultBox(),
         config: @escaping @Sendable () -> MockTargetConfig = { MockTargetConfig() }
     ) throws {
-        self.disk = disk
-        self.faultBox = faultBox
-        self.makeConfig = config
+        try self.init(port: port) { transport in
+            await MockTarget(config: config(), disk: disk, faultBox: faultBox, transport: transport).run()
+        }
+    }
+
+    /// The general form: `serve` runs one accepted connection to completion.
+    public init(port: UInt16 = 0, serve: @escaping Handler) throws {
+        self.serve = serve
         if port == 0 {
             self.listener = try NWListener(using: .tcp)
         } else {
@@ -88,14 +96,9 @@ public actor MockTargetServer {
             connection: connection,
             queue: DispatchQueue(label: "mocktarget.conn.\(id)")
         )
-        let target = MockTarget(
-            config: makeConfig(),
-            disk: disk,
-            faultBox: faultBox,
-            transport: transport
-        )
+        let serve = self.serve
         let task = Task { [weak self] in
-            await target.run()
+            await serve(transport)
             await self?.retire(id)
         }
         live[id] = LiveConnection(connection: connection, task: task)
