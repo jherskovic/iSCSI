@@ -366,6 +366,8 @@ APFS on the NAS namespace — integrity after a cache purge, fsync'd files,
 (FUA)` — and the crash-consistency pair against `iscsi-target-sim --nvme`:
 write-through lost 0 blocks and verified 32/32 files after the target's
 power cut; the no-flush control lost 9192 blocks and the volume with them.
+Then six hours of verified mixed I/O on that path (`docs/soak-nvme-2026-09-01.md`):
+3.5 M verified reads, 0 errors, 0 connection losses, memory flat.
 What it deliberately does not do:
 
 - **No in-band authentication.** NVMe 2.0's DH-HMAC-CHAP (TP 8006) is not

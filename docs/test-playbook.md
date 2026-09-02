@@ -119,6 +119,10 @@ path without the GUI is `scripts/vm-nvme-verify.sh` on the SIP-off VM: the
 NAS namespace through `mount -F`/`hdiutil`/APFS, then both crash arms
 against the simulator (first run 2026-09-01, all as expected).
 
+The six-hour soak of the same path is `scripts/vm-nvme-soak.sh`; the first
+run is written up in `docs/soak-nvme-2026-09-01.md` (23 cycles, 3.5 M
+verified reads, 0 errors, 0 connection losses, memory flat).
+
 One deploy gotcha it depends on: replacing the app bundle in place (rsync
 over `/Applications/iSCSI Initiator.app`) keeps the `pluginkit` row, but
 `mount -F` then fails with "Unable to invoke task" and fskitd logs "No
