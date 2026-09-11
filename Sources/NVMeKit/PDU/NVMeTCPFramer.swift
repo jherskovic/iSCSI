@@ -3,9 +3,10 @@ import iSCSIKit
 
 /// Serializes a PDU to wire bytes: CH + PSH [+ HDGST] + data [+ DDGST].
 ///
-/// Always HPDA = 0 (we never ask the controller to align data) and CPDA = 0
-/// is required of the controller at ICResp, so PDO is exactly HLEN + HDGST
-/// and no padding is ever emitted.
+/// HPDA and CPDA are 0's based in dwords, so 0 means 4-byte alignment. We
+/// send HPDA = 0 and require CPDA = 0 at ICResp; every fixed header length
+/// (24, 72) plus an optional 4-byte HDGST already sits on a dword boundary,
+/// so PDO is exactly HLEN + HDGST and no padding is ever emitted.
 public struct NVMeTCPSerializer: Sendable {
     public var digests: NVMeTCPDigests
 
@@ -15,6 +16,17 @@ public struct NVMeTCPSerializer: Sendable {
 
     public func serialize(_ raw: RawNVMeTCPPDU) -> Data {
         let hlen = raw.hlen
+        if Self.isTerminationRequest(raw.type) {
+            // §3.6.2.4/5: FLAGS and PDO reserved, never a digest, the
+            // offending header at byte 24, PLEN at most 152.
+            let data = raw.data.prefix(NVMeTCPDeframer.maxTermReqDataBytes)
+            var out = Data(capacity: hlen + data.count)
+            out.append(NVMeTCPHeader(type: raw.type, flags: [], hlen: UInt8(hlen), pdo: 0,
+                                     plen: UInt32(hlen + data.count)).encoded)
+            out.append(raw.psh)
+            out.append(data)
+            return out
+        }
         let hdgst = digests.header ? 4 : 0
         let hasData = !raw.data.isEmpty
         let ddgst = (digests.data && hasData) ? 4 : 0
@@ -39,10 +51,21 @@ public struct NVMeTCPSerializer: Sendable {
     }
 }
 
+extension NVMeTCPSerializer {
+    static func isTerminationRequest(_ type: UInt8) -> Bool {
+        type == NVMeTCPPDUType.h2cTermReq.rawValue || type == NVMeTCPPDUType.c2hTermReq.rawValue
+    }
+}
+
 /// Incremental deframer: feed arbitrary byte chunks, pull complete PDUs.
 /// Verifies digests, enforces a PLEN ceiling before buffering a byte of the
 /// payload, and locates data by PDO (which absorbs the header digest and any
 /// controller-side alignment padding) rather than by HLEN.
+///
+/// A header digest error throws: the header, PLEN included, cannot be
+/// trusted, so the stream is lost (NVMe/TCP 1.1 §3.5). A data digest error
+/// does not: the PDU is delivered with `dataDigestFailed` set, and the
+/// command it belongs to fails while the connection carries on.
 ///
 /// Same buffer discipline as iSCSIKit's `PDUDeframer`: an index over one
 /// growing buffer, compacted by copy, never `removeFirst`.
@@ -55,6 +78,10 @@ public struct NVMeTCPDeframer: Sendable {
     private var buffer = Data()
     private var consumed = 0
     private static let compactThreshold = 64 * 1024
+    /// A termination request is a 24-byte header plus at most 128 bytes of
+    /// the offending PDU header (§3.5).
+    static let termReqHeaderBytes = 24
+    static let maxTermReqDataBytes = 128
 
     public init(digests: NVMeTCPDigests = NVMeTCPDigests(), maxPDUBytes: Int = 1 << 20) {
         self.digests = digests
@@ -68,6 +95,11 @@ public struct NVMeTCPDeframer: Sendable {
 
     /// Bytes buffered but not yet consumed as a complete PDU.
     public var buffered: Int { buffer.count - consumed }
+
+    /// The header (CH + PSH, at most 128 bytes) of the PDU most recently
+    /// returned or being parsed when `next()` threw: what an H2CTermReq
+    /// carries as its data (§3.5).
+    public private(set) var lastHeader = Data()
 
     private mutating func compactIfNeeded() {
         guard consumed > 0 else { return }
@@ -92,12 +124,34 @@ public struct NVMeTCPDeframer: Sendable {
         let hlen = Int(header.hlen)
         let pdo = Int(header.pdo)
         let plen = Int(header.plen)
+        lastHeader = Data(buffer.sub(consumed, min(max(hlen, NVMeTCPHeader.size), avail, Self.maxTermReqDataBytes)))
 
         guard plen <= maxPDUBytes else {
             throw NVMeTCPError.pduTooLarge(length: plen, limit: maxPDUBytes)
         }
         guard hlen >= NVMeTCPHeader.size else {
             throw NVMeTCPError.malformed("HLEN \(hlen) is shorter than the common header")
+        }
+        if NVMeTCPSerializer.isTerminationRequest(header.type) {
+            // Exempt from digests whatever was negotiated; FLAGS and PDO are
+            // reserved, so the data is found at byte 24, not by PDO. Outside
+            // 24...152 the spec says ignore it and terminate — which a throw
+            // does.
+            guard hlen == Self.termReqHeaderBytes,
+                  plen >= Self.termReqHeaderBytes,
+                  plen <= Self.termReqHeaderBytes + Self.maxTermReqDataBytes
+            else {
+                throw NVMeTCPError.malformed("termination request with HLEN \(hlen) / PLEN \(plen)")
+            }
+            guard avail >= plen else { return nil }
+            let raw = RawNVMeTCPPDU(
+                rawType: header.type,
+                flags: [],
+                psh: Data(buffer.sub(consumed + NVMeTCPHeader.size, hlen - NVMeTCPHeader.size)),
+                data: Data(buffer.sub(consumed + hlen, plen - hlen))
+            )
+            consumed += plen
+            return raw
         }
         // The digest bits must agree with what was negotiated; the Linux host
         // treats a disagreement as a protocol error, and so do we.
@@ -140,19 +194,16 @@ public struct NVMeTCPDeframer: Sendable {
             }
         }
         let dataStart = consumed + pdo
-        if ddgst > 0 {
-            let expected = CRC32C.checksum(buffer.sub(dataStart, dataLen))
-            guard expected == buffer.leU32(dataStart + dataLen) else {
-                throw NVMeTCPError.dataDigestMismatch
-            }
-        }
-
-        let raw = RawNVMeTCPPDU(
+        var raw = RawNVMeTCPPDU(
             rawType: header.type,
             flags: header.flags,
             psh: Data(buffer.sub(consumed + NVMeTCPHeader.size, hlen - NVMeTCPHeader.size)),
             data: Data(buffer.sub(dataStart, dataLen))
         )
+        if ddgst > 0 {
+            let expected = CRC32C.checksum(buffer.sub(dataStart, dataLen))
+            raw.dataDigestFailed = expected != buffer.leU32(dataStart + dataLen)
+        }
         consumed += plen
         return raw
     }

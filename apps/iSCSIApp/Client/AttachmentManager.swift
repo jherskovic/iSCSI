@@ -84,6 +84,18 @@ enum AttachmentError: LocalizedError {
 final class AttachmentManager: ObservableObject {
     @Published private(set) var attachments: [Attachment] = []
 
+    /// Bumped by every `attachments` mutation. `reconcile` now suspends between
+    /// snapshotting what is mounted and publishing the result (the blocking
+    /// `hdiutil info` probe runs off the main actor), and the main actor is free
+    /// during that suspension. A `detach` — a Detach tap, or a Finder eject via
+    /// `volumeDisappeared` — or an `attach` that lands in that window would be
+    /// clobbered when `reconcile` resumes and overwrites the whole list,
+    /// resurrecting a volume the user just removed or dropping one just added.
+    /// So `reconcile` captures this on entry and skips its publish if anyone
+    /// mutated the list while it was probing; a later foreground/refresh
+    /// reconciles again from the settled state.
+    private var attachmentsGeneration = 0
+
     private var unmountObserver: NSObjectProtocol?
 
     init() {
@@ -122,78 +134,78 @@ final class AttachmentManager: ObservableObject {
         let tag = MountpointTag.derive(portal: portal, targetIQN: target.targetIQN,
                                        lun: target.lun)
         let hidden = Self.hiddenDirectory(tag: tag)
+        let hiddenPath = hidden.path
+        let imagePath = hidden.appendingPathComponent("lun0.img").path
+        // `-t iSCSI` is the FSKit module's short name, not a protocol; the
+        // scheme only names the protocol for anyone reading the mount table,
+        // and the daemon decides from the target name.
+        let scheme = IQN.isNQN(target.targetIQN) ? "nvme" : "iscsi"
+        let url = "\(scheme)://\(portal)/\(target.targetIQN)/\(target.lun)"
+        let targetID = target.id
 
         try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
 
-        // Idempotent: attaching something already attached should report the
-        // existing volume, not fail or stack a second mount on the same path.
-        if !Self.isMounted(hidden.path) {
-            // The scheme names the protocol for anyone reading a mount table;
-            // the extension itself ignores it and the daemon decides from the
-            // name. `-t iSCSI` below is the FSKit module's short name, not a
-            // protocol, and stays.
-            let scheme = IQN.isNQN(target.targetIQN) ? "nvme" : "iscsi"
-            let url = "\(scheme)://\(portal)/\(target.targetIQN)/\(target.lun)"
-            let result = try Self.run("/sbin/mount",
-                                      ["-F", "-t", "iSCSI", url, hidden.path])
-            if result.status != 0 {
-                // "File system named iSCSI not found" is as often "installed
-                // more than once" as "not installed". Repaired here rather
-                // than reported — the duplicates come back whenever the app is
-                // rebuilt or remounted, so prune, retry once, and only explain
-                // if that still fails.
-                let pruned = FSKitRegistrationAudit.pruneDuplicates()
-                var retried: ProcessResult?
-                if !pruned.isEmpty {
-                    retried = try? Self.run("/sbin/mount",
-                                            ["-F", "-t", "iSCSI", url, hidden.path])
-                }
-                if retried?.status != 0 {
-                    throw AttachmentError.fskitMountFailed(
-                        (retried ?? result).combined,
-                        duplicates: pruned)
+        // Everything below shells out — `mount -F`, `hdiutil attach` — and each
+        // call blocks until the target answers, which is *never* while it is
+        // unreachable (measured 2026-09-11: `mount -F`'s login and `hdiutil
+        // detach` both hang indefinitely under a wedged NAS). On `@MainActor`
+        // that is a beach-balled app, so the blocking sequence runs on a
+        // detached task over `Sendable` inputs and only the result crosses back.
+        let probe: (device: String?, volumes: [String]) = try await Task.detached {
+            // Idempotent: attaching something already attached should report the
+            // existing volume, not stack a second mount on the same path.
+            if !Self.isMounted(hiddenPath) {
+                let result = try Self.run("/sbin/mount",
+                                          ["-F", "-t", "iSCSI", url, hiddenPath])
+                if result.status != 0 {
+                    // "File system named iSCSI not found" is as often "installed
+                    // more than once" as "not installed". Prune, retry once, and
+                    // only explain if that still fails.
+                    let pruned = FSKitRegistrationAudit.pruneDuplicates()
+                    var retried: ProcessResult?
+                    if !pruned.isEmpty {
+                        retried = try? Self.run("/sbin/mount",
+                                                ["-F", "-t", "iSCSI", url, hiddenPath])
+                    }
+                    if retried?.status != 0 {
+                        throw AttachmentError.fskitMountFailed(
+                            (retried ?? result).combined, duplicates: pruned)
+                    }
                 }
             }
-        }
 
-        let image = hidden.appendingPathComponent("lun0.img")
-        guard FileManager.default.fileExists(atPath: image.path) else {
-            throw AttachmentError.noImageServed(image.path)
-        }
+            guard FileManager.default.fileExists(atPath: imagePath) else {
+                throw AttachmentError.noImageServed(imagePath)
+            }
 
-        var attachment = Attachment(tag: tag, targetID: target.id,
-                                    hiddenPath: hidden.path, device: nil, volumePaths: [])
-
-        if let existing = Self.attachedDevice(forImage: image.path) {
-            attachment.device = existing
-            attachment.volumePaths = Self.mountPoints(ofDevice: existing)
-        } else {
+            if let existing = Self.attachedDevice(forImage: imagePath) {
+                return (existing, Self.mountPoints(ofDevice: existing))
+            }
             // -noverify: a raw LUN has no checksum, and verification would
             // read the whole device over the network first.
             let common = ["attach", "-imagekey", "diskimage-class=CRawDiskImage",
-                          "-noverify", "-plist", image.path]
+                          "-noverify", "-plist", imagePath]
             var result = try Self.run("/usr/bin/hdiutil", common)
-
             if result.status != 0 {
                 // "No mountable file systems" is a *new* LUN, not a broken
-                // attach; re-attach -nomount so Disk Utility has a device to
-                // format.
+                // attach; re-attach -nomount so Disk Utility has a device.
                 let bare = try Self.run("/usr/bin/hdiutil", common + ["-nomount"])
                 guard bare.status == 0 else {
                     throw AttachmentError.imageAttachFailed(result.combined)
                 }
                 result = bare
             }
-            let (device, volumes) = Self.parseAttachPlist(result.stdout)
-            attachment.device = device
-            attachment.volumePaths = volumes
-        }
+            return Self.parseAttachPlist(result.stdout)
+        }.value
 
         // Recorded before anything else can go wrong: throwing after the
         // layers are up leaves them mounted but invisible — not listed, not
         // detachable.
+        let attachment = Attachment(tag: tag, targetID: targetID, hiddenPath: hiddenPath,
+                                    device: probe.device, volumePaths: probe.volumes)
         attachments.removeAll { $0.tag == tag }
         attachments.append(attachment)
+        attachmentsGeneration &+= 1
         return attachment
     }
 
@@ -203,58 +215,91 @@ final class AttachmentManager: ObservableObject {
     /// under a writer.
     func detach(tag: String) async throws {
         let hidden = Self.hiddenDirectory(tag: tag)
-        let image = hidden.appendingPathComponent("lun0.img")
+        let hiddenPath = hidden.path
+        let imagePath = hidden.appendingPathComponent("lun0.img").path
 
-        // Ask hdiutil which device is backed by *this* image: disk numbers
-        // are reused, and detaching a stale one ejects somebody else's disk.
-        if let device = Self.attachedDevice(forImage: image.path) {
-            _ = try? Self.run("/usr/sbin/diskutil", ["unmountDisk", device])
-            let detached = try? Self.run("/usr/bin/hdiutil", ["detach", device])
-            if detached?.status != 0 {
-                _ = try? Self.run("/usr/bin/hdiutil", ["detach", device, "-force"])
+        // The teardown blocks: `diskutil unmountDisk` flushes and `hdiutil
+        // detach` waits on the device, and both hang indefinitely while the
+        // target is unreachable (measured 2026-09-11). This is the path that
+        // actually beach-balls the app — a Detach tap, or a Finder eject routed
+        // through `volumeDisappeared`, on a wedged mount — so it runs on a
+        // detached task and only the list mutation happens back on the actor.
+        await Task.detached {
+            // Ask hdiutil which device is backed by *this* image: disk numbers
+            // are reused, and detaching a stale one ejects somebody else's disk.
+            if let device = Self.attachedDevice(forImage: imagePath) {
+                _ = try? Self.run("/usr/sbin/diskutil", ["unmountDisk", device])
+                let detached = try? Self.run("/usr/bin/hdiutil", ["detach", device])
+                if detached?.status != 0 {
+                    _ = try? Self.run("/usr/bin/hdiutil", ["detach", device, "-force"])
+                }
             }
-        }
-
-        if Self.isMounted(hidden.path) {
-            let unmounted = try? Self.run("/sbin/umount", [hidden.path])
-            if unmounted?.status != 0 {
-                _ = try? Self.run("/sbin/umount", ["-f", hidden.path])
+            if Self.isMounted(hiddenPath) {
+                let unmounted = try? Self.run("/sbin/umount", [hiddenPath])
+                if unmounted?.status != 0 {
+                    _ = try? Self.run("/sbin/umount", ["-f", hiddenPath])
+                }
             }
-        }
-
-        // The directory is a mount point, never storage; it should be empty
-        // by the time it is removed.
-        try? FileManager.default.removeItem(at: hidden)
+            // The directory is a mount point, never storage; it should be empty
+            // by the time it is removed.
+            try? FileManager.default.removeItem(atPath: hiddenPath)
+        }.value
 
         attachments.removeAll { $0.tag == tag }
+        attachmentsGeneration &+= 1
     }
 
     /// Rebuild the list from what is actually mounted.
     ///
     /// Runs at launch and whenever the app returns to the foreground, because
     /// the user can eject in Finder and nothing tells us.
-    func reconcile(targets: [TargetRecordView]) {
-        var found: [Attachment] = []
-        for target in targets {
+    func reconcile(targets: [TargetRecordView]) async {
+        // Two phases, split by what can block. Resolving tags and asking
+        // `getmntinfo(MNT_NOWAIT)` whether our mount points exist touches no
+        // filesystem, so it stays on the main actor. Probing each attachment
+        // shells out to `hdiutil info`, which blocks for as long as a wedged
+        // disk image takes to answer — which is *forever* while its NVMe/TCP
+        // or iSCSI target is unreachable. Running that inline on `@MainActor`
+        // beach-balled the whole app for the 15 minutes a dead NAS took to be
+        // noticed on 2026-09-11. So the blocking half runs off the main actor
+        // and only the result is published back on it. `Candidate` and
+        // `Attachment` are `Sendable`, so nothing non-Sendable crosses.
+        //
+        // Bump-and-capture the generation around the suspension so a `detach`
+        // or `attach` that lands while `hdiutil info` runs is not overwritten
+        // by our stale snapshot (see `attachmentsGeneration`).
+        attachmentsGeneration &+= 1
+        let generation = attachmentsGeneration
+        struct Candidate: Sendable {
+            let tag: String, targetID: String, hiddenPath: String, imagePath: String
+        }
+        let candidates: [Candidate] = targets.compactMap { target in
             let portal = MountpointTag.portal(host: target.host, port: target.port)
             let tag = MountpointTag.derive(portal: portal, targetIQN: target.targetIQN,
                                            lun: target.lun)
             let hidden = Self.hiddenDirectory(tag: tag)
-            guard Self.isMounted(hidden.path) else { continue }
-
-            let image = hidden.appendingPathComponent("lun0.img").path
-            let device = Self.attachedDevice(forImage: image)
-            found.append(Attachment(
-                tag: tag, targetID: target.id, hiddenPath: hidden.path,
-                device: device,
-                volumePaths: device.map { Self.mountPoints(ofDevice: $0) } ?? []))
+            guard Self.isMounted(hidden.path) else { return nil }
+            return Candidate(tag: tag, targetID: target.id, hiddenPath: hidden.path,
+                             imagePath: hidden.appendingPathComponent("lun0.img").path)
         }
+        let found = await Task.detached { () -> [Attachment] in
+            candidates.map { candidate in
+                let device = Self.attachedDevice(forImage: candidate.imagePath)
+                return Attachment(
+                    tag: candidate.tag, targetID: candidate.targetID,
+                    hiddenPath: candidate.hiddenPath, device: device,
+                    volumePaths: device.map { Self.mountPoints(ofDevice: $0) } ?? [])
+            }
+        }.value
+        // Someone mutated the list while we were probing (a detach, an attach,
+        // or a newer reconcile). Their state is fresher than ours; leave it.
+        guard generation == attachmentsGeneration else { return }
         attachments = found
     }
 
     // MARK: - Asking the system
 
-    private static func isMounted(_ path: String) -> Bool {
+    nonisolated private static func isMounted(_ path: String) -> Bool {
         // getmntinfo: no subprocess, no locale, no substring false matches.
         var buffer: UnsafeMutablePointer<statfs>?
         let count = getmntinfo(&buffer, MNT_NOWAIT)
@@ -270,7 +315,7 @@ final class AttachmentManager: ObservableObject {
     }
 
     /// Which /dev/diskN is serving a given image, according to hdiutil.
-    private static func attachedDevice(forImage path: String) -> String? {
+    nonisolated private static func attachedDevice(forImage path: String) -> String? {
         guard let result = try? run("/usr/bin/hdiutil", ["info", "-plist"]),
               result.status == 0,
               let plist = try? PropertyListSerialization.propertyList(
@@ -294,7 +339,7 @@ final class AttachmentManager: ObservableObject {
     /// `mount | grep`: APFS mounts a *synthesized* container under a different
     /// disk number, so device-number matching reports healthy volumes as
     /// unmounted.
-    private static func mountPoints(ofDevice device: String) -> [String] {
+    nonisolated private static func mountPoints(ofDevice device: String) -> [String] {
         guard let result = try? run("/usr/bin/hdiutil", ["info", "-plist"]),
               result.status == 0,
               let plist = try? PropertyListSerialization.propertyList(
@@ -316,7 +361,7 @@ final class AttachmentManager: ObservableObject {
     }
 
     /// Parse `hdiutil attach -plist`.
-    private static func parseAttachPlist(_ data: Data) -> (device: String?, volumes: [String]) {
+    nonisolated private static func parseAttachPlist(_ data: Data) -> (device: String?, volumes: [String]) {
         guard let plist = try? PropertyListSerialization.propertyList(
             from: data, format: nil) as? [String: Any],
               let entities = plist["system-entities"] as? [[String: Any]]
@@ -350,7 +395,7 @@ final class AttachmentManager: ObservableObject {
     }
 
     @discardableResult
-    private static func run(_ path: String, _ arguments: [String]) throws -> ProcessResult {
+    nonisolated private static func run(_ path: String, _ arguments: [String]) throws -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments

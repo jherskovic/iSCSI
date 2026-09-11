@@ -64,6 +64,30 @@ struct NVMeRecoveryTests {
         await fleet.shutdown()
     }
 
+    static let rejecting: MockTargetFaults = {
+        var f = MockTargetFaults(); f.rejectLoginStatus = (class: 3, detail: 1); return f
+    }()
+
+    // The log promises "every I/O on this session will now fail" once recovery
+    // is exhausted. It must mean it: a dead controller latches, and later
+    // commands fail at once rather than each re-running the full recovery
+    // budget — the loop that kept the extension and app hung for 15 minutes
+    // against an unreachable NAS on 2026-09-11.
+    @Test func aDeadControllerLatchesInsteadOfRetryingEveryCommand() async throws {
+        let fleet = NVMeFleet(faultScripts: [Self.healthy, Self.healthy, Self.rejecting])
+        let controller = try await activatedController(
+            fleet: fleet, policy: testPolicy(retries: 1, recoveryAttempts: 2))
+        let counter = RecoveryCoalescingTests.EventCounter()
+        await controller.setEventHandler { counter.note($0) }
+        await fleet.shutdown()
+        await #expect(throws: (any Error).self) { _ = try await controller.activeNamespaces() }
+        let attemptsAfterFirst = counter.recoveryAttempts
+        #expect(attemptsAfterFirst > 0)
+        await #expect(throws: (any Error).self) { _ = try await controller.activeNamespaces() }
+        #expect(counter.recoveryAttempts == attemptsAfterFirst)
+        await fleet.shutdown()
+    }
+
     @Test func recoveryExhaustionSurfaces() async throws {
         var rejecting = MockTargetFaults()
         rejecting.rejectLoginStatus = (class: 3, detail: 1)   // any rejection: Connect Invalid Host

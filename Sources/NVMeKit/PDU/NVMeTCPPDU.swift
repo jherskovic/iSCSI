@@ -36,7 +36,6 @@ public enum NVMeTCPError: Error, Equatable, Sendable {
     case headerTooShort
     case pduTooLarge(length: Int, limit: Int)
     case headerDigestMismatch
-    case dataDigestMismatch
     case unknownType(UInt8)
     case malformed(String)
 }
@@ -93,6 +92,11 @@ public struct RawNVMeTCPPDU: Sendable, Equatable {
     public var flags: NVMeTCPFlags
     public var psh: Data
     public var data: Data
+    /// Set by the deframer when the DDGST did not match. A data digest error
+    /// is non-fatal (NVMe/TCP 1.1 §3.5): the stream stays in sync, so the
+    /// PDU is delivered and the command it belongs to fails, not the
+    /// connection.
+    public var dataDigestFailed = false
 
     public init(type: NVMeTCPPDUType, flags: NVMeTCPFlags = [], psh: Data, data: Data = Data()) {
         self.init(rawType: type.rawValue, flags: flags, psh: psh, data: data)

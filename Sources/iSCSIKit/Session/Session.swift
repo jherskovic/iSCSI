@@ -63,6 +63,13 @@ public actor ISCSISession {
     private var keepaliveTask: Task<Void, Never>?
     private var recoveryTask: Task<Void, any Error>?
     private var loggedOut = false
+    /// Latched when recovery gives up: the session is dead until an explicit
+    /// `activate()`. Without it every later task re-ran the whole recovery
+    /// budget (5 attempts × the connect timeout), so a caller behind a dead
+    /// target waited a full cycle only to fail — and the periodic flush tick
+    /// re-triggered it forever. The log already promises "every I/O on this
+    /// session will now fail"; this makes that true and immediate.
+    private var recoveryFailed: SessionError?
     /// DefaultTime2Wait from the most recent login, kept past the connection
     /// teardown so recovery can honor it (§7.5).
     private var lastTime2Wait: UInt32 = 0
@@ -92,6 +99,7 @@ public actor ISCSISession {
     /// Log in (initial activation).
     @discardableResult
     public func activate() async throws -> LoginResult {
+        recoveryFailed = nil
         guard connection == nil else { return loginResult! }
         loggedOut = false
         let result = try await establish()
@@ -182,6 +190,7 @@ public actor ISCSISession {
 
     private func ensureActive() async throws -> ISCSIConnection {
         if loggedOut { throw SessionError.loggedOut }
+        if let recoveryFailed { throw recoveryFailed }
         if let connection { return connection }
         try await recover(after: nil)
         guard let connection else { throw SessionError.notActive }
@@ -233,6 +242,7 @@ public actor ISCSISession {
     /// ERL0 session recovery: tear down, back off, re-login. Coalesces
     /// concurrent callers onto a single recovery task.
     private func recover(after error: ConnectionError?) async throws {
+        if let recoveryFailed { throw recoveryFailed }
         if let existing = recoveryTask {
             try await existing.value
             return
@@ -271,7 +281,12 @@ public actor ISCSISession {
         }
         recoveryTask = task
         defer { recoveryTask = nil }
-        try await task.value
+        do {
+            try await task.value
+        } catch let failure as SessionError {
+            if case .recoveryExhausted = failure { recoveryFailed = failure }
+            throw failure
+        }
     }
 
     /// Delay before recovery attempt `attempt` (0-based). The first attempt

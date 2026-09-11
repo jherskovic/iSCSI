@@ -33,8 +33,9 @@ extension NVMeTCPDigests {
 
 // MARK: - Initialize connection
 
-/// ICReq (host → controller), 128 bytes. PFV 0 is the only version; HPDA is
-/// always 0 because we never want padded data; DGST offers digests; MAXR2T
+/// ICReq (host → controller), 128 bytes. PFV 0 is the only version; HPDA 0
+/// asks for dword-aligned data, the minimum, which the fixed header lengths
+/// already give, so the controller never pads; DGST offers digests; MAXR2T
 /// is 0's based (0 = one outstanding R2T per command, which is what Linux
 /// offers too).
 public struct ICReqPDU: NVMeTCPPDU {

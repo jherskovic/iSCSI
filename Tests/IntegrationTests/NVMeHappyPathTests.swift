@@ -186,6 +186,44 @@ struct NVMeHappyPathTests {
         await fleet.shutdown()
     }
 
+    /// NVMe/TCP 1.1 §3.1.2: an entry whose TRSVCID is not a decimal port
+    /// shall not be used. One that requires TLS cannot be used by this
+    /// initiator, so it is left out too rather than failing at attach.
+    @Test func discoveryDropsUnusableEntries() async throws {
+        var config = MockNVMeConfig()
+        config.discoveryEntries = [
+            (subnqn: "nqn.2011-06.com.truenas:disk0", traddr: "192.168.20.1", trsvcid: "4420"),
+            (subnqn: "nqn.2011-06.com.truenas:badport", traddr: "192.168.20.1", trsvcid: "nvme"),
+            (subnqn: "nqn.2011-06.com.truenas:tls", traddr: "192.168.20.1", trsvcid: "4420"),
+        ]
+        config.tlsRequiredSubsystems = ["nqn.2011-06.com.truenas:tls"]
+        let fleet = NVMeFleet(config: config)
+        let found = try await NVMeDiscovery.getLogPage(transport: await fleet.makeTransport(), host: testHost)
+        #expect(found.map(\.name) == ["nqn.2011-06.com.truenas:disk0"])
+        await fleet.shutdown()
+    }
+
+    /// Identify Controller MAXCMD bounds what may be outstanding per queue;
+    /// the I/O queue is sized to it, as the Linux host does.
+    @Test func ioQueueDepthIsClampedToMAXCMD() async throws {
+        var config = MockNVMeConfig()
+        config.maxOutstandingCommands = 4
+        let fleet = NVMeFleet(config: config)
+        let controller = try await activatedController(fleet: fleet)
+        #expect(await controller.ioQueueEntries == 4)
+        await fleet.shutdown()
+    }
+
+    /// NVMe Base 2.0 §3.6.2: a clean stop is a shutdown notification
+    /// (CC.SHN), not a reset (clearing CC.EN).
+    @Test func logoutRequestsAControllerShutdown() async throws {
+        let fleet = NVMeFleet()
+        let controller = try await activatedController(fleet: fleet)
+        try await controller.logout()
+        #expect(await fleet.subsystem.shutdownsRequested == 1)
+        await fleet.shutdown()
+    }
+
     @Test func connectIsRefusedForAHostNotOnTheList() async throws {
         var config = MockNVMeConfig()
         config.allowedHosts = ["nqn.2014-08.org.nvmexpress:uuid:someone-else"]

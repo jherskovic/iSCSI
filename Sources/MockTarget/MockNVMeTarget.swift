@@ -31,8 +31,13 @@ public struct MockNVMeConfig: Sendable {
     public var firmware = "1.0"
     /// CAP.MQES + 1.
     public var maxQueueEntries: UInt16 = 128
+    /// MAXCMD in Identify Controller; 0 mirrors `maxQueueEntries`, as nvmet does.
+    public var maxOutstandingCommands: UInt16 = 0
     /// Entries for the discovery log page served to the discovery NQN.
     public var discoveryEntries: [(subnqn: String, traddr: String, trsvcid: String)] = []
+    /// Subsystems among `discoveryEntries` whose entry says TLS is required
+    /// (TREQ = 01b, TSAS SECTYPE = TLS 1.3).
+    public var tlsRequiredSubsystems: Set<String> = []
     /// The transport-neutral fault script (drops, stalls, corruption, mute).
     public var faults = MockTargetFaults()
     /// NVMe/TCP-specific misbehaviour.
@@ -56,6 +61,16 @@ public struct MockNVMeHostility: Sendable {
     public var c2hDataOverrun = false
     /// Ask, by R2T, for more bytes than the write carries.
     public var r2tOverrun = false
+    /// Start the first R2T one block in rather than at offset 0.
+    public var r2tSkipsFirstBlock = false
+    /// I/O reads only: every C2HData PDU claims DATAO 0.
+    public var c2hDataRepeatsOffsetZero = false
+    /// I/O reads only: SUCCESS set on a C2HData PDU with LAST_PDU clear.
+    public var successWithoutLast = false
+    /// I/O reads only: LAST_PDU on the first C2HData of a multi-PDU read.
+    public var lastPDUTooEarly = false
+    /// Corrupt the payload of the first I/O read only, on the wire.
+    public var corruptFirstReadOnly = false
 
     public init() {}
 }
@@ -93,6 +108,10 @@ public actor MockNVMeSubsystem {
     public private(set) var inCapsuleWrites = 0
     /// Commands swallowed by `stallCommands`, the `stalledITTs` twin.
     public private(set) var stalledCIDs: [UInt16] = []
+    /// FES of every H2CTermReq a host sent before closing.
+    public private(set) var h2cTermReqsReceived: [NVMeTCPFatalErrorStatus] = []
+    /// Property Sets of CC with a shutdown notification (SHN) requested.
+    public private(set) var shutdownsRequested = 0
 
     public init(config: MockNVMeConfig = MockNVMeConfig(), disk: RAMDisk? = nil,
                 faultBox: FaultBox? = nil) {
@@ -147,7 +166,10 @@ public actor MockNVMeSubsystem {
 
     func controllerConfiguration(_ id: UInt16) -> UInt32 { controllers[id]?.cc ?? 0 }
 
-    func setControllerConfiguration(_ id: UInt16, _ cc: UInt32) { controllers[id]?.cc = cc }
+    func setControllerConfiguration(_ id: UInt16, _ cc: UInt32) {
+        controllers[id]?.cc = cc
+        if cc & 0xC000 != 0 { shutdownsRequested += 1 }
+    }
 
     func isDiscoveryController(_ id: UInt16) -> Bool { controllers[id]?.isDiscovery ?? false }
 
@@ -158,6 +180,7 @@ public actor MockNVMeSubsystem {
     func noteH2CData() { h2cDataPDUsReceived += 1 }
     func noteInCapsuleWrite() { inCapsuleWrites += 1 }
     func noteStalled(_ cid: UInt16) { stalledCIDs.append(cid) }
+    func noteH2CTermReq(_ fes: NVMeTCPFatalErrorStatus) { h2cTermReqsReceived.append(fes) }
 }
 
 /// One NVMe/TCP connection = one queue pair, served to completion.
@@ -178,6 +201,7 @@ actor MockNVMeQueue {
     private var connected = false
     private var sentPDUs = 0
     private var running = true
+    private var corruptedReads = 0
 
     private struct PendingWrite {
         let nsid: UInt32
@@ -239,10 +263,12 @@ actor MockNVMeQueue {
         // I/O queue only: corrupting Identify data on the admin queue would
         // stop the controller coming up at all, which is not the fault this
         // models (bad bytes in read data, on the wire).
-        if faults.corruptDataInPayload && connected && queueID != 0
+        let corruptOnce = config.hostility.corruptFirstReadOnly && corruptedReads == 0
+        if (faults.corruptDataInPayload || corruptOnce) && connected && queueID != 0
             && raw.pduType == .c2hData && !raw.data.isEmpty {
             let dataOffset = Int(bytes.u8(3))
             bytes.setU8(bytes.u8(dataOffset) ^ 0x01, dataOffset)
+            corruptedReads += 1
         }
         try await transport.send(bytes)
         sentPDUs += 1
@@ -261,17 +287,26 @@ actor MockNVMeQueue {
     /// last data PDU stood in for it.
     private func sendReadData(cid: UInt16, data: Data) async throws {
         let chunk = max(1, config.c2hChunkBytes)
+        let hostile = queueID != 0 ? config.hostility : MockNVMeHostility()
         var offset = 0
+        var index = 0
         var completed = false
         while offset < data.count {
             let end = min(offset + chunk, data.count)
             let last = end == data.count
-            let success = last && config.emitSuccessFlag
-            try await send(C2HDataPDU(cccid: cid, dataOffset: UInt32(offset),
+            var flagLast = last || (hostile.lastPDUTooEarly && index == 0)
+            var success = last && config.emitSuccessFlag
+            if hostile.successWithoutLast {
+                flagLast = false
+                success = true
+            }
+            try await send(C2HDataPDU(cccid: cid,
+                                      dataOffset: hostile.c2hDataRepeatsOffsetZero ? 0 : UInt32(offset),
                                       data: Data(data.sub(offset, end - offset)),
-                                      last: last, success: success).encode())
+                                      last: flagLast, success: success).encode())
             completed = success
             offset = end
+            index += 1
         }
         if !completed { try await respond(cid: cid) }
     }
@@ -301,7 +336,8 @@ actor MockNVMeQueue {
             try await handleCommand(cmd)
         case .h2cData(let pdu):
             try await handleH2CData(pdu)
-        case .h2cTermReq:
+        case .h2cTermReq(let term):
+            await subsystem.noteH2CTermReq(term.fes)
             throw TransportError.closed
         default:
             throw NVMeTCPError.malformed("unexpected PDU type \(raw.type) from host")
@@ -385,7 +421,9 @@ actor MockNVMeQueue {
             case NVMeProperty.cc:
                 value = UInt64(await subsystem.controllerConfiguration(controllerID))
             case NVMeProperty.csts:
-                value = UInt64(await subsystem.controllerConfiguration(controllerID) & 1)
+                // RDY follows EN; SHST reports 10b (complete) once SHN was set.
+                let cc = await subsystem.controllerConfiguration(controllerID)
+                value = UInt64(cc & 1) | (cc & 0xC000 != 0 ? 0x8 : 0)
             default:
                 try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x02, dnr: true))
                 return
@@ -467,7 +505,8 @@ actor MockNVMeQueue {
         d.setLE16(100, 320)                                  // KAS: 10 s granularity
         d.setU8(0x66, 512)                                   // SQES 64 B
         d.setU8(0x44, 513)                                   // CQES 16 B
-        d.setLE16(config.maxQueueEntries, 514)               // MAXCMD
+        d.setLE16(config.maxOutstandingCommands == 0 ? config.maxQueueEntries
+                  : config.maxOutstandingCommands, 514)      // MAXCMD
         d.setLE32(1, 516)                                    // NN
         d.setU8(1, 525)                                      // VWC present
         d.setLE32(0x0010_0005, 536)                          // SGLS
@@ -498,6 +537,10 @@ actor MockNVMeQueue {
             e.setU8(DiscoveryLogEntry.transportTCP, 0)
             e.setU8(1, 1)
             e.setU8(DiscoveryLogEntry.subtypeNVM, 2)
+            if config.tlsRequiredSubsystems.contains(entry.subnqn) {
+                e.setU8(0x01, 3)                             // TREQ: secure channel required
+                e.setU8(0x02, 768)                           // TSAS SECTYPE: TLS 1.3
+            }
             e.setLE16(1, 4)
             e.setLE16(0xFFFF, 6)
             e.setLE16(config.maxQueueEntries, 8)
@@ -573,8 +616,10 @@ actor MockNVMeQueue {
             writes[cid] = PendingWrite(nsid: sqe.nsid, slba: slba, fua: fua,
                                        buffer: Data(count: total), ttag: ttag)
             await subsystem.noteR2T()
-            let solicited = config.hostility.r2tOverrun ? total + disk.blockSize : total
-            try await send(NVMeR2TPDU(cccid: cid, ttag: ttag, offset: 0, length: UInt32(solicited)).encode())
+            let skip = config.hostility.r2tSkipsFirstBlock ? disk.blockSize : 0
+            let solicited = config.hostility.r2tOverrun ? total + disk.blockSize : total - skip
+            try await send(NVMeR2TPDU(cccid: cid, ttag: ttag, offset: UInt32(skip),
+                                      length: UInt32(solicited)).encode())
         default:
             try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x01, dnr: true))
         }

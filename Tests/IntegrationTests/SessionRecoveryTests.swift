@@ -173,6 +173,30 @@ struct SessionRecoveryTests {
         await fleet.shutdown()
     }
 
+    // The iSCSI twin of aDeadControllerLatches: once ERL0 recovery is
+    // exhausted the session is dead, and later tasks must fail at once rather
+    // than each re-running the whole recovery budget.
+    @Test func aDeadSessionLatchesInsteadOfRetryingEveryCommand() async throws {
+        var rejecting = MockTargetConfig()
+        rejecting.faults.rejectLoginStatus = (class: 3, detail: 1)
+        let fleet = TargetFleet(configs: [MockTargetConfig(), rejecting])
+        let session = makeSession(fleet: fleet, policy: testPolicy(retries: 1, recoveryAttempts: 2))
+        let counter = RecoveryCoalescingTests.EventCounter()
+        await session.setEventHandler { counter.note($0) }
+        try await session.activate()
+        await fleet.shutdown()
+        await #expect(throws: (any Error).self) {
+            _ = try await session.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
+        }
+        let attemptsAfterFirst = counter.recoveryAttempts
+        #expect(attemptsAfterFirst > 0)
+        await #expect(throws: (any Error).self) {
+            _ = try await session.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
+        }
+        #expect(counter.recoveryAttempts == attemptsAfterFirst)
+        await fleet.shutdown()
+    }
+
     @Test func recoveryOntoBrokenTargetSurfacesError() async throws {
         // Healthy target dies; every replacement refuses login. The retry +
         // recovery budget must run out and surface an error, not spin forever.

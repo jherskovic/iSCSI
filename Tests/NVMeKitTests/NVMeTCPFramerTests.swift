@@ -127,6 +127,52 @@ struct NVMeTCPFramerTests {
         #expect(raw.flags.contains(.headerDigest))
     }
 
+    // NVMe/TCP 1.1 §3.6.2.4/§3.6.2.5 and §3.3.1.1: termination requests
+    // carry no digests whatever was negotiated, their FLAGS and PDO are
+    // reserved, the offending header starts at byte 24, and PLEN is 24 to
+    // 152. A conformant one must decode on a digest-enabled connection.
+    @Test func aTermReqIsSerializedWithoutDigestsAndDataAtByte24() {
+        let offending = Data([4, 0, 72, 0, 72, 0, 0, 0])
+        let wire = NVMeTCPSerializer(digests: NVMeTCPDigests(header: true, data: true))
+            .serialize(H2CTermReqPDU(fes: .pduSequenceError, fei: 0, offendingHeader: offending).encode())
+        #expect(wire.count == 24 + offending.count)
+        #expect(wire.u8(1) == 0)                       // FLAGS reserved: no HDGSTF/DDGSTF
+        #expect(wire.u8(2) == 24)
+        #expect(wire.u8(3) == 0)                       // PDO reserved
+        #expect(wire.leU32(4) == UInt32(24 + offending.count))
+        #expect(wire.leU16(8) == NVMeTCPFatalErrorStatus.pduSequenceError.rawValue)
+        #expect(wire.sub(24, offending.count) == offending)
+    }
+
+    @Test func aConformantC2HTermReqDeframesOnADigestConnection() throws {
+        let offending = Data([4, 0, 72, 0, 72, 0, 0, 0])
+        var wire = Data([0x03, 0, 24, 0, 32, 0, 0, 0])   // CH: type, flags 0, HLEN 24, PDO 0, PLEN 32
+        wire.append(Data([0x02, 0, 0x2A, 0, 0, 0]))       // FES 2, FEI 0x2A
+        wire.append(Data(count: 10))                       // reserved to byte 24
+        wire.append(offending)
+        var deframer = NVMeTCPDeframer(digests: NVMeTCPDigests(header: true, data: true))
+        deframer.append(wire)
+        let raw = try #require(try deframer.next())
+        let term = try C2HTermReqPDU(raw: raw)
+        #expect(term.fes == .pduSequenceError)
+        #expect(term.fei == 0x2A)
+        #expect(term.offendingHeader == offending)
+        #expect(deframer.buffered == 0)
+    }
+
+    @Test func aTermReqOutsideThePLENBoundsIsMalformed() {
+        var tooLong = Data([0x03, 0, 24, 0, 200, 0, 0, 0])
+        tooLong.append(Data(count: 192))
+        var deframer = NVMeTCPDeframer()
+        deframer.append(tooLong)
+        #expect(throws: NVMeTCPError.self) { try deframer.next() }
+        var tooShort = Data([0x03, 0, 24, 0, 16, 0, 0, 0])
+        tooShort.append(Data(count: 8))
+        deframer = NVMeTCPDeframer()
+        deframer.append(tooShort)
+        #expect(throws: NVMeTCPError.self) { try deframer.next() }
+    }
+
     @Test func headerDigestMismatchDetected() throws {
         let digests = NVMeTCPDigests(header: true)
         var wire = NVMeTCPSerializer(digests: digests).serialize(makeDataPDU(dataSize: 0))
@@ -136,13 +182,22 @@ struct NVMeTCPFramerTests {
         #expect(throws: NVMeTCPError.headerDigestMismatch) { try deframer.next() }
     }
 
-    @Test func dataDigestMismatchDetected() throws {
+    /// A data digest error is non-fatal (NVMe/TCP 1.1 §3.5): the stream is
+    /// still in sync, so the PDU is delivered, marked, and the stream goes
+    /// on — the command fails, not the connection.
+    @Test func dataDigestMismatchIsDeliveredAsAMarkedPDU() throws {
         let digests = NVMeTCPDigests(data: true)
         var wire = NVMeTCPSerializer(digests: digests).serialize(makeDataPDU(dataSize: 64))
         wire.setU8(wire.u8(24 + 10) ^ 0x01, 24 + 10)
+        wire.append(NVMeTCPSerializer(digests: digests).serialize(makeDataPDU(dataSize: 8)))
         var deframer = NVMeTCPDeframer(digests: digests)
         deframer.append(wire)
-        #expect(throws: NVMeTCPError.dataDigestMismatch) { try deframer.next() }
+        let bad = try #require(try deframer.next())
+        #expect(bad.dataDigestFailed)
+        #expect(bad.data.count == 64)
+        let good = try #require(try deframer.next())
+        #expect(!good.dataDigestFailed)
+        #expect(good.data.count == 8)
     }
 
     /// The controller may align data (CPDA) so PDO exceeds HLEN+HDGST. The

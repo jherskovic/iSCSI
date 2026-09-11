@@ -102,7 +102,7 @@ final class AppModel: ObservableObject {
         do {
             targets = try await DaemonConnection.listTargets()
             sessions = try await DaemonConnection.sessions()
-            attachments.reconcile(targets: targets)
+            await attachments.reconcile(targets: targets)
         } catch {
             present(error, doing: "Reading your targets")
         }

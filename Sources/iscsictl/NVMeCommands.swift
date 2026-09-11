@@ -106,6 +106,9 @@ struct NVMeVerify: AsyncParsableCommand {
     @Flag(help: "Also write (DESTRUCTIVE — only use a scratch namespace).")
     var write = false
 
+    @Flag(help: "Hex-dump the blocks read (read-only inspection of what is on the namespace).")
+    var dump = false
+
     @Option(help: "Starting LBA for the write/verify sweep.")
     var lba: UInt64 = 0
 
@@ -122,6 +125,8 @@ struct NVMeVerify: AsyncParsableCommand {
               + "serial=\(pairs["Serial"] ?? "?") firmware=\(pairs["Firmware"] ?? "?")")
         print("  HeaderDigest=\(pairs["HeaderDigest"] ?? "?") DataDigest=\(pairs["DataDigest"] ?? "?") "
               + "MDTS=\(pairs["MDTS"] ?? "?") IOCCSZ=\(pairs["IOCCSZ"] ?? "?") VWC=\(pairs["VWC"] ?? "?")")
+        print("  MQES=\(pairs["MQES"] ?? "?") MAXCMD=\(pairs["MAXCMD"] ?? "?") "
+              + "I/O queue entries=\(pairs["IOQueueEntries"] ?? "?")")
         let namespaces = try await controller.activeNamespaces()
         print("  namespaces: \(namespaces.map(String.init).joined(separator: ", "))")
 
@@ -146,9 +151,35 @@ struct NVMeVerify: AsyncParsableCommand {
         } else {
             let readback = try await device.read(offset: offset, length: byteCount)
             print("  READ: \(readback.count) bytes at LBA \(lba) (read-only; pass --write to test integrity)")
+            if dump { hexdump(readback, base: offset) }
         }
+        let started = ContinuousClock.now
         try await controller.logout()
-        print("Disconnected.")
+        let shutdown = await controller.shutdownAcknowledged ? "shutdown acknowledged (CSTS.SHST)" : "no shutdown acknowledgement"
+        print("Disconnected: \(shutdown) in \((ContinuousClock.now - started).formatted(.units(allowed: [.milliseconds]))).")
+    }
+}
+
+/// Classic 16-bytes-per-line dump; runs of identical all-zero lines collapse to "*".
+private func hexdump(_ data: Data, base: UInt64) {
+    var index = data.startIndex
+    var lastLineZero = false
+    while index < data.endIndex {
+        let end = min(index + 16, data.endIndex)
+        let line = data[index ..< end]
+        let zero = line.allSatisfy { $0 == 0 }
+        if zero && lastLineZero {
+            index = end
+            continue
+        }
+        if zero && !lastLineZero && index != data.startIndex { print("*") }
+        lastLineZero = zero
+        if zero { index = end; continue }
+        let hex = line.map { String(format: "%02x", $0) }.joined(separator: " ")
+        let ascii = String(line.map { (0x20 ... 0x7E).contains($0) ? Character(UnicodeScalar($0)) : "." })
+        let offsetText = String(format: "%010llx", base + UInt64(index - data.startIndex))
+        print("\(offsetText)  \(hex.padding(toLength: 47, withPad: " ", startingAt: 0))  |\(ascii)|")
+        index = end
     }
 }
 

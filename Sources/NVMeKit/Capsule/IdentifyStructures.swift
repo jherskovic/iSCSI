@@ -154,9 +154,23 @@ public struct DiscoveryLogEntry: Sendable, Equatable {
     public var trsvcid: String
     public var subnqn: String
     public var traddr: String
+    /// TSAS byte 0 for TCP (NVMe/TCP 1.1 §3.6.1.1): 0 none, 1 TLS 1.2, 2
+    /// TLS 1.3. Says what the port supports, not what it demands.
+    public var sectype: UInt8
 
     public static let transportTCP: UInt8 = 3
     public static let subtypeNVM: UInt8 = 2
+
+    /// TREQ bits 1:0 = 01b: the port only takes TLS connections, which this
+    /// initiator cannot make.
+    public var secureChannelRequired: Bool { treq & 0x3 == 0x1 }
+
+    /// TRSVCID as the TCP port it must be (§3.1.2: a decimal ASCII port
+    /// number, or the entry shall not be used).
+    public var tcpPort: UInt16? {
+        guard !trsvcid.isEmpty, trsvcid.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) else { return nil }
+        return UInt16(trsvcid)
+    }
 
     public init(data: Data) throws {
         guard data.count >= Self.size else {
@@ -172,6 +186,7 @@ public struct DiscoveryLogEntry: Sendable, Equatable {
         trsvcid = asciiField(data, 32, 32)
         subnqn = asciiField(data, 256, 256)
         traddr = asciiField(data, 512, 256)
+        sectype = data.u8(768)
     }
 }
 

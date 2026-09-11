@@ -40,10 +40,21 @@ public actor NVMeQueue {
         let opcode: UInt8
         /// Write data, kept so R2Ts can be answered from it.
         let writeData: Data
+        /// Bytes every R2T so far has asked for; the next one must start
+        /// exactly here (NVMe/TCP 1.1 §3.3.2.2).
+        var solicitedBytes = 0
         var readBuffer: Data
         /// C2HData bytes accepted so far; a successful completion must
         /// account for every byte or the read has silent zero-filled holes.
+        /// Every PDU must start exactly here (NVMe/TCP 1.1 §3.3.2.1), so a
+        /// repeated or skipped range cannot make the count come out right.
         var receivedBytes = 0
+        /// LAST_PDU seen: any further C2HData for this command is a
+        /// sequence error.
+        var dataComplete = false
+        /// A C2HData PDU failed its data digest. The transfer continues and
+        /// the command fails at completion (NVMe/TCP 1.1 §3.5).
+        var dataDigestFailed = false
         /// Cancelled locally; the entry stays so the controller's completion
         /// for this CID is absorbed rather than mistaken for a stray.
         var terminated = false
@@ -54,6 +65,28 @@ public actor NVMeQueue {
             self.writeData = writeData
             self.readBuffer = Data(count: expectedRead)
         }
+    }
+
+    /// A fatal transport error detected here (NVMe/TCP 1.1 §3.5): what the
+    /// H2CTermReq says, and what the connection then closes with.
+    private struct FatalTransportError: Error {
+        let fes: NVMeTCPFatalErrorStatus
+        /// Byte offset of the offending field, for the FES values that
+        /// carry one; 0 otherwise.
+        let fei: UInt32
+        let reason: String
+    }
+
+    private func fatal(_ fes: NVMeTCPFatalErrorStatus, fei: UInt32 = 0, _ reason: String) -> FatalTransportError {
+        FatalTransportError(fes: fes, fei: fei, reason: reason)
+    }
+
+    /// Offsets, from the start of a PDU, of the fields a FEI can name.
+    private enum FieldOffset {
+        static let type: UInt32 = 0
+        static let flags: UInt32 = 1
+        static let cccid: UInt32 = 8
+        static let cqeCID: UInt32 = 8 + 12
     }
 
     private let transport: any ConnectionTransport
@@ -117,17 +150,20 @@ public actor NVMeQueue {
         guard icresp.pfv == 0 else {
             throw await fail(.protocolError("controller wants PDU format version \(icresp.pfv), only 0 is supported"))
         }
-        // We asked for HPDA 0; a controller that pads its own data (CPDA) is
-        // conformant but not one this deframer handles beyond PDO, and the
-        // Linux host refuses it too.
+        // We asked for HPDA 0 (dword alignment, which every fixed header
+        // length already satisfies, so the controller never pads). A CPDA
+        // above 0 would have us pad our own data PDUs; that is conformant
+        // but unsupported here, and the Linux host refuses it too.
         guard icresp.cpda == 0 else {
             throw await fail(.protocolError("controller requires CPDA \(icresp.cpda); only unaligned data is supported"))
         }
         if !requestDigests, icresp.digests != NVMeTCPDigests() {
             throw await fail(.protocolError("controller enabled digests that were not offered"))
         }
-        guard icresp.maxH2CData >= 4096 else {
-            throw await fail(.protocolError("MAXH2CDATA \(icresp.maxH2CData) is below the 4096-byte minimum"))
+        // The NVMe/TCP spec makes MAXH2CDATA a multiple of four bytes; the
+        // Linux host rejects it otherwise, so we do too.
+        guard icresp.maxH2CData >= 4096, icresp.maxH2CData % 4 == 0 else {
+            throw await fail(.protocolError("MAXH2CDATA \(icresp.maxH2CData) is below the 4096-byte minimum or not a multiple of four"))
         }
         digests = icresp.digests
         maxH2CData = icresp.maxH2CData
@@ -322,8 +358,13 @@ public actor NVMeQueue {
                     try await handle(raw)
                 }
             }
+        } catch let error as FatalTransportError {
+            await terminate(fes: error.fes, fei: error.fei, reason: error.reason)
         } catch let error as NVMeTCPError {
-            await close(reason: .protocolError("\(error)"))
+            // The deframer or decoder refused the bytes: a header digest
+            // error is its own FES; everything else is an invalid header.
+            let fes: NVMeTCPFatalErrorStatus = error == .headerDigestMismatch ? .headerDigestError : .invalidPDUHeader
+            await terminate(fes: fes, fei: 0, reason: "\(error)")
         } catch let error as ConnectionError {
             await close(reason: error)
         } catch {
@@ -331,34 +372,62 @@ public actor NVMeQueue {
         }
     }
 
+    /// §3.5: on a fatal transport error the host stops processing PDUs,
+    /// sends an H2CTermReq carrying the offending header, and terminates.
+    /// Best effort with a short deadline: a peer that cannot take it gets
+    /// the reset the spec prescribes instead. The close that follows may
+    /// itself turn into a RST if the peer left inbound bytes unread, in
+    /// which case the request is lost with it; diagnostic only.
+    private func terminate(fes: NVMeTCPFatalErrorStatus, fei: UInt32, reason: String) async {
+        guard state == .connected else { return }
+        let pdu = H2CTermReqPDU(fes: fes, fei: fei, offendingHeader: deframer.lastHeader)
+        let bytes = serializer.serialize(pdu.encode())
+        _ = try? await withDeadline(.seconds(1)) { try await self.transport.send(bytes) }
+        await close(reason: .protocolError(reason))
+    }
+
     private func handle(_ raw: RawNVMeTCPPDU) async throws {
         switch try AnyNVMeTCPPDU.decode(raw) {
         case .capsuleResp(let resp):
             try complete(try CQE(bytes: resp.cqe))
         case .c2hData(let pdu):
-            try handleC2HData(pdu)
+            try handleC2HData(pdu, dataDigestFailed: raw.dataDigestFailed)
         case .r2t(let r2t):
             try await handleR2T(r2t)
         case .c2hTermReq(let term):
+            // The controller already declared the error; answer with the
+            // termination it asked for, not a termination request of our own.
             throw ConnectionError.protocolError(
                 "controller terminated the connection: FES 0x\(String(term.fes.rawValue, radix: 16)) FEI \(term.fei)")
         case .icResp:
-            throw ConnectionError.protocolError("ICResp after the connection was initialized")
+            throw fatal(.pduSequenceError, "ICResp after the connection was initialized")
         case .icReq, .h2cTermReq, .capsuleCmd, .h2cData:
-            throw ConnectionError.protocolError("host-to-controller PDU type \(raw.type) received from the controller")
+            throw fatal(.invalidPDUHeader, fei: FieldOffset.type,
+                        "host-to-controller PDU type \(raw.type) received from the controller")
         }
     }
 
+    /// Generic Command Status 22h: the status a command whose data failed
+    /// its digest completes with (NVMe Base 2.0 Figure 94; NVMe/TCP 1.1
+    /// §3.5 calls it a non-fatal transport error). Retryable by definition.
+    public static let transientTransportError = NVMeStatus(sct: 0, sc: 0x22)
+
     private func complete(_ cqe: CQE) throws {
         guard let command = pending.removeValue(forKey: cqe.commandID) else {
-            throw ConnectionError.protocolError("completion for unknown CID \(cqe.commandID)")
+            throw fatal(.invalidPDUHeader, fei: FieldOffset.cqeCID, "completion for unknown CID \(cqe.commandID)")
         }
         releaseSlot()
         if command.terminated { return }
+        var cqe = cqe
+        if cqe.status.isSuccess, command.dataDigestFailed {
+            // The controller's success is overruled: what arrived is not
+            // what it sent. The command fails; the connection is fine.
+            cqe.statusField = Self.transientTransportError.field
+        }
         // Success promises the data phase delivered everything; anything
         // less is a hole the pre-zeroed buffer would silently paper over.
         if cqe.status.isSuccess, command.receivedBytes != command.readBuffer.count {
-            let error = ConnectionError.protocolError(
+            let error = fatal(.pduSequenceError,
                 "read completed successfully with \(command.receivedBytes) of \(command.readBuffer.count) bytes delivered")
             command.completion.complete(.failure(error))
             throw error
@@ -366,20 +435,33 @@ public actor NVMeQueue {
         command.completion.complete(.success(NVMeCompletion(cqe: cqe, data: command.readBuffer)))
     }
 
-    private func handleC2HData(_ pdu: C2HDataPDU) throws {
+    private func handleC2HData(_ pdu: C2HDataPDU, dataDigestFailed: Bool) throws {
         guard let command = pending[pdu.cccid] else {
-            throw ConnectionError.protocolError("C2HData for unknown CID \(pdu.cccid)")
+            throw fatal(.invalidPDUHeader, fei: FieldOffset.cccid, "C2HData for unknown CID \(pdu.cccid)")
+        }
+        if dataDigestFailed { command.dataDigestFailed = true }
+        guard !command.dataComplete else {
+            throw fatal(.pduSequenceError, "C2HData for CID \(pdu.cccid) after its LAST_PDU")
+        }
+        guard !pdu.success || pdu.last else {
+            throw fatal(.invalidPDUHeader, fei: FieldOffset.flags,
+                        "C2HData for CID \(pdu.cccid) has SUCCESS set without LAST_PDU")
         }
         let offset = Int(pdu.dataOffset)
+        guard offset == command.receivedBytes else {
+            throw fatal(.pduSequenceError,
+                "non-contiguous C2HData for CID \(pdu.cccid): offset \(offset), expected \(command.receivedBytes)")
+        }
         let end = offset + pdu.data.count
         guard end <= command.readBuffer.count else {
-            throw ConnectionError.protocolError(
+            throw fatal(.dataTransferOutOfRange,
                 "C2HData outside the read buffer (offset \(offset), \(pdu.data.count) bytes of \(command.readBuffer.count))")
         }
         if !command.terminated {
             command.readBuffer.setSub(pdu.data, offset)
         }
         command.receivedBytes += pdu.data.count
+        command.dataComplete = pdu.last
         if pdu.success {
             // No CapsuleResp follows: this PDU is the completion.
             try complete(CQE(sqID: queueID, commandID: pdu.cccid, status: .success))
@@ -391,14 +473,19 @@ public actor NVMeQueue {
     /// controller must collect the solicited data before it can complete.
     private func handleR2T(_ r2t: NVMeR2TPDU) async throws {
         guard let command = pending[r2t.cccid] else {
-            throw ConnectionError.protocolError("R2T for unknown CID \(r2t.cccid)")
+            throw fatal(.invalidPDUHeader, fei: FieldOffset.cccid, "R2T for unknown CID \(r2t.cccid)")
         }
         let start = Int(r2t.offset)
         let length = Int(r2t.length)
+        guard start == command.solicitedBytes else {
+            throw fatal(.pduSequenceError,
+                "non-contiguous R2T for CID \(r2t.cccid): offset \(start), expected \(command.solicitedBytes)")
+        }
         guard length > 0, start + length <= command.writeData.count else {
-            throw ConnectionError.protocolError(
+            throw fatal(.dataTransferOutOfRange,
                 "R2T requests bytes beyond the write buffer (offset \(start), \(length) of \(command.writeData.count))")
         }
+        command.solicitedBytes = start + length
         let chunk = max(1, Int(maxH2CData))
         var offset = start
         let end = start + length

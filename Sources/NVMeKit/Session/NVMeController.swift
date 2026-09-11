@@ -51,8 +51,17 @@ public actor NVMeController {
     private var keepaliveTask: Task<Void, Never>?
     private var recoveryTask: Task<Void, any Error>?
     private var loggedOut = false
+    /// Latched when recovery gives up: the controller is dead until an
+    /// explicit `activate()`. Without it every later command re-ran the whole
+    /// recovery budget (5 attempts × the connect timeout), so a caller behind
+    /// a dead target waited a full cycle only to fail — and the daemon's
+    /// periodic flush tick re-triggered it forever. The iSCSI `ISCSISession`
+    /// twin carries the same latch.
+    private var recoveryFailed: SessionError?
     /// Diagnostics for tests and status reporting.
     public private(set) var recoveryCount = 0
+    /// The last `logout()` saw CSTS.SHST report the shutdown complete.
+    public private(set) var shutdownAcknowledged = false
     private var onEvent: (@Sendable (SessionEvent) -> Void)?
 
     public init(config: NVMeControllerConfig, policy: SessionPolicy = SessionPolicy(),
@@ -70,6 +79,9 @@ public actor NVMeController {
 
     /// VWC from Identify Controller: whether FUA and Flush mean anything.
     public var volatileWriteCachePresent: Bool? { identity?.volatileWriteCachePresent }
+
+    /// SQ entries the live I/O queue was connected with; nil when down.
+    public var ioQueueEntries: UInt16? { io?.entries }
 
     /// MDTS in bytes; nil when the controller sets no limit.
     public var maxTransferBytes: Int? {
@@ -93,6 +105,7 @@ public actor NVMeController {
     public func activate() async throws {
         guard io == nil else { return }
         loggedOut = false
+        recoveryFailed = nil
         try await establish()
     }
 
@@ -100,12 +113,23 @@ public actor NVMeController {
         loggedOut = true
         keepaliveTask?.cancel()
         keepaliveTask = nil
-        // Best effort: clear CC.EN so the controller shuts down cleanly.
-        // nvmet frees the controller when the admin connection closes anyway.
+        // Best effort: a normal shutdown notification (CC.SHN = 01b), then
+        // wait for CSTS.SHST to report it complete, so a controller with a
+        // volatile cache gets its chance to flush. nvmet frees the
+        // controller when the admin connection closes anyway.
+        shutdownAcknowledged = false
         if let admin {
-            _ = try? await withDeadline(.seconds(2)) {
-                _ = try await admin.submit(NVMeCommands.propertySet(commandID: 0, offset: NVMeProperty.cc, value: 0))
-            }
+            shutdownAcknowledged = (try? await withDeadline(.seconds(2)) {
+                _ = try await admin.submitChecked(NVMeCommands.propertySet(
+                    commandID: 0, offset: NVMeProperty.cc,
+                    value: NVMeCommands.controllerConfigurationEnable | NVMeCommands.shutdownNormal))
+                while true {
+                    let raw = try await admin.submitChecked(
+                        NVMeCommands.propertyGet(commandID: 0, offset: NVMeProperty.csts, wide: false)).cqe.dw0
+                    if ControllerStatus(raw: raw).shutdownComplete { return true }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+            }) ?? false
         }
         await dropQueues()
     }
@@ -113,8 +137,10 @@ public actor NVMeController {
     // MARK: - Command execution
 
     /// Run an I/O command to a successful completion, transparently
-    /// rebuilding the controller and retrying on connection loss (bounded by
-    /// policy). Block I/O is idempotent, so the retry is safe.
+    /// rebuilding the controller and retrying on connection loss, and
+    /// retrying in place on a Transient Transport Error — a data digest
+    /// failure, which costs the command and not the connection. Both bounded
+    /// by policy. Block I/O is idempotent, so the retry is safe.
     public func execute(_ sqe: SQE, data: Data = Data(), expectedRead: Int = 0) async throws -> NVMeCompletion {
         try await execute(on: .io, sqe, data: data, expectedRead: expectedRead)
     }
@@ -137,6 +163,15 @@ public actor NVMeController {
                 guard !loggedOut, attempt < policy.taskRetries else { throw error }
                 attempt += 1
                 try await recover(after: error)
+            } catch BlockDeviceError.nvmeStatus(let sct, let sc, let opcode)
+                where NVMeStatus(sct: sct, sc: sc) == NVMeQueue.transientTransportError {
+                // Matched on SCT/SC alone: a controller-sent 22h with DNR set
+                // is retried too, which is harmless for idempotent block I/O.
+                try Task.checkCancellation()
+                guard !loggedOut, attempt < policy.taskRetries else {
+                    throw BlockDeviceError.nvmeStatus(sct: sct, sc: sc, opcode: opcode)
+                }
+                attempt += 1
             } catch is DeadlineError {
                 try Task.checkCancellation()
                 // No usable Abort on NVMe-oF: drop the pair rather than let a
@@ -183,9 +218,13 @@ public actor NVMeController {
             out["VWC"] = identity.volatileWriteCachePresent ? "present" : "absent"
             out["MDTS"] = maxTransferBytes.map { "\($0) bytes" } ?? "unlimited"
             out["IOCCSZ"] = "\(identity.inCapsuleDataBytes) bytes in-capsule"
+            out["MAXCMD"] = String(identity.maxOutstandingCommands)
         }
         if let capabilities {
             out["MQES"] = String(capabilities.maxQueueEntries)
+        }
+        if let io {
+            out["IOQueueEntries"] = String(io.entries)
         }
         return out
     }
@@ -194,6 +233,7 @@ public actor NVMeController {
 
     private func ensureActive(_ kind: QueueKind) async throws -> NVMeQueue {
         if loggedOut { throw SessionError.loggedOut }
+        if let recoveryFailed { throw recoveryFailed }
         if let queue = (kind == .admin ? admin : io) { return queue }
         try await recover(after: nil)
         guard let queue = (kind == .admin ? admin : io) else { throw SessionError.notActive }
@@ -252,7 +292,12 @@ public actor NVMeController {
             _ = try await adminQueue.submitChecked(NVMeCommands.setFeatures(
                 commandID: 0, featureID: NVMeFeature.numberOfQueues, dword11: 0))
 
-            let entries = UInt16(clamping: min(Int(config.ioQueueEntries), cap.maxQueueEntries))
+            // Never deeper than CAP.MQES allows, nor than MAXCMD says the
+            // controller will process per queue (0 = unstated).
+            var entries = UInt16(clamping: min(Int(config.ioQueueEntries), cap.maxQueueEntries))
+            if id.maxOutstandingCommands > 0 {
+                entries = min(entries, UInt16(clamping: id.maxOutstandingCommands))
+            }
             let ioQueue = NVMeQueue(
                 transport: try await makeTransport(), queueID: 1, entries: max(entries, 2),
                 requestDigests: config.requestDigests, maxPDUBytes: Self.ioPDULimit)
@@ -294,6 +339,7 @@ public actor NVMeController {
     /// Recovery: tear the pair down, back off, bring a fresh pair up.
     /// Coalesces concurrent callers onto a single recovery task.
     private func recover(after error: ConnectionError?) async throws {
+        if let recoveryFailed { throw recoveryFailed }
         if let existing = recoveryTask {
             try await existing.value
             return
@@ -330,7 +376,12 @@ public actor NVMeController {
         }
         recoveryTask = task
         defer { recoveryTask = nil }
-        try await task.value
+        do {
+            try await task.value
+        } catch let failure as SessionError {
+            if case .recoveryExhausted = failure { recoveryFailed = failure }
+            throw failure
+        }
     }
 
     /// Plain exponential backoff; NVMe-oF has no DefaultTime2Wait to honour.

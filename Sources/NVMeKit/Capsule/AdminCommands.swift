@@ -69,6 +69,8 @@ public struct ControllerStatus: Sendable, Equatable {
     public init(raw: UInt32) { self.raw = raw }
     public var ready: Bool { raw & 0x1 != 0 }
     public var fatal: Bool { raw & 0x2 != 0 }
+    /// SHST (bits 3:2) = 10b: shutdown processing complete.
+    public var shutdownComplete: Bool { (raw >> 2) & 0x3 == 0x2 }
 }
 
 /// SQE builders for every command this initiator sends. Each returns a
@@ -85,6 +87,8 @@ public enum NVMeCommands {
     /// CC value that enables the controller: EN, CSS = NVM, MPS = 0 (4 KiB),
     /// AMS = round robin, IOSQES = 6 (64 B), IOCQES = 4 (16 B).
     public static let controllerConfigurationEnable: UInt32 = 0x0046_0001
+    /// CC.SHN = 01b: normal shutdown notification (NVMe Base 2.0 §3.6.2).
+    public static let shutdownNormal: UInt32 = 0x4000
 
     // MARK: Fabrics
 

@@ -339,6 +339,42 @@ struct XPCServiceTests {
         #expect(error != nil, "an 8-character secret must be refused locally")
     }
 
+    // A client that dies mid-session (the FSKit extension terminated by
+    // RunningBoard, the app force-quit) never calls logout. Its XPC
+    // connection invalidates instead, and that must release everything the
+    // connection owned — or the session leaks: a live controller, a periodic
+    // flush timer, and a registry entry no one can reach to log out.
+    @Test("a dropped connection releases the sessions it owned")
+    func invalidationReleasesOwnedSessions() async throws {
+        let (core, harness, store, _) = try await makeCore()
+        defer { harness.cancelAll() }
+        let service = ISCSIXPCService(core: core, targets: store)
+        let handle = try await login(service)
+        #expect(await core.sessionHandles() == [handle])
+
+        service.connectionInvalidated()
+
+        #expect(await eventually { await core.sessionHandles().isEmpty })
+    }
+
+    // Invalidation is scoped to the connection that dropped: one client
+    // dying must not tear down another client's session — the same ownership
+    // boundary `checkOwned` enforces on every call.
+    @Test("a dropped connection leaves another connection's sessions alone")
+    func invalidationIsScopedToItsOwnConnection() async throws {
+        let (core, harness, store, _) = try await makeCore()
+        defer { harness.cancelAll() }
+        let owner = ISCSIXPCService(core: core, targets: store)
+        let bystander = ISCSIXPCService(core: core, targets: store)
+        let kept = try await login(bystander)
+        let doomed = try await login(owner)
+        #expect(await Set(core.sessionHandles()) == [kept, doomed])
+
+        owner.connectionInvalidated()
+
+        #expect(await eventually { await core.sessionHandles() == [kept] })
+    }
+
     @Test("daemonInfo decodes")
     func daemonInfoDecodes() async throws {
         let (core, _harness, store, _) = try await makeCore()

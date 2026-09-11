@@ -364,3 +364,149 @@ Two initiator-side defects stand regardless of what the target was doing:
 
 Status: the trigger is characterised but **not established** — it is
 target-side, and this repository has no measurement from that side.
+
+## Three defects a live-NAS soak exposed, and their fixes (2026-09-11)
+
+A non-destructive NVMe/TCP soak against a live HFS+ namespace on the shipping
+0.6.0 build. The NAS twice went unreachable — once the router path degraded
+for ~80 min, once the NAS dropped off the direct 10 GbE link entirely for ~20
+min. No data was lost or corrupted in any cycle, but three faults surfaced
+downstream of the target going away. All three are fixed; the first two carry
+tests. The third (the app freeze) was first misdiagnosed and refixed after
+measurement on a SIP-off VM — see §c; its app-level sample is still owed.
+
+**What actually tripped first — read the log, not the timing.** The initiating
+event was `connection lost (closed)`, i.e. the Keep Alive path: a Keep Alive
+command that did not answer within `nopTimeout` (10 s) closed the queue as the
+NAS became unresponsive. It was *not* a Flush exceeding the 30 s task timeout
+against a healthy target — that hypothesis was inferred from timing and refuted
+by the log, which is the mistake "A note on method" in `open-questions.md`
+keeps warning about. There is still no measurement of a flush outrunning the
+task timeout on a healthy target; it stays a watch item, not a fixed bug.
+
+### a. Recovery exhaustion did not latch — it re-ran every call
+
+The log says, on exhaustion, "Every I/O on this session will now fail." The
+code did not mean it. `ensureActive()` in both `NVMeController` and
+`ISCSISession` found no live connection and re-entered `recover()`, which ran
+the full budget again — five attempts, each an ~11 s hung connect, ~68 s total
+— and then the daemon's periodic flush tick re-triggered the whole thing every
+30 s. For the ~20 min the NAS was gone, the FSKit extension and the app saw a
+call that took over a minute to fail and then did it again, forever.
+
+Fix: a `recoveryFailed` latch in both engines. Once `recover()` throws
+`recoveryExhausted`, `ensureActive()` throws that same error immediately, until
+an explicit `activate()` clears it. This is what makes the log's promise true.
+Tested in both engines by asserting a second command after exhaustion emits
+**zero** new `recoveryAttempt` events (`aDeadControllerLatchesInsteadOf...`,
+`aDeadSessionLatchesInsteadOf...`).
+
+Follow-up, deferred: the nicer design is latch-for-callers plus a background
+retry with capped backoff that clears the latch on the target's return, so a
+long outage self-heals without a re-mount. The latch alone means an outage that
+outlasts five attempts needs a re-attach. See `open-questions.md`.
+
+### b. A dead client leaked its session
+
+The FSKit extension is terminated by RunningBoard when its mount is torn down;
+it never calls `logout`. Nothing released the session it owned — a live
+controller, its flush timer, and a registry entry no surviving client may touch
+(`checkOwned` refuses it). Confirmed at 10:33:12 in the soak log: the extension
+was terminated and its session stayed registered.
+
+Fix: `ISCSIXPCService.connectionInvalidated()`, wired to the connection's
+`invalidationHandler` in the listener, releases every handle the dropped
+connection owned exactly as an explicit logout would — off a detached task, so
+a wedged session's teardown does not block the XPC queue. Tested by dropping a
+connection and asserting its sessions are released while another connection's
+are untouched (`invalidationReleasesOwnedSessions`, `...ScopedToItsOwn...`).
+
+This fix and (a) ship together and must not be separated. `connectionInvalidated`
+calls `logout` per owned handle sequentially; that is cheap only because the (a)
+latch makes a logout on a dead session return at once. Without the latch, the
+same teardown would serialise N × ~68 s of doomed recovery on the invalidation
+path. Remove one and the other becomes a liability.
+
+### c. The app froze on a blocking subprocess on the main actor — but not the one first blamed
+
+**The first diagnosis here was wrong, and it was wrong the way this repo keeps
+warning about: inferred from the code, never measured.** The original claim was
+that `AttachmentManager.reconcile`, which runs on `@MainActor` and shells out to
+`hdiutil info -plist` via `Process.waitUntilExit()`, blocked the main thread
+while the target was unreachable. `reconcile` was made `async` to move that
+probe off the actor. No sample of the frozen app was ever captured; the
+mechanism was deduced from "reconcile calls a subprocess on the main actor, and
+the app froze."
+
+Measured on the SIP-off rig (`herko@192.168.0.39`, 2026-09-11), that deduction
+does not hold. With the NAS silently dropped (`pfctl block drop` to
+192.168.20.1) and a name-testing namespace attached, `reconcile`'s two blocking
+calls **do not block**:
+
+| call under a wedged NAS | result |
+|---|---|
+| `getmntinfo(MNT_NOWAIT)` (via `mount(8)`) | returns at once |
+| `hdiutil info -plist` | returns at once |
+| `stat -f` on the mounted volume | returns at once |
+| `diskutil unmountDisk /dev/diskN` | **hangs indefinitely** (killed at 20 s) |
+| `hdiutil detach /dev/diskN` | **hangs indefinitely** (killed at 20 s) |
+
+`hdiutil info` and `getmntinfo` answer from cached DiskArbitration state without
+a round-trip to the wedged backing store — tested unmounted, mounted read-only,
+and mounted read-write under continuous write-through I/O. So `reconcile` could
+not have beach-balled the app through those calls, and the app's refresh path is
+otherwise `async`/`await` (XPC suspends, it does not block the thread).
+
+The calls that **do** hang are the teardown and setup ones: `diskutil
+unmountDisk` and `hdiutil detach` (and, symmetrically, `mount -F`'s login),
+which wait on the unreachable target. Those live in `AttachmentManager.attach`
+and `detach`, and both ran their subprocess sequence **synchronously on the
+`@MainActor`** via the `nonisolated` `run` helper (a `nonisolated` function
+called synchronously still runs on the caller's thread). The real freeze is a
+Detach tap — or a Finder eject routed through `volumeDisappeared` when the
+kernel drops a wedged mount — beach-balling the app until the target returns.
+`reconcile` was never the culprit.
+
+Fix (corrected): `attach` and `detach` now run their blocking subprocess
+sequences on a `Task.detached` over `Sendable` inputs (paths and the mount URL,
+all `String`), and only the resulting `Attachment` / list mutation crosses back
+to the actor. `reconcile`'s `async` split is kept — never running a subprocess
+on the main actor is right regardless, and it keeps the three paths uniform —
+and `parseAttachPlist` joined the other static helpers in being marked
+`nonisolated` so the detached task can call it. Builds clean under the app
+target's Swift 6 concurrency checking.
+
+Verification level, stated plainly: the blocking behaviour is **measured** at
+the subprocess level on .39, and the code path from `attach`/`detach` to those
+subprocesses is unambiguous, so the fix's effect (the hang now lands on a
+background thread, the main actor only `await`s) follows deductively. The
+app-level before/after — sample the app's main thread during a wedged
+attach/detach — was **not** run: `attach`/`detach` have no headless trigger
+(GUI buttons only), and driving the UI over ssh needs TCC approval that dirties
+the rig. It needs a hand on the console.
+
+**Scope limit, found the hard way (2026-09-11).** Trying to stage that manual
+demo, a `Finder` force-eject of the wedged volume left the `CRawDiskImage`
+attached with its FSKit backing already gone — an image whose every I/O now
+hangs. That did not just freeze one app: it wedged the VM's whole GUI, because
+`diskarbitrationd` (and `Finder` behind it) block on a disk image that will not
+answer, and they serve every disk client on the machine. `hdiutil detach
+/dev/diskN -force` cleared it at once and the GUI recovered without a reboot.
+Two things follow. First, this is independent corroboration of the measurement
+above — a wedged-backing image really does hang the teardown path hard. Second,
+moving `attach`/`detach` off the app's main actor keeps *the app* responsive but
+cannot keep `Finder`/`DiskArbitration` responsive: a user's own eject of a
+wedged network-backed image can still stall the system's disk services until
+the image is force-detached. That is a limit of the CRawDiskImage-over-network
+backend, not something the app's threading can fix; `hdiutil detach -force` (or
+the daemon noticing the dead session and tearing the image down) is the escape.
+
+Making `reconcile` `async` also introduced a resurrection race the synchronous
+version could not have: it snapshots which mounts exist, suspends on the
+off-actor `hdiutil` probe, and the main actor is free during that suspension. A
+`detach` or `attach` that lands in the window would be clobbered when
+`reconcile` resumed and overwrote the whole list. Closed with an
+`attachmentsGeneration` counter that every mutation bumps; `reconcile` captures
+it before the probe and skips its publish if anyone touched the list meanwhile.
+With `attach`/`detach` now suspending too, this guard is load-bearing, not
+belt-and-suspenders.

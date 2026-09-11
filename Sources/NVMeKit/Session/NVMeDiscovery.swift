@@ -12,7 +12,10 @@ public enum NVMeDiscovery {
 
     /// Returns every NVM subsystem reachable over TCP that the discovery
     /// controller at `transport` advertises, as `name` = SUBNQN and one
-    /// "traddr:trsvcid" address each.
+    /// "traddr:trsvcid" address each. Left out: entries whose TRSVCID is
+    /// not a TCP port (§3.1.2 says not to use them) and ports that require
+    /// TLS, which this initiator does not speak — listing them would only
+    /// move the failure to attach time.
     public static func getLogPage(
         transport: any ConnectionTransport,
         host: NVMeHostIdentity,
@@ -27,7 +30,8 @@ public enum NVMeDiscovery {
             await queue.close()
             return page.entries
                 .filter { $0.trtype == DiscoveryLogEntry.transportTCP && $0.subtype == DiscoveryLogEntry.subtypeNVM }
-                .map { DiscoveredTarget(name: $0.subnqn, addresses: ["\($0.traddr):\($0.trsvcid)"]) }
+                .filter { $0.tcpPort != nil && !$0.secureChannelRequired }
+                .map { DiscoveredTarget(name: $0.subnqn, addresses: ["\($0.traddr):\($0.tcpPort!)"]) }
         } catch {
             await queue.close()
             throw error

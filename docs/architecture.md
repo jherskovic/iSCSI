@@ -98,13 +98,24 @@ data block being 1024 bytes, answered as "Data SGL Length Invalid".
 - **Session** — `NVMeQueue` (an actor) is one connection, which is one queue
   pair: ICReq/ICResp, Connect, command capsules with in-capsule or
   R2T-solicited write data and C2HData-collected read data, the SUCCESS
-  flag, C2HTermReq, and an in-flight bound of SQSIZE−1. `NVMeController`
+  flag, C2HTermReq, and an in-flight bound of SQSIZE−1. It holds the
+  transport to NVMe/TCP 1.1 §3.3.2 (C2HData and R2T contiguous from offset
+  0, SUCCESS only with LAST_PDU, nothing after LAST_PDU) and §3.5: a host-
+  detected fatal error sends an H2CTermReq with the FES, FEI and offending
+  header before the close; a data digest error is non-fatal — the PDU is
+  delivered marked, the command completes as Transient Transport Error
+  (22h) and is retried in place, and the connection carries on, which is
+  what the Linux host and `nvmet` both do. Header digest errors stay
+  fatal: PLEN is untrusted, so the stream is lost. `NVMeController`
   brings up the admin queue (Connect → CAP → CC.EN → CSTS.RDY → Identify
   Controller → Set Features Number of Queues) and one I/O queue with the
   returned CNTLID, runs Keep Alive on the admin queue every `nopInterval`
   with KATO twice that, and on loss of either queue tears both down and
   rebuilds a fresh pair — `ISCSISession`'s recovery without Time2Wait. There
-  is no usable Abort on NVMe-oF, so a command deadline drops the pair.
+  is no usable Abort on NVMe-oF, so a command deadline drops the pair. The
+  I/O queue is sized to the smaller of CAP.MQES and Identify Controller's
+  MAXCMD, and logout is a CC.SHN shutdown notification awaited on
+  CSTS.SHST, not a CC.EN reset.
   `NVMeBlockDevice` is `ISCSIBlockDevice`'s chunking and 8-in-flight bound
   over Read/Write/Flush, FUA on every write under write-through, clamped to
   MDTS. `NVMeDiscovery` is an admin-only controller on the well-known

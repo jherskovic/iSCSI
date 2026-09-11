@@ -138,6 +138,28 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
+    /// The client's XPC connection dropped (crash, kill, or a clean close
+    /// without logout). Release every handle this connection owned, exactly
+    /// as an explicit logout would: without this a client that dies mid-
+    /// session leaks a live controller, its periodic flush timer, and a
+    /// registry entry no surviving client may touch (they are refused by
+    /// `checkOwned`). Runs on an XPC queue, so it hands the teardown to a
+    /// detached task and returns at once — `core.logout` on a wedged session
+    /// can take a full recovery cycle, which must not block the connection's
+    /// invalidation.
+    public func connectionInvalidated() {
+        let handles = owned.withLock { defer { $0.removeAll() }; return Array($0) }
+        budgets.withLock { for h in handles { $0[h] = nil } }
+        guard !handles.isEmpty else { return }
+        let box = SendableBox(handles)
+        Task { [core] in
+            for handle in box.value {
+                do { try await core.logout(handle) }
+                catch { DaemonLog.error("releasing \(handle) after its connection dropped: \(error)") }
+            }
+        }
+    }
+
     public func logout(session: String, reply: @escaping (Error?) -> Void) {
         if let denied = checkOwned(session) { reply(denied); return }
         release(session)
@@ -462,8 +484,14 @@ public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unch
         guard ClientAuthorization.authorize(connection) else { return false }
 
         let iface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
+        let service = ISCSIXPCService(core: core, hostNQN: hostNQN)
         connection.exportedInterface = iface
-        connection.exportedObject = ISCSIXPCService(core: core, hostNQN: hostNQN)
+        connection.exportedObject = service
+        // A dead peer surfaces here as invalidation; release its sessions so a
+        // crashed client does not leak one. The service never holds the
+        // connection, so this strong capture makes no cycle. Set before
+        // resume(), so a connection that dies during setup is still cleaned.
+        connection.invalidationHandler = { service.connectionInvalidated() }
         connection.resume()
         return true
     }

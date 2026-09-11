@@ -70,3 +70,15 @@ func activatedController(
     try await controller.activate()
     return controller
 }
+
+/// Poll `condition` until it holds or `timeout` passes; the peer's counters
+/// move after the initiator's error surfaces, so a test asserts on them
+/// this way rather than by sleeping.
+func eventually(timeout: Duration = .seconds(2), _ condition: @Sendable () async -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return await condition()
+}

@@ -316,6 +316,75 @@ Nothing downstream misbehaves, but a teardown that trips the recovery machinery
 several times in milliseconds is either wasted work or a sign the teardown order
 is wrong, and the death latch counts consecutive failures.
 
+## 8c. Three faults a live-NAS soak exposed — two fixed with tests, watch items noted (2026-09-11)
+
+`docs/resilience.md` ("Three defects a live-NAS soak exposed") has the full
+account. Fixed: recovery now **latches** after exhaustion in both engines
+(§8a's "latch it dead" is now real), a dead client's XPC connection **releases
+its sessions** (closes the leak that §8a's extension-timeout interacts with),
+and the app's **blocking `attach`/`detach` subprocess calls now run off the
+main actor** (the fix that stops the beach-ball — see the correction below).
+
+Still open, in cost order:
+
+- **The app-freeze fix was first pointed at the wrong function; now corrected,
+  measured at the subprocess level, not yet sampled app-level.** The first fix
+  moved `reconcile` off the main actor on the inferred belief that its `hdiutil
+  info` call blocked. Measured on the SIP-off rig `herko@192.168.0.39`
+  (2026-09-11) that is false: under a `pfctl`-wedged NAS, `getmntinfo`,
+  `hdiutil info` and `statfs` all return at once, while `diskutil unmountDisk`
+  and `hdiutil detach` hang indefinitely. Those hanging calls are in `attach`
+  and `detach`, which ran synchronously on `@MainActor` — that is the real
+  beach-ball (a Detach tap, or a `volumeDisappeared`-triggered detach on a
+  wedged mount). The corrected fix moves `attach`/`detach`'s subprocess
+  sequences onto detached tasks too; `reconcile`'s split is kept as hygiene.
+  `resilience.md` §c has the measurement table. The app-level before/after
+  (sample the app's main thread during a wedged attach/detach) was **attempted
+  on .39 2026-09-11 and could not be completed**: the app there was placed by
+  rsync, not installed from the DMG via Finder, and `FSClient.installedExtensions`
+  (ExtensionKit) will not enumerate an appex placed that way, so the app is stuck
+  on its Setup screen ("Filesystem extension registered" never goes green) and
+  never lists an attachment to detach — even though `mount -F` resolves the
+  module fine through the other code path. `lsregister -f -R -trusted` (the
+  programmatic equivalent of the Finder drag), a reboot, bouncing pkd/fskitd,
+  and removing a duplicate appex bundle (`/Applications/iSCSIApp.app`, which
+  shipped the same module id) all failed to register it. This is a test-rig
+  install artifact, not a product defect — a DMG-installed build registers
+  normally — and it is orthogonal to the freeze fix. A clean app-level sample
+  needs a Finder-installed build on a rig that can be wedged; that rules out the
+  SIP-on acceptance box. The `attachmentsGeneration` resurrection-race guard
+  (from making `reconcile` async) is now load-bearing, since `attach`/`detach`
+  suspend too.
+- **Latch has no self-heal, and it fails fast into the extension.** After
+  recovery exhausts, the session stays dead until an explicit re-attach; an
+  outage that outlasts five attempts will not reconnect on its own. The latch
+  changed the *timescale* the extension sees, not just the eventual outcome:
+  before it, each new I/O re-entered recovery and a returning NAS could heal
+  the mount transparently after the window; now the daemon returns the failure
+  **instantly**. A speculative readahead that gets that instant error is
+  indistinguishable from an unanswered one at the cache boundary, so it counts
+  toward the death latch — three of them mark the volume dead within a few
+  operations and the extension unmounts, where a ~70 s blip used to self-heal.
+  Direct reads/writes throw the error straight to APFS rather than tripping the
+  latch, but the user-visible result is the same: exhaustion now means a fast
+  unmount and re-attach, not a beach-balled heal. A background retry with capped
+  backoff that clears the latch on success is the follow-up, and this combined
+  effect is the reason to weigh promoting it from deferred before shipping.
+  Today a re-mount is the recovery.
+- **Flush-tick log after the latch.** Once latched, the periodic flush fails
+  fast (no network, no recovery), but still logs one line per 30 s tick until
+  the extension unmounts. How long that takes now depends on the traffic: read
+  traffic trips the extension's death latch in a few operations, an idle mount
+  much later or not until something else tears it down (the old "~90 s" estimate
+  predated the fast-fail latch and is no longer reliable). Bounded, cosmetic;
+  log once per dead session or stop the timer.
+- **Flush vs. task timeout, still unmeasured.** The 2026-09-11 loss was a Keep
+  Alive timeout as the NAS died, **not** a Flush outrunning the 30 s task
+  timeout on a healthy target (that earlier claim was inferred from timing and
+  the log refuted it). Whether a loaded-but-healthy NAS can take >30 s to
+  SYNCHRONIZE CACHE, and whether the flush path should get its own longer
+  deadline than a read/write, is untested. A watch item, not a known bug.
+
 ## 9. Deferred
 
 - **Detach offers to eject** (built 2026-08-16, untested in the UI): Detach on
@@ -385,7 +454,11 @@ What it deliberately does not do:
   — the NVMe form of the iSCSI task-timeout policy.
 - **Discovery on the data port.** The IANA discovery port is 8009; TrueNAS
   serves discovery on 4420 and leaves 8009 closed, so the app's default
-  follows TrueNAS. Ask the user for the port, as with iSCSI.
+  follows TrueNAS. Ask the user for the port, as with iSCSI. Discovery
+  leaves out entries whose TRSVCID is not a decimal port (NVMe/TCP 1.1
+  §3.1.2) and ports whose TREQ says TLS is required, since there is no TLS
+  here to offer them; a NAS that turns TLS on for a subsystem makes it
+  vanish from the list rather than fail at attach.
 - **Both queues go down together.** Losing either connection destroys the
   controller. Reconnecting an I/O queue to a surviving admin queue would be
   cheaper; it has not been needed.
@@ -394,7 +467,12 @@ What it deliberately does not do:
   never does; the flag is still handled, and the mock can emit it.
 - **Untested against anything but `nvmet`.** As item 3 says of iSCSI. Other
   targets may pad data (CPDA ≠ 0, refused here as Linux does), advertise
-  ICDOFF ≠ 0 (every write then goes by R2T), or set MDTS.
+  ICDOFF ≠ 0 (every write then goes by R2T), or set MDTS. Two paths were
+  audited against the NVMe/TCP 1.1 text on 2026-09-10 and have only ever
+  run against the mock, because `nvmet` never exercises them: decoding a
+  conformant C2HTermReq (no digests, data at byte 24 — `nvmet` closes the
+  socket instead of sending one) and the non-fatal data digest path
+  (`nvmet` sends one C2HData per read and corrupts nothing).
 - **Namespaces with per-block metadata** (LBAF with MS ≠ 0) are refused with
   a geometry error; a zvol never has them.
 - **ANA / multipath** is ignored: one portal, one path.
