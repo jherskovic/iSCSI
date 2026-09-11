@@ -148,7 +148,11 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     /// can take a full recovery cycle, which must not block the connection's
     /// invalidation.
     public func connectionInvalidated() {
-        let handles = owned.withLock { defer { $0.removeAll() }; return Array($0) }
+        let handles = owned.withLock { state -> [String] in
+            let snapshot = Array(state)
+            state.removeAll()
+            return snapshot
+        }
         budgets.withLock { for h in handles { $0[h] = nil } }
         guard !handles.isEmpty else { return }
         let box = SendableBox(handles)
