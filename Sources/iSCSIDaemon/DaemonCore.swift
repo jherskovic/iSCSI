@@ -28,9 +28,12 @@ public actor DaemonCore {
 
     private var sessions: [String: SessionEntry] = [:]
     private var handleCounter: UInt64 = 0
-    private let initiatorName: String
+    /// The iSCSI initiator name presented in every login. `nonisolated`, like
+    /// `hostIdentity`, so `daemonInfo` can read it without hopping onto the
+    /// actor — that call must answer even when the engine is wedged.
+    public nonisolated let initiatorName: String
     /// The NVMe host NQN and HOSTID presented in every Connect.
-    private let hostIdentity: NVMeHostIdentity
+    private nonisolated let hostIdentity: NVMeHostIdentity
     /// How to build a transport to a portal. Injected so tests can use
     /// MemoryPipe and production uses NetworkTransport. NVMe calls it twice
     /// per attach (admin queue, I/O queue) and twice per recovery.
@@ -56,7 +59,7 @@ public actor DaemonCore {
     }
 
     /// The host NQN this daemon presents, for the app to show.
-    public var hostNQN: String { hostIdentity.nqn }
+    public nonisolated var hostNQN: String { hostIdentity.nqn }
 
     /// iSCSIKit narrates the login exchange through a closure rather than a
     /// logger of its own — see `LoginConfig.trace`. This is where the daemon

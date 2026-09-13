@@ -28,14 +28,18 @@ public struct DaemonInfo: Codable, Sendable, Equatable {
     /// subsystem's allowed hosts. Optional so an app and a daemon of
     /// different builds decode each other's reply.
     public var hostNQN: String?
+    /// The iSCSI initiator name (IQN) this daemon presents, for the user to
+    /// add to a target's allowed initiators. Optional for the same reason.
+    public var initiatorName: String?
 
     public init(version: String, build: String, pid: Int32, authorizationRelaxed: Bool,
-                hostNQN: String? = nil) {
+                hostNQN: String? = nil, initiatorName: String? = nil) {
         self.version = version
         self.build = build
         self.pid = pid
         self.authorizationRelaxed = authorizationRelaxed
         self.hostNQN = hostNQN
+        self.initiatorName = initiatorName
     }
 }
 

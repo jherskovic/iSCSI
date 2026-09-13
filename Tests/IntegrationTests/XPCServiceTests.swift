@@ -375,7 +375,9 @@ struct XPCServiceTests {
         #expect(await eventually { await core.sessionHandles() == [kept] })
     }
 
-    @Test("daemonInfo decodes")
+    // The identities the app shows for ACL setup must be the ones the core
+    // puts on the wire, not a copy something else has to keep in step.
+    @Test("daemonInfo decodes and carries the core's initiator name")
     func daemonInfoDecodes() async throws {
         let (core, _harness, store, _) = try await makeCore()
         let service = ISCSIXPCService(core: core, targets: store)
@@ -383,6 +385,7 @@ struct XPCServiceTests {
             service.daemonInfo { c.resume(returning: ($0, $1)) }
         }
         #expect(error == nil)
-        #expect(data != nil)
+        let info = try JSONDecoder().decode(DaemonInfo.self, from: try #require(data))
+        #expect(info.initiatorName == "iqn.test:initiator")
     }
 }

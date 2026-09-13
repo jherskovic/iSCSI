@@ -42,7 +42,7 @@ let core = DaemonCore(
     try await NetworkTransport.connect(host: host, port: port)
 }
 
-let delegate = ISCSIListenerDelegate(core: core, hostNQN: nvmeHost.nqn)
+let delegate = ISCSIListenerDelegate(core: core)
 let listener = NSXPCListener(machServiceName: iscsiDaemonServiceName)
 listener.delegate = delegate
 listener.resume()

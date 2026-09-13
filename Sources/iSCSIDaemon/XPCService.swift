@@ -24,14 +24,9 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     /// consulted on every read/write, per-connection so contention is nil.
     private let owned = OSAllocatedUnfairLock(initialState: Set<String>())
 
-    /// The host NQN, held as a plain value so `daemonInfo` stays synchronous
-    /// and off the actor — it must answer even when the engine is wedged.
-    private let hostNQN: String?
-
-    public init(core: DaemonCore, targets: TargetStore = TargetStore(), hostNQN: String? = nil) {
+    public init(core: DaemonCore, targets: TargetStore = TargetStore()) {
         self.core = core
         self.targets = targets
-        self.hostNQN = hostNQN
     }
 
     /// Readahead budget per owned handle, resolved once at login (like
@@ -229,7 +224,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 
     /// Synchronous and stateless on purpose: it must answer even when the
     /// session engine is wedged — this call is what tells "daemon alive but
-    /// stuck" apart from "daemon not running".
+    /// stuck" apart from "daemon not running". The two identities are the
+    /// core's own `nonisolated` constants, so reading them never waits on it.
     public func daemonInfo(reply: @escaping (Data?, Error?) -> Void) {
         // Bundle.main inside <app>/Contents/MacOS resolves to the containing
         // .app, so this reports the shipping app's version; loose `swift run`
@@ -246,7 +242,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
             build: info?["CFBundleVersion"] as? String ?? "0",
             pid: ProcessInfo.processInfo.processIdentifier,
             authorizationRelaxed: relaxed,
-            hostNQN: hostNQN
+            hostNQN: core.hostNQN,
+            initiatorName: core.initiatorName
         )
         do {
             reply(try JSONEncoder().encode(payload), nil)
@@ -475,11 +472,9 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 /// XPC listener delegate that hands each connection an ISCSIXPCService.
 public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let core: DaemonCore
-    private let hostNQN: String?
 
-    public init(core: DaemonCore, hostNQN: String? = nil) {
+    public init(core: DaemonCore) {
         self.core = core
-        self.hostNQN = hostNQN
     }
 
     public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
@@ -488,7 +483,7 @@ public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unch
         guard ClientAuthorization.authorize(connection) else { return false }
 
         let iface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
-        let service = ISCSIXPCService(core: core, hostNQN: hostNQN)
+        let service = ISCSIXPCService(core: core)
         connection.exportedInterface = iface
         connection.exportedObject = service
         // A dead peer surfaces here as invalidation; release its sessions so a

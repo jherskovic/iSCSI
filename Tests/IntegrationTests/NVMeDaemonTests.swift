@@ -154,10 +154,10 @@ struct NVMeXPCServiceTests {
         let record = TargetRecord(id: UUID().uuidString, displayName: "NVMe mock",
                                   host: "nas", port: 4420, targetIQN: nqn, lun: 1)
         try await store.save(record)
-        return (ISCSIXPCService(core: core, targets: store, hostNQN: testHost.nqn), record, cleanup)
+        return (ISCSIXPCService(core: core, targets: store), record, cleanup)
     }
 
-    @Test func daemonInfoCarriesTheHostNQN() async throws {
+    @Test func daemonInfoCarriesBothHostIdentities() async throws {
         let (service, _, cleanup) = try await makeService()
         defer { cleanup() }
         let data: Data = try await withCheckedThrowingContinuation { c in
@@ -167,6 +167,7 @@ struct NVMeXPCServiceTests {
         }
         let info = try JSONDecoder().decode(DaemonInfo.self, from: data)
         #expect(info.hostNQN == testHost.nqn)
+        #expect(info.initiatorName == "iqn.2026-08.com.example:daemon")
     }
 
     @Test func anNVMeRecordLogsInAndTestsItsConnection() async throws {

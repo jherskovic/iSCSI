@@ -153,9 +153,13 @@ struct TargetEditor: View {
     @State private var mutualChapSecret: String
     @State private var hasStoredSecret = false
     @State private var hasStoredMutualSecret = false
-    /// This Mac's NVMe host NQN, from the daemon, for the user to copy into
-    /// a subsystem's allowed hosts. nil until fetched, or on an old daemon.
+    /// This Mac's NVMe host NQN and iSCSI initiator IQN, from the daemon, for
+    /// the user to copy into a subsystem's allowed hosts or a target's allowed
+    /// initiators. nil until fetched, or on an old daemon. From the daemon
+    /// rather than recomputed here: the IQN follows the computer name as it
+    /// was when the daemon started, and only the daemon knows that.
     @State private var hostNQN: String?
+    @State private var initiatorName: String?
 
     /// nil = FUA on every write, N > 0 = flush every N seconds, 0 = never.
     /// Mirrors `TargetRecord.flushIntervalSeconds` exactly.
@@ -193,6 +197,9 @@ struct TargetEditor: View {
     /// number when they still hold the other protocol's defaults.
     private var isNVMe: Bool { IQN.isNQN(targetIQN) }
 
+    /// The name this Mac presents for the protocol being edited.
+    private var hostIdentity: String? { isNVMe ? hostNQN : initiatorName }
+
     private var protocolPicker: Binding<Bool> {
         Binding(get: { isNVMe }, set: { nvme in
             guard nvme != isNVMe else { return }
@@ -227,31 +234,42 @@ struct TargetEditor: View {
                     TextField(isNVMe ? "Namespace ID" : "LUN", text: $lun)
                 }
 
-                if isNVMe {
-                    Section("Access") {
-                        // NVMe-oF has no CHAP. The subsystem decides by host
-                        // NQN, so the one thing to show here is ours.
-                        HStack {
-                            Text("This Mac's host NQN")
-                            Spacer()
-                            Text(hostNQN ?? "—")
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
-                                .lineLimit(1).truncationMode(.middle)
-                            if let hostNQN {
-                                Button("Copy") {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(hostNQN, forType: .string)
-                                }
-                                .buttonStyle(.link)
+                Section("Access") {
+                    // Both protocols gate on the name this Mac presents — a
+                    // subsystem by host NQN, a target (optionally) by initiator
+                    // IQN — so what to show here is ours. Only iSCSI has CHAP
+                    // on top; that is the next section.
+                    HStack {
+                        Text(isNVMe ? "This Mac's host NQN" : "This Mac's initiator IQN")
+                        Spacer()
+                        Text(hostIdentity ?? "—")
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .lineLimit(1).truncationMode(.middle)
+                        if let hostIdentity {
+                            Button("Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(hostIdentity, forType: .string)
                             }
+                            .buttonStyle(.link)
                         }
-                        Text("Add it to the subsystem's allowed hosts on the storage device, "
-                             + "or allow any host there. Namespace IDs start at 1.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
-                } else {
+                    // The IQN caption says it follows the computer name because
+                    // that is the one way it moves: a rename changes it at the
+                    // next daemon start, and an allow-list keyed on the old
+                    // name then refuses this Mac. The NQN is UUID-derived and
+                    // has no such clause to earn.
+                    Text(isNVMe
+                         ? "Add it to the subsystem's allowed hosts on the storage device, "
+                           + "or allow any host there. Namespace IDs start at 1."
+                         : "Add it to the target's allowed initiators on the storage device, "
+                           + "or allow any initiator there. It follows this Mac's name, so "
+                           + "renaming the Mac changes it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !isNVMe {
                     Section("Authentication") {
                         TextField("CHAP user", text: $chapUser)
                         SecureField(hasStoredSecret ? "Saved — type to replace" : "CHAP secret",
@@ -350,7 +368,10 @@ struct TargetEditor: View {
                 hasStoredMutualSecret =
                     (try? await DaemonConnection.hasMutualCHAPSecret(targetID: id)) ?? false
             }
-            hostNQN = try? await DaemonConnection.info().hostNQN
+            if let info = try? await DaemonConnection.info() {
+                hostNQN = info.hostNQN
+                initiatorName = info.initiatorName
+            }
         }
     }
 

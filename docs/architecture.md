@@ -125,7 +125,11 @@ data block being 1024 bytes, answered as "Data SGL Length Invalid".
   nothing persisted, nothing `removeAllData` can lose, nothing a hostname
   change moves, and the hardware UUID itself never leaves the machine.
   `iscsictl nvme` derives the same one, so the NAS allow-list entry is added
-  once.
+  once. The app's target editor shows this and the iSCSI initiator IQN
+  (`iqn.2026-08.me.herko:<computer name>`, so a rename moves it) for the
+  respective allow-lists; both come over `daemonInfo` from the running
+  daemon, never recomputed in the app, so what is shown is what is on the
+  wire.
 
 **What the daemon sees.** One rule: a target name beginning `nqn.` is
 NVMe/TCP, anything else is iSCSI. `DaemonCore.login` is the only place that

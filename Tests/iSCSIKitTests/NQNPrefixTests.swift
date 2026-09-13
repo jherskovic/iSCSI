@@ -28,16 +28,19 @@ struct NQNPrefixTests {
         #expect(session.isNVMe)
     }
 
-    /// An old daemon's reply has no hostNQN; a new app must still decode it,
-    /// and a new daemon's reply must carry it.
-    @Test func daemonInfoRoundTripsWithAndWithoutAHostNQN() throws {
+    /// An old daemon's reply has neither identity; a new app must still
+    /// decode it, and a new daemon's reply must carry both.
+    @Test func daemonInfoRoundTripsWithAndWithoutTheHostIdentities() throws {
         let legacy = Data(#"{"version":"0.5.1","build":"7","pid":3,"authorizationRelaxed":false}"#.utf8)
         let old = try JSONDecoder().decode(DaemonInfo.self, from: legacy)
         #expect(old.hostNQN == nil)
+        #expect(old.initiatorName == nil)
 
         let new = DaemonInfo(version: "1", build: "2", pid: 3, authorizationRelaxed: false,
-                             hostNQN: "nqn.2014-08.org.nvmexpress:uuid:abc")
+                             hostNQN: "nqn.2014-08.org.nvmexpress:uuid:abc",
+                             initiatorName: "iqn.2026-08.me.herko:some-mac")
         let back = try JSONDecoder().decode(DaemonInfo.self, from: try JSONEncoder().encode(new))
         #expect(back == new)
+        #expect(back.initiatorName == "iqn.2026-08.me.herko:some-mac")
     }
 }
