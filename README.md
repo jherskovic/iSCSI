@@ -55,6 +55,13 @@ round trip at a time, which measured 2.1x faster with Force Unit Access on and
 2.6x with the target caching. That helps large files; the small writes a running
 VM makes are a single command already and are unchanged.
 
+A target can keep an optional **local disk cache** (target editor → Local
+cache, 1–16 GB, off by default): chunks read once and pushed out of the 32 MiB
+memory cache are kept on this Mac's disk, encrypted with a key that exists
+only in memory, for as long as the target is attached. It helps a working set
+larger than memory and slow links; it cannot help a first read, and writes
+still go to the target exactly as before.
+
 Writes default to Force Unit Access on every command, because FSKit delivers no
 barrier signal and an acknowledged write sitting in a volatile target cache is a
 lie APFS will act on. That costs real throughput (measured 4.5x on my hardware).

@@ -500,6 +500,23 @@ Built and unit-tested; the binding mechanism was measured on the dev host
   until its next reconnect. Deliberate; worth revisiting only if someone
   notices a session parked on Wi-Fi.
 
+## 12. Local disk cache (0.7.0): what is unverified
+
+Built and tested against an in-memory daemon and an in-memory cache file
+(`docs/superpowers/specs/2026-10-02-local-disk-cache-design.md`). Not yet run:
+
+- **On hardware, with the cache on.** `scripts/readahead-soak.py` against a
+  cached volume must report zero mismatches; its region must exceed the 32 MiB
+  memory tier for the disk tier to be exercised at all. Rides with the 0.7.0 RC.
+- **Whether it pays.** No reuse measurement exists: reads are not traced. The
+  RC's long VM session and a run over Tailscale should show `diskSaved` in the
+  summary line; if they barely move it, the segmented-LRU split (80% protected)
+  and the admission rule are the first suspects, not the size.
+- **`F_NOCACHE`'s effect** on the tier's own reads is assumed, not measured.
+- **Several volumes at 16 GB each** on a small boot disk: each tier is sized at
+  its own attach against the free space then, so attach order decides who gets
+  room. Deliberate (per-target), unexercised.
+
 ## A note on method
 
 Four things were got wrong during this work and three had the same cause:
