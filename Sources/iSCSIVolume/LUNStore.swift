@@ -156,6 +156,12 @@ public final class BackingStore: LUNStore {
 
 // MARK: - Daemon-backed store (the real Backend A path)
 
+/// Carries a value across a queue hop the surrounding code already makes
+/// safe but the compiler cannot prove — the same idiom as XPCService's.
+private struct SendableBox<T>: @unchecked Sendable {
+    let value: T
+}
+
 /// Forwards block I/O to `iscsid` over XPC, which owns the live iSCSI session.
 /// Each call blocks on a semaphore with a timeout: a hung daemon must surface
 /// as an I/O error, not an unkillable filesystem.
@@ -240,6 +246,25 @@ public final class DaemonStore: LUNStore {
     /// because the fetch closures need `self`.
     private var cache: PrefetchChunkCache!
 
+    /// The local disk cache under `cache`, when this target has one and the
+    /// disk had room for it at attach. Set once in `init`.
+    private let diskTier: DiskChunkTier?
+    /// Why a configured tier could not be made at attach, for the summary.
+    private let diskTierOff: String?
+
+    /// Speculative fetches the disk tier can answer are read here, never on
+    /// the caller's thread: speculation is issued from inside a read, and
+    /// decrypting up to 32 chunks there would delay it.
+    private static let diskReads = DispatchQueue(label: "me.herko.iSCSIInitiator.fsext.disk-reads",
+                                                 qos: .userInitiated, attributes: .concurrent)
+
+    /// The sandbox container's Caches. The tier's file is unlinked the moment
+    /// it is opened, so nothing accumulates here.
+    private static var cacheDirectory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("chunks", isDirectory: true)
+    }
+
     /// A block-aligned read, served from the chunk cache.
     private func readAligned(offset: UInt64, length: Int) throws -> Data {
         try checkAlive()
@@ -317,6 +342,7 @@ public final class DaemonStore: LUNStore {
         // Cache stats first: `cache.stats` takes the cache's lock, so it must
         // not be fetched while holding `lock`.
         let s = cache.stats
+        let d = diskTier?.stats
         lock.lock(); defer { lock.unlock() }
         let served = s.hits + s.misses
         let rate = served > 0 ? (s.hits * 100 / served) : 0
@@ -325,7 +351,7 @@ public final class DaemonStore: LUNStore {
         // `unused` = speculative chunks never touched; `readAround` = bytes
         // fetched beyond what callers asked. hit% alone cannot indict the
         // cache; these can.
-        return "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B "
+        var line = "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B "
              + "flushes=\(flushCount) avgReq=\(avgRequest)B lastReq=\(lastRequestBytes)B "
              + "cache=\(rate)% (\(s.hits) hit, \(s.misses) miss, \(s.unanswered) unanswered) "
              + "maxDepth=\(s.maxDepth) cap=\(s.currentCap) "
@@ -333,6 +359,14 @@ public final class DaemonStore: LUNStore {
              + "unused=\(s.chunksSpeculated - s.speculatedUsed) "
              + "settled=\(s.resolvedUsed)used/\(s.resolvedWasted)wasted "
              + "readAround=\(s.readAroundBytes)B"
+        if let d {
+            line += " disk=\(d.hits)/\(d.lookups) diskSaved=\(d.savedBytes)B"
+                  + " spilled=\(d.spilled) diskCorrupt=\(d.corrupt)"
+            if let why = d.disabledReason { line += " diskOff=\(why)" }
+        } else if let why = diskTierOff {
+            line += " diskOff=\(why)"
+        }
+        return line
     }
 
     /// Connects to iscsid, logs in, and learns the LUN geometry; throws so
@@ -389,16 +423,34 @@ public final class DaemonStore: LUNStore {
         }
         let pinned = budgetReply.intValue > 0
         let budgetBytes = pinned ? budgetReply.intValue : Self.readaheadBytes
+        // Local disk cache: best effort. Anything short of a usable tier
+        // mounts without one and says why.
+        let cacheBytes = Self.localCacheSetting(from: proxy, session: handle)
+        var tier: DiskChunkTier?
+        var tierOff: String?
+        if cacheBytes > 0 {
+            switch DiskChunkTier.make(directory: Self.cacheDirectory, budgetBytes: cacheBytes,
+                                      chunkBytes: Self.chunkBytes(forBlockSize: Int(bs))) {
+            case .success(let made):
+                tier = made
+                fsLog.log("local cache \(made.capacityBytes >> 20) MiB of \(cacheBytes >> 20) MiB configured")
+            case .failure(let why):
+                tierOff = why.description
+                fsLog.log("local cache off: \(why.description, privacy: .public)")
+            }
+        }
         self.init(connection: xpc, injectedDaemon: nil, session: handle,
                   blockSize: bs, byteCount: product,
-                  budgetBytes: budgetBytes, pinned: pinned)
+                  budgetBytes: budgetBytes, pinned: pinned,
+                  ramCacheBytes: Self.maxCachedBytes, diskTier: tier, diskTierOff: tierOff)
     }
 
     /// Shared by both initialisers; the split lets tests inject a daemon and
     /// reach the RMW/cache/ioLock path without a privileged XPC connection.
     private init(connection: NSXPCConnection?, injectedDaemon: ISCSIDaemonProtocol?,
                  session: String, blockSize bs: UInt64, byteCount: UInt64,
-                 budgetBytes: Int, pinned: Bool) {
+                 budgetBytes: Int, pinned: Bool,
+                 ramCacheBytes: Int, diskTier: DiskChunkTier?, diskTierOff: String?) {
         self.connection = connection
         self.injectedDaemon = injectedDaemon
         self.session = session
@@ -406,11 +458,14 @@ public final class DaemonStore: LUNStore {
         self.blockSize = bs
         self.aligner = BlockAligner(blockSize: bs, capacity: byteCount)
 
+        self.diskTier = diskTier
+        self.diskTierOff = diskTierOff
+
         let chunk = Self.chunkBytes(forBlockSize: Int(bs))
         cache = PrefetchChunkCache(
             chunkBytes: chunk,
             capacity: byteCount,
-            maxCachedBytes: Self.maxCachedBytes,
+            maxCachedBytes: ramCacheBytes,
             policy: ReadaheadPolicy(budgetBytes: budgetBytes,
                                     maxSlots: Self.readaheadMaxSlots,
                                     minStreamBytes: Self.readaheadMinStream,
@@ -419,33 +474,55 @@ public final class DaemonStore: LUNStore {
             adaptiveDepth: !pinned,
             fetchSync: { [weak self] offset, length in
                 guard let self else { throw POSIXError(.EIO) }
+                if let data = self.diskTier?.lookup(offset: offset, length: length) { return data }
                 return try self.rawRead(offset: offset, length: length)
             },
             fetchAsync: { [weak self] offset, length, done in
-                guard let self, let proxy = try? self.daemon() else {
-                    done(nil)
+                guard let self else { done(nil); return }
+                guard let tier = self.diskTier else {
+                    self.fetchFromDaemon(offset: offset, length: length, done)
                     return
                 }
-                proxy.read(session: self.session, offset: NSNumber(value: offset),
-                           length: NSNumber(value: length)) { data, error in
-                    done(error == nil ? data : nil)
+                // Held strongly for one disk read only, so no lasting cycle.
+                let hop = SendableBox(value: (done: done, store: self))
+                Self.diskReads.async {
+                    let (done, store) = hop.value
+                    if let data = tier.lookup(offset: offset, length: length) { done(data); return }
+                    store.fetchFromDaemon(offset: offset, length: length, done)
                 }
+            },
+            onEvict: diskTier.map { tier -> (UInt64, Data) -> Void in
+                { offset, data in tier.spill(offset: offset, data: data) }
             })
 
         fsLog.log("DaemonStore session=\(session, privacy: .public) size=\(self.byteCount) blockSize=\(bs) chunk=\(chunk)")
     }
 
     /// Build a store around an injected daemon, for tests. Takes the geometry
-    /// so a fake daemon only answers `read`, `write` and `flush`.
+    /// so a fake daemon only answers `read`, `write` and `flush`; a smaller
+    /// RAM tier and an injected disk tier let tests force evictions.
     public convenience init(daemon: ISCSIDaemonProtocol, session: String,
                             blockSize: UInt64, byteCount: UInt64,
-                            readaheadBudgetBytes: Int? = nil) {
+                            readaheadBudgetBytes: Int? = nil,
+                            ramCacheBytes: Int? = nil,
+                            diskTier: DiskChunkTier? = nil) {
         self.init(connection: nil, injectedDaemon: daemon, session: session,
                   blockSize: blockSize, byteCount: byteCount,
                   budgetBytes: readaheadBudgetBytes ?? Self.readaheadBytes,
-                  pinned: readaheadBudgetBytes != nil)
+                  pinned: readaheadBudgetBytes != nil,
+                  ramCacheBytes: ramCacheBytes ?? Self.maxCachedBytes,
+                  diskTier: diskTier, diskTierOff: nil)
     }
 
+
+    /// One speculative chunk from the daemon; nil on any failure.
+    private func fetchFromDaemon(offset: UInt64, length: Int, _ done: @escaping (Data?) -> Void) {
+        guard let proxy = try? daemon() else { done(nil); return }
+        proxy.read(session: session, offset: NSNumber(value: offset),
+                   length: NSNumber(value: length)) { data, error in
+            done(error == nil ? data : nil)
+        }
+    }
 
     deinit {
         if let proxy = try? daemon() {
@@ -473,13 +550,29 @@ public final class DaemonStore: LUNStore {
     }
 
     /// Runs an async XPC call and waits for its reply, or throws ETIMEDOUT.
-    private static func blocking(_ body: (@escaping () -> Void) -> Void) throws {
+    private static func blocking(timeout: TimeInterval = DaemonStore.timeout,
+                                 _ body: (@escaping () -> Void) -> Void) throws {
         let sem = DispatchSemaphore(value: 0)
         body { sem.signal() }
         if sem.wait(timeout: .now() + timeout) == .timedOut {
             fsLog.error("daemon call timed out after \(Int(timeout))s")
             throw POSIXError(.ETIMEDOUT)
         }
+    }
+
+    /// The target's local cache size, or 0. Its own short timeout: an older
+    /// daemon without the selector never replies, and that must cost a
+    /// mount seconds, not the 30 s a data call is allowed.
+    static func localCacheSetting(from proxy: ISCSIDaemonProtocol, session: String,
+                                  timeout: TimeInterval = 5) -> Int {
+        let reply = OSAllocatedUnfairLock(initialState: 0)
+        try? blocking(timeout: timeout) { done in
+            proxy.localCacheBytes(session: session) { bytes, error in
+                if error == nil { reply.withLock { $0 = bytes.intValue } }
+                done()
+            }
+        }
+        return reply.withLock { $0 }
     }
 
     /// Reads exactly `[offset, offset+length)` where both are already
@@ -536,6 +629,7 @@ public final class DaemonStore: LUNStore {
         // range is the RMW-widened one throughout. The RMW branch reads via
         // `rawRead`, never the cache, so it cannot pick up a stale edge block.
         cache.willWrite(offset: plan.alignedOffset, length: plan.alignedLength)
+        diskTier?.invalidate(offset: plan.alignedOffset, length: plan.alignedLength)
         do {
             // `ioLock` covers every write: it serialises RMW (two partial
             // writes to one block must not lose an update) and pins
@@ -554,8 +648,13 @@ public final class DaemonStore: LUNStore {
                 try rawWrite(offset: plan.alignedOffset, data: block)
                 cache.didWrite(block, at: plan.alignedOffset)
             }
+            // After the RAM patch, never before: a chunk the RAM tier evicts
+            // between the device write and here spills pre-write bytes, and
+            // this cancels that spill.
+            diskTier?.invalidate(offset: plan.alignedOffset, length: plan.alignedLength)
         } catch {
             cache.writeFailed(offset: plan.alignedOffset, length: plan.alignedLength)
+            diskTier?.invalidate(offset: plan.alignedOffset, length: plan.alignedLength)
             throw error
         }
 
