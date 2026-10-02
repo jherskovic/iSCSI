@@ -694,7 +694,7 @@ struct DextAttach: AsyncParsableCommand {
         #if canImport(IOKit) && canImport(Network)
         let trace = debug
         let label = portal
-        let core = DaemonCore(initiatorName: initiator) { host, port in
+        let core = DaemonCore(initiatorName: initiator) { host, port, _ in
             let tcp = try await NetworkTransport.connect(host: host, port: port)
             return trace ? TracingTransport(tcp, label: label) : tcp
         }

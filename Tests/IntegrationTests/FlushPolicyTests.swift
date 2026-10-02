@@ -21,7 +21,7 @@ struct FlushPolicyTests {
 
     func makeDaemon(disk: RAMDisk) -> (DaemonCore, @Sendable () -> Void) {
         let harnesses = HarnessBox()
-        let core = DaemonCore(initiatorName: "iqn.2026-08.com.example:daemon") { _, _ in
+        let core = DaemonCore(initiatorName: "iqn.2026-08.com.example:daemon") { _, _, _ in
             let (initiatorSide, targetSide) = MemoryPipe.pair()
             let target = MockTarget(config: MockTargetConfig(), disk: disk, transport: targetSide)
             let task = Task { await target.run() }

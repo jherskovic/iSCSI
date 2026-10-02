@@ -29,7 +29,7 @@ struct XPCServiceTests {
     ) async throws -> (DaemonCore, HarnessBox, TargetStore, TargetRecord) {
         let disk = RAMDisk()
         let harnesses = HarnessBox()
-        let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _ in
+        let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _, _ in
             let (initiatorSide, targetSide) = MemoryPipe.pair()
             let target = MockTarget(config: targetConfig, disk: disk,
                                     transport: targetSide)

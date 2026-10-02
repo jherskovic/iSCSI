@@ -18,7 +18,7 @@ private func makeDualDaemon(
     let subsystem = MockNVMeSubsystem(config: nvmeConfig, disk: nvmeDisk)
     let core = DaemonCore(initiatorName: "iqn.2026-08.com.example:daemon",
                           writeThrough: writeThrough, policy: testPolicy(),
-                          hostIdentity: testHost) { _, port in
+                          hostIdentity: testHost) { _, port, _ in
         let (initiatorSide, targetSide) = MemoryPipe.pair()
         if port == 4420 {
             harnesses.add(Task { await subsystem.serve(targetSide) })
