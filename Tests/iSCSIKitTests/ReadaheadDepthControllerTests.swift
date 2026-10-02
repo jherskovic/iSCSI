@@ -34,13 +34,49 @@ struct ReadaheadDepthControllerTests {
         #expect(c.cap == 4)
     }
 
-    @Test("waste below the low-water mark raises the depth by one")
+    @Test("waste between the stream mark and the low-water mark raises the depth by one")
     func lowWasteRaisesDepthAdditively() {
         var c = ReadaheadDepthController(initialCap: 8, ceiling: 32)
-        activeSecond(&c, used: 98, wasted: 2)    // 2%
-        #expect(c.cap == 9, "additive increase — a doubling here would oscillate against the halving")
-        activeSecond(&c, used: 98, wasted: 2)
+        activeSecond(&c, used: 97, wasted: 3)    // 3%
+        #expect(c.cap == 9, "a mixed workload creeps up; only a clean stream earns a doubling")
+        activeSecond(&c, used: 97, wasted: 3)
         #expect(c.cap == 10)
+    }
+
+    /// The symptom this exists for: a big copy spent ~24 s of reading at +1/s
+    /// climbing from the seed of 8 to the ceiling, while depth is what moves
+    /// FSKit throughput (391 / 636 / 1099 MB/s at depths 4 / 16 / 32).
+    @Test("a clean stream doubles depth from the floor to the ceiling")
+    func cleanStreamDoublesToCeiling() {
+        var c = ReadaheadDepthController(initialCap: 2, ceiling: 32)
+        var caps: [Int] = []
+        for _ in 0 ..< 4 {
+            activeSecond(&c, used: 100, wasted: 0)
+            caps.append(c.cap)
+        }
+        #expect(caps == [4, 8, 16, 32])
+    }
+
+    @Test("waste just under the stream mark still doubles")
+    func nearlyCleanStreamDoubles() {
+        var c = ReadaheadDepthController(initialCap: 8, ceiling: 32)
+        activeSecond(&c, used: 99, wasted: 1)    // 1%
+        #expect(c.cap == 16)
+    }
+
+    /// Why this is not TCP-style slow start, which grows additively for good
+    /// after its first cut: a copy that starts after a VM workload has pulled
+    /// depth down is exactly the case that was slow. The halving seconds stay
+    /// in the window for a while — 12% (hold), then 3% (+1) — before the clean
+    /// seconds alone decide it.
+    @Test("a clean stream regains the ceiling after waste has halved depth")
+    func cleanStreamRecoversAfterHalving() {
+        var c = ReadaheadDepthController(initialCap: 16, ceiling: 32)
+        activeSecond(&c, used: 70, wasted: 30)
+        activeSecond(&c, used: 70, wasted: 30)
+        #expect(c.cap == 4)
+        for _ in 0 ..< 5 { activeSecond(&c, used: 100, wasted: 0) }
+        #expect(c.cap == 32, "additive increase would have reached only 8")
     }
 
     /// A VM guest at ~80 reads/s resolves only a handful of chunks per second.
@@ -102,12 +138,12 @@ struct ReadaheadDepthControllerTests {
     @Test("weighting applies to counts, not to per-second ratios")
     func weightsApplyToCounts() {
         var c = ReadaheadDepthController(initialCap: 16, ceiling: 32)
-        // Oldest second: tiny sample, all waste. Most recent: large sample,
-        // no waste. Weighted by count this is far under the low-water mark;
-        // weighted by ratio the 0.1 * 100% tail would drag it upward.
+        // Oldest seconds: tiny samples, all waste. Most recent: large sample,
+        // no waste. Weighted by count this is 0.5%, under the stream mark;
+        // weighted by ratio the 0.3 + 0.1 all-waste tail reads 40% and halves.
         activeSecond(&c, used: 0, wasted: 3)
         activeSecond(&c, used: 0, wasted: 3)
         activeSecond(&c, used: 400, wasted: 0)
-        #expect(c.cap == 17, "the large recent sample should dominate and raise depth")
+        #expect(c.cap == 32, "the large recent sample should dominate and raise depth")
     }
 }
