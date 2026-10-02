@@ -121,7 +121,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 let handle = try await core.login(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value, chap: chap,
-                    flushPolicy: FlushPolicy(intervalSeconds: record.flushIntervalSeconds)
+                    flushPolicy: FlushPolicy(intervalSeconds: record.flushIntervalSeconds),
+                    binding: record.interfaceBinding
                 )
                 self.claim(handle, readaheadBudget: WorkloadProfile
                     .pinnedBudgetBytes(stored: record.workloadProfile) ?? 0)
@@ -357,7 +358,9 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     // MARK: - Discovery and inspection
 
     public func discoverTargets(host: String, port: NSNumber, chapUser: String?,
-                                chapSecret: String?, reply: @escaping (Data?, Error?) -> Void) {
+                                chapSecret: String?, interfaceName: String?,
+                                interfaceFallback: Bool,
+                                reply: @escaping (Data?, Error?) -> Void) {
         let box = SendableBox(reply)
         Task {
             do {
@@ -370,7 +373,9 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                     guard let chapUser, let chapSecret else { return nil }
                     return try CHAP.Credentials.validated(name: chapUser, secret: chapSecret)
                 }()
-                let found = try await core.discover(host: host, port: port.uint16Value, chap: chap)
+                let found = try await core.discover(
+                    host: host, port: port.uint16Value, chap: chap,
+                    binding: InterfaceBinding.named(interfaceName, fallback: interfaceFallback))
                 let info = found.map {
                     DiscoveredTargetInfo(targetIQN: $0.name, addresses: $0.addresses)
                 }
@@ -382,11 +387,15 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
-    public func discoverSubsystems(host: String, port: NSNumber, reply: @escaping (Data?, Error?) -> Void) {
+    public func discoverSubsystems(host: String, port: NSNumber, interfaceName: String?,
+                                   interfaceFallback: Bool,
+                                   reply: @escaping (Data?, Error?) -> Void) {
         let box = SendableBox(reply)
         Task {
             do {
-                let found = try await core.discoverSubsystems(host: host, port: port.uint16Value)
+                let found = try await core.discoverSubsystems(
+                    host: host, port: port.uint16Value,
+                    binding: InterfaceBinding.named(interfaceName, fallback: interfaceFallback))
                 let info = found.map {
                     DiscoveredTargetInfo(targetIQN: $0.name, addresses: $0.addresses)
                 }
@@ -415,15 +424,16 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
             do {
                 // Same credential resolution as login, deliberately: this is
                 // the UI's "are these credentials right?" probe, and resolving
-                // any differently would validate something the user never runs.
-                let (_, chap) = try await self.credentials(
+                // any differently would validate something the user never runs —
+                // the interface pin included.
+                let (record, chap) = try await self.credentials(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value)
                 // No flush policy: a probe lives milliseconds and stays
                 // write-through rather than spinning up a flush timer.
                 let handle = try await core.login(
                     host: host, port: port.uint16Value, targetIQN: targetIQN,
-                    lun: lun.uint64Value, chap: chap)
+                    lun: lun.uint64Value, chap: chap, binding: record.interfaceBinding)
                 // Always close, even when reading the capacity fails: a probe
                 // must not leave a session behind.
                 defer { Task { try? await self.core.logout(handle) } }

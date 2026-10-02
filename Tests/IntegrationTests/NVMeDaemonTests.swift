@@ -211,7 +211,8 @@ struct NVMeXPCServiceTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .appendingPathComponent("targets.json")))
         let data: Data = try await withCheckedThrowingContinuation { c in
-            service.discoverSubsystems(host: "nas", port: 4420) { data, error in
+            service.discoverSubsystems(host: "nas", port: 4420,
+                                       interfaceName: nil, interfaceFallback: false) { data, error in
                 if let error { c.resume(throwing: error) } else { c.resume(returning: data!) }
             }
         }
