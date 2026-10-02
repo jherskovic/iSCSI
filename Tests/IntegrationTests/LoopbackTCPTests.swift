@@ -109,5 +109,77 @@ struct LoopbackTCPTests {
         try await session.logout()
         await server.stop()
     }
+
+    // MARK: - Interface pinning, over real sockets
+
+    @Test("the system snapshot lists loopback and its address")
+    func snapshotListsLoopback() {
+        let snapshot = SystemInterfaces.snapshot()
+        #expect(snapshot.present.contains("lo0"))
+        #expect(snapshot.addresses.contains(
+            InterfaceAddress(name: "lo0", address: "127.0.0.1", isIPv6: false)))
+    }
+
+    @Test("a connection pinned to lo0 runs over lo0")
+    func pinnedToLoopback() async throws {
+        let server = try MockTargetServer { MockTargetConfig() }
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        let transport = try await NetworkTransport.connect(
+            host: "127.0.0.1", port: port,
+            binding: InterfaceBinding(name: "lo0", fallback: false))
+        #expect(transport.connectedPath.interfaceName == "lo0")
+        #expect(transport.connectedPath.fallback == nil)
+        await transport.close()
+    }
+
+    @Test("strict: a missing interface fails at once, naming it")
+    func strictMissingInterfaceFailsFast() async {
+        let clock = ContinuousClock()
+        let start = clock.now
+        await #expect(throws: TransportError.interfaceUnavailable(
+            name: "nosuch0", reason: "it is not present")) {
+            _ = try await NetworkTransport.connect(
+                host: "127.0.0.1", port: 9,
+                binding: InterfaceBinding(name: "nosuch0", fallback: false))
+        }
+        #expect(clock.now - start < .seconds(2))
+    }
+
+    @Test("prefer: a missing interface falls back to macOS routing and says so")
+    func preferMissingInterfaceFallsBack() async throws {
+        let server = try MockTargetServer { MockTargetConfig() }
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        let transport = try await NetworkTransport.connect(
+            host: "127.0.0.1", port: port,
+            binding: InterfaceBinding(name: "nosuch0", fallback: true))
+        #expect(transport.connectedPath.interfaceName == "lo0")
+        #expect(transport.connectedPath.fallback
+                == InterfacePinning.Fallback(from: "nosuch0", reason: "it is not present"))
+        await transport.close()
+    }
+
+    /// Bound to lo0, TEST-NET-1 is unroutable. macOS reports `.waiting`
+    /// (EADDRNOTAVAIL) within a millisecond and never `.failed` (measured
+    /// 2026-10-02), so without the `.waiting` rule this would sit out the
+    /// whole 10 s deadline.
+    @Test("strict: an interface with no route to the target fails at once")
+    func strictNoRouteFailsFast() async throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            _ = try await NetworkTransport.connect(
+                host: "192.0.2.1", port: 3260,
+                binding: InterfaceBinding(name: "lo0", fallback: false))
+            Issue.record("connected through an interface with no route to the target")
+        } catch let TransportError.interfaceUnavailable(name, reason) {
+            #expect(name == "lo0")
+            #expect(reason.contains("no route to 192.0.2.1"))
+        }
+        #expect(clock.now - start < .seconds(2))
+    }
 }
 #endif

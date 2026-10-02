@@ -5,19 +5,45 @@ import os
 
 /// TCP transport over Network.framework for a real iSCSI connection.
 /// Used by the daemon and by `iscsictl` against a live target.
-public final class NetworkTransport: ConnectionTransport, @unchecked Sendable {
+public final class NetworkTransport: ConnectionTransport, ConnectionPathReporting, @unchecked Sendable {
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "iscsi.transport")
+    /// The interface this connection ended up on, and whether a pin fell
+    /// back. Written inside `connect`, before the transport is handed out,
+    /// and never again.
+    public private(set) var connectedPath = ConnectedPath()
 
     private init(connection: NWConnection) {
         self.connection = connection
     }
 
     /// Open a TCP connection to host:port and wait until it is ready.
+    ///
+    /// A `binding` pins the connection by binding the interface's current
+    /// address (`requiredLocalEndpoint`); macOS scoped routing then keeps it
+    /// on that interface, route-less storage links included.
+    /// `requiredInterface` cannot: the `NWInterface` it needs only comes from
+    /// `NWPathMonitor`, which omits interfaces without a default route
+    /// (measured 2026-10-02, see the interface-pinning spec).
     public static func connect(
         host: String,
         port: UInt16,
+        binding: InterfaceBinding? = nil,
         timeout: Duration = .seconds(10)
+    ) async throws -> NetworkTransport {
+        let (transport, fallback) = try await InterfacePinning.connect(
+            binding: binding, host: host, snapshot: SystemInterfaces.snapshot
+        ) { attempt in
+            try await openConnection(host: host, port: port, attempt: attempt,
+                                     pinnedName: binding?.name, timeout: timeout)
+        }
+        transport.connectedPath.fallback = fallback
+        return transport
+    }
+
+    private static func openConnection(
+        host: String, port: UInt16, attempt: InterfacePinning.Attempt,
+        pinnedName: String?, timeout: Duration
     ) async throws -> NetworkTransport {
         let params = NWParameters.tcp
         if let tcp = params.defaultProtocolStack.internetProtocol as? NWProtocolTCP.Options {
@@ -25,17 +51,38 @@ public final class NetworkTransport: ConnectionTransport, @unchecked Sendable {
             tcp.enableKeepalive = true
             tcp.keepaliveIdle = 30
         }
+        if case .bound(let local) = attempt {
+            params.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(local), port: .any)
+        }
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port) ?? .init(integerLiteral: 3260)
         )
         let connection = NWConnection(to: endpoint, using: params)
         let transport = NetworkTransport(connection: connection)
-        try await transport.start(timeout: timeout)
+
+        // While bound, `.waiting` means the interface has no route to the
+        // target: macOS reports it within milliseconds (ENETDOWN,
+        // EADDRNOTAVAIL) and never escalates it to `.failed`, so waiting it
+        // out would only spend the whole deadline.
+        let unroutable: (name: String, host: String)? = {
+            if case .bound = attempt, let pinnedName { return (pinnedName, host) }
+            return nil
+        }()
+        do {
+            try await transport.start(timeout: timeout, unroutable: unroutable)
+        } catch {
+            // Never leave a failed attempt open: prefer mode is about to open
+            // another, and an abandoned NWConnection keeps its socket.
+            connection.cancel()
+            throw error
+        }
+        transport.connectedPath.interfaceName =
+            connection.currentPath?.availableInterfaces.first?.name
         return transport
     }
 
-    private func start(timeout: Duration) async throws {
+    private func start(timeout: Duration, unroutable: (name: String, host: String)?) async throws {
         let resumed = OSAllocatedUnfairLock(initialState: false)
         let connection = self.connection
         let queue = self.queue
@@ -56,6 +103,12 @@ public final class NetworkTransport: ConnectionTransport, @unchecked Sendable {
                         resumeOnce(.failure(TransportError.connectFailed("\(error)")))
                     case .cancelled:
                         resumeOnce(.failure(TransportError.closed))
+                    case .waiting(let error):
+                        if let unroutable {
+                            resumeOnce(.failure(TransportError.interfaceUnavailable(
+                                name: unroutable.name,
+                                reason: "it has no route to \(unroutable.host) (\(error))")))
+                        }
                     default:
                         break
                     }
