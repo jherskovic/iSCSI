@@ -228,6 +228,10 @@ public enum ISCSIError {
                 return (.cannotConnect, "Could not reach the target: \(why).",
                         "Check the address and port, and that the storage device "
                         + "is powered on.", nil)
+            case .interfaceUnavailable(let name, let reason):
+                return (.cannotConnect, "Could not use network interface \(name): \(reason).",
+                        "Reconnect \(name), or change this target's network interface — "
+                        + "or set it to Automatic — in its settings.", nil)
             }
 
         default:
