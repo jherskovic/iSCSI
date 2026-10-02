@@ -136,8 +136,10 @@ supplies the real attempt.
 - Every connect logs one line: the interface actually used (from the
   connection's `currentPath`), and for a bound target whether it fell back and
   why. Daemon subsystem, `session` category (`DaemonLog.session`).
-- `SessionInfo` gains `interfaceName: String?` and `interfaceFellBack: Bool?`
-  (optional, so the DTO stays decodable across skew). The Sessions window shows
+- `SessionInfo` gains `interfaceName: String?` and `interfaceFallbackFrom:
+  String?` — the pinned name a fallback left, nil when none — both optional so
+  the DTO stays decodable across skew. (A Bool, as first drafted, could not
+  say *which* interface was left.) The Sessions window shows
   "via en18", or "via en0 (fallback from en18)".
 
 Without this, prefer mode is indistinguishable from pinning silently not
@@ -203,8 +205,11 @@ Real network (dev host, `swift run iscsictl` — a CLI run, nothing installed or
 registered; discovery is read-only):
 
 - `discover 192.168.20.1 --interface en18` succeeds.
-- `discover 192.168.20.1 --interface en0` fails fast, naming `en0` and the
-  missing route.
+- `--interface en18` toward a 192.168.0.x address fails fast, naming `en18` and
+  the missing route — `en18` has no default route. (`--interface en0` toward
+  192.168.20.1 would *not* fail fast: `en0` has its own scoped default route,
+  so the SYN goes to the gateway and times out — the "routed but unanswered"
+  case, which correctly does not fall back.)
 - Against a 192.168.0.x portal, `--interface en17` and `--interface en0` each
   egress the named link despite `utun4` claiming the subnet — confirmed by the
   logged interface and the interface byte counters.
