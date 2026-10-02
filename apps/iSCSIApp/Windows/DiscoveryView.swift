@@ -20,6 +20,8 @@ struct DiscoveryView: View {
     @State private var isNVMe = false
     @State private var chapUser = ""
     @State private var chapSecret = ""
+    @State private var networkInterface: String?
+    @State private var interfaceFallback = false
     @State private var found: [DiscoveredTargetInfo] = []
     @State private var isSearching = false
     @State private var searched = false
@@ -49,6 +51,10 @@ struct DiscoveryView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
+                Section("Network") {
+                    InterfacePicker(name: $networkInterface, fallback: $interfaceFallback)
+                }
+
                 if !isNVMe {
                     Section("Authentication (optional)") {
                         TextField("CHAP user", text: $chapUser)
@@ -57,7 +63,7 @@ struct DiscoveryView: View {
                 }
             }
             .formStyle(.grouped)
-            .frame(maxHeight: 300)
+            .frame(maxHeight: 400)
             .onChange(of: isNVMe) { _, nvme in
                 // Swap the port only when it still holds the other protocol's
                 // default; a port the user typed is theirs.
@@ -141,13 +147,17 @@ struct DiscoveryView: View {
                 if isNVMe {
                     found = try await DaemonConnection.discoverSubsystems(
                         host: host.trimmingCharacters(in: .whitespaces),
-                        port: UInt16(port) ?? defaultPort)
+                        port: UInt16(port) ?? defaultPort,
+                        interface: InterfaceBinding.named(networkInterface,
+                                                          fallback: interfaceFallback))
                 } else {
                     found = try await DaemonConnection.discoverTargets(
                         host: host.trimmingCharacters(in: .whitespaces),
                         port: UInt16(port) ?? defaultPort,
                         chapUser: chapUser.isEmpty ? nil : chapUser,
-                        chapSecret: chapSecret.isEmpty ? nil : chapSecret)
+                        chapSecret: chapSecret.isEmpty ? nil : chapSecret,
+                        interface: InterfaceBinding.named(networkInterface,
+                                                          fallback: interfaceFallback))
                 }
             } catch {
                 found = []
@@ -162,8 +172,8 @@ struct DiscoveryView: View {
     }
 
     private func add(_ target: DiscoveredTargetInfo) {
-        // Carry the discovery credentials onto the target: a portal that needed
-        // them to list its targets will need them to log in, and asking twice
+        // Carry the discovery credentials and interface onto the target: a portal
+        // that needed them to list its targets will need them to log in, and asking twice
         // for the same secret is the kind of thing that makes people give up.
         // NSID 0 is reserved: an NVMe subsystem's first namespace is 1.
         let record = TargetRecord(
@@ -173,7 +183,9 @@ struct DiscoveryView: View {
             port: UInt16(port) ?? defaultPort,
             targetIQN: target.targetIQN,
             lun: isNVMe ? 1 : 0,
-            chapUser: (isNVMe || chapUser.isEmpty) ? nil : chapUser)
+            chapUser: (isNVMe || chapUser.isEmpty) ? nil : chapUser,
+            networkInterface: networkInterface,
+            interfaceFallback: networkInterface == nil ? nil : interfaceFallback)
         Task { await model.save(record, secret: (isNVMe || chapSecret.isEmpty) ? nil : chapSecret) }
     }
 

@@ -172,6 +172,10 @@ struct TargetEditor: View {
     /// Set around programmatic picker changes (the revert and the confirm) so
     /// `onChange` only prompts for changes the user made.
     @State private var suppressFlushPrompt = false
+    /// nil = Automatic. Mirrors `TargetRecord.networkInterface`.
+    @State private var networkInterface: String?
+    /// Prefer (true) or strict (false); stored only when an interface is set.
+    @State private var interfaceFallback: Bool
 
     init(model: AppModel, target: TargetRecord?) {
         self.model = model
@@ -189,6 +193,8 @@ struct TargetEditor: View {
         _chapSecret = State(initialValue: "")
         _mutualChapSecret = State(initialValue: "")
         _flushInterval = State(initialValue: target?.flushIntervalSeconds)
+        _networkInterface = State(initialValue: target?.interfaceBinding?.name)
+        _interfaceFallback = State(initialValue: target?.interfaceFallback ?? false)
     }
 
     /// The protocol is the name's prefix and nothing else: `nqn.` is
@@ -232,6 +238,15 @@ struct TargetEditor: View {
                               prompt: Text(isNVMe ? "nqn.2011-06.com.truenas:uuid:…:disk0"
                                                   : "iqn.2026-08.com.example:disk0"))
                     TextField(isNVMe ? "Namespace ID" : "LUN", text: $lun)
+                }
+
+                Section {
+                    InterfacePicker(name: $networkInterface, fallback: $interfaceFallback)
+                } header: {
+                    Text("Network")
+                } footer: {
+                    Text("Takes effect the next time this target is attached.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Access") {
@@ -463,7 +478,9 @@ struct TargetEditor: View {
             flushIntervalSeconds: flushInterval,
             // No UI: readahead depth adapts. An override hand-written into
             // targets.json is carried through an edit rather than erased by it.
-            workloadProfile: existing?.workloadProfile)
+            workloadProfile: existing?.workloadProfile,
+            networkInterface: networkInterface,
+            interfaceFallback: networkInterface == nil ? nil : interfaceFallback)
 
         LastPortal.remember(host: record.host, port: record.port)
         Task {

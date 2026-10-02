@@ -479,6 +479,23 @@ What it deliberately does not do:
 - **Host identity is the platform UUID's derivative.** A VM cloned with its
   UUID presents the same host NQN. `removeAllData` does not touch it.
 
+## 11. Interface pinning (0.7.0): what is unverified
+
+Built and unit-tested; the binding mechanism was measured on the dev host
+(`docs/superpowers/specs/2026-10-02-interface-pinning-design.md`). Not yet run:
+
+- **App-level, on the VMs.** The picker, an attach pinned strict and prefer, a
+  cable-pull recovery that keeps the pin, and the Sessions window's fallback
+  line. Rides with the 0.7.0 RC. Keep the cable out for **more than 20 s**:
+  strict waits for the interface inside each attempt's 10 s deadline, so a
+  short pull never exercises the wait that keeps recovery's wall-clock budget
+  equal to an unpinned session's.
+- **IPv6.** Names are resolved before binding and the family follows what the
+  interface holds, but nobody has an IPv6 portal to try it on.
+- **No migration back.** A prefer-mode session that fell back stays on its path
+  until its next reconnect. Deliberate; worth revisiting only if someone
+  notices a session parked on Wi-Fi.
+
 ## A note on method
 
 Four things were got wrong during this work and three had the same cause:

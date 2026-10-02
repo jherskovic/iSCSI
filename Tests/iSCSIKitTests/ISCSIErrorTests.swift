@@ -29,6 +29,16 @@ struct ISCSIErrorTests {
         #expect(auth.localizedRecoverySuggestion?.contains("CHAP") == true)
     }
 
+    @Test("an unavailable pinned interface names the interface and the way out")
+    func interfaceUnavailableIsActionable() {
+        let error = ISCSIError.nsError(
+            from: TransportError.interfaceUnavailable(name: "en18", reason: "it is not present"))
+        #expect(error.code == ISCSIError.Code.cannotConnect.rawValue)
+        #expect(error.localizedDescription.contains("en18"))
+        #expect(error.localizedDescription.contains("it is not present"))
+        #expect(error.localizedRecoverySuggestion?.contains("Automatic") == true)
+    }
+
     /// RFC 7143 status class 0x02 / detail 0x01 is an authorisation refusal, and
     /// is what a target actually returns for a wrong CHAP secret or a
     /// disallowed initiator IQN. Reporting it as a generic "login rejected"
@@ -98,6 +108,7 @@ struct ISCSIErrorTests {
             BlockDeviceError.outOfRange(lba: 1, blocks: 2, capacity: 3),
             TransportError.closed,
             TransportError.connectFailed("x"),
+            TransportError.interfaceUnavailable(name: "en18", reason: "it is not present"),
         ]
         for error in errors {
             let mapped = ISCSIError.nsError(from: error)

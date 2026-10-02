@@ -78,11 +78,18 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
     /// sets depth from measured waste. No UI; exists to hold depth still for
     /// debugging or A/B measurement. See `WorkloadProfile`.
     public var workloadProfile: String?
+    /// BSD name of the interface this target's connections must use
+    /// ("en18"). nil: macOS routing chooses, as before 0.7.0.
+    public var networkInterface: String?
+    /// When `networkInterface` cannot carry the connection: nil/false fails
+    /// it (strict), true falls back to macOS routing (prefer).
+    public var interfaceFallback: Bool?
 
     public init(id: String, displayName: String, host: String, port: UInt16 = 3260,
                 targetIQN: String, lun: UInt64 = 0, chapUser: String? = nil,
                 mutualChapUser: String? = nil, autoAttach: Bool = false,
-                flushIntervalSeconds: Int? = nil, workloadProfile: String? = nil) {
+                flushIntervalSeconds: Int? = nil, workloadProfile: String? = nil,
+                networkInterface: String? = nil, interfaceFallback: Bool? = nil) {
         self.id = id
         self.displayName = displayName
         self.host = host
@@ -94,10 +101,18 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
         self.autoAttach = autoAttach
         self.flushIntervalSeconds = flushIntervalSeconds
         self.workloadProfile = workloadProfile
+        self.networkInterface = networkInterface
+        self.interfaceFallback = interfaceFallback
     }
 
     /// Derived from the name, never stored.
     public var isNVMe: Bool { IQN.isNQN(targetIQN) }
+
+    /// The pin every connection for this target uses, or nil for macOS
+    /// routing. Derived, never stored.
+    public var interfaceBinding: InterfaceBinding? {
+        InterfaceBinding.named(networkInterface, fallback: interfaceFallback ?? false)
+    }
 }
 
 /// How much speculation a LUN's access pattern justifies.
@@ -221,6 +236,11 @@ public struct SessionInfo: Codable, Sendable, Equatable, Identifiable {
     /// A dictionary rather than a mirror of OperationalParameters so that adding
     /// a parameter to the engine does not break the wire format.
     public var negotiated: [String: String]
+    /// The interface the session's current connection runs over. nil when
+    /// unknown: an older daemon, or an in-memory transport.
+    public var interfaceName: String?
+    /// The pinned interface a prefer-mode connection fell back from.
+    public var interfaceFallbackFrom: String?
 
     public var byteCount: UInt64? {
         guard let blockSize, let blockCount else { return nil }
@@ -233,7 +253,8 @@ public struct SessionInfo: Codable, Sendable, Equatable, Identifiable {
     public init(handle: String, targetIQN: String, lun: UInt64,
                 blockSize: Int? = nil, blockCount: UInt64? = nil,
                 writeCacheEnabled: Bool? = nil, writeThrough: Bool,
-                recoveryCount: Int, negotiated: [String: String]) {
+                recoveryCount: Int, negotiated: [String: String],
+                interfaceName: String? = nil, interfaceFallbackFrom: String? = nil) {
         self.handle = handle
         self.targetIQN = targetIQN
         self.lun = lun
@@ -243,6 +264,8 @@ public struct SessionInfo: Codable, Sendable, Equatable, Identifiable {
         self.writeThrough = writeThrough
         self.recoveryCount = recoveryCount
         self.negotiated = negotiated
+        self.interfaceName = interfaceName
+        self.interfaceFallbackFrom = interfaceFallbackFrom
     }
 }
 

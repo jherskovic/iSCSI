@@ -191,6 +191,13 @@ Run this on a trusted, isolated segment, or inside a WireGuard/IPsec tunnel.
 FileVault on the volume protects the data at rest and over the wire; it does not
 stop an on-path attacker from corrupting the filesystem underneath you.
 
+A target can be **pinned to one network interface** (target editor → Network),
+so its traffic stays on a dedicated storage link and never wanders onto Wi-Fi
+or into a VPN's route. Strict pins fail rather than use another interface;
+prefer pins fall back to macOS routing and say so in the Sessions window. It
+binds the interface's own address, so it works on a direct-attached link with
+no router.
+
 ## Building
 
 ```sh

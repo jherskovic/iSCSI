@@ -99,11 +99,14 @@ extension DaemonConnection {
     // MARK: - Discovery and sessions
 
     static func discoverTargets(host: String, port: UInt16,
-                                chapUser: String?, chapSecret: String?)
+                                chapUser: String?, chapSecret: String?,
+                                interface: InterfaceBinding? = nil)
         async throws -> [DiscoveredTargetInfo] {
         try await decode([DiscoveredTargetInfo].self) { proxy, finish in
             proxy.discoverTargets(host: host, port: NSNumber(value: port),
-                                  chapUser: chapUser, chapSecret: chapSecret) { data, error in
+                                  chapUser: chapUser, chapSecret: chapSecret,
+                                  interfaceName: interface?.name,
+                                  interfaceFallback: interface?.fallback ?? false) { data, error in
                 finish(data, error)
             }
         }
@@ -112,9 +115,13 @@ extension DaemonConnection {
     /// NVMe/TCP discovery: the subsystems a portal's discovery log page lists,
     /// with `targetIQN` carrying each subsystem NQN. No credentials: NVMe-oF
     /// discovery has none, and access is decided per subsystem by host NQN.
-    static func discoverSubsystems(host: String, port: UInt16) async throws -> [DiscoveredTargetInfo] {
+    static func discoverSubsystems(host: String, port: UInt16,
+                                   interface: InterfaceBinding? = nil)
+        async throws -> [DiscoveredTargetInfo] {
         try await decode([DiscoveredTargetInfo].self) { proxy, finish in
-            proxy.discoverSubsystems(host: host, port: NSNumber(value: port)) { data, error in
+            proxy.discoverSubsystems(host: host, port: NSNumber(value: port),
+                                     interfaceName: interface?.name,
+                                     interfaceFallback: interface?.fallback ?? false) { data, error in
                 finish(data, error)
             }
         }

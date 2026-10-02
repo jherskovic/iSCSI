@@ -26,7 +26,7 @@ struct HandleScopingTests {
     private func makeCore() async throws -> (DaemonCore, HarnessBox, TargetStore) {
         let disk = RAMDisk()
         let harnesses = HarnessBox()
-        let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _ in
+        let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _, _ in
             let (initiatorSide, targetSide) = MemoryPipe.pair()
             let target = MockTarget(config: MockTargetConfig(), disk: disk,
                                     transport: targetSide)
@@ -167,7 +167,7 @@ struct TestConnectionTests {
     private func makeCore() -> (DaemonCore, HarnessBox) {
         let disk = RAMDisk()
         let harnesses = HarnessBox()
-        let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _ in
+        let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _, _ in
             let (initiatorSide, targetSide) = MemoryPipe.pair()
             let target = MockTarget(config: MockTargetConfig(), disk: disk,
                                     transport: targetSide)

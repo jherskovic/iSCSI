@@ -71,6 +71,13 @@ private struct SessionSummary: View {
 private struct SessionDetail: View {
     let session: SessionInfo
 
+    /// "en18", "en0 (fell back from en18)", or "—" when the daemon cannot say.
+    private var interfaceText: String {
+        guard let name = session.interfaceName else { return "—" }
+        guard let from = session.interfaceFallbackFrom else { return name }
+        return "\(name) (fell back from \(from))"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -83,6 +90,10 @@ private struct SessionDetail: View {
                         row("Capacity", ByteCountFormatter.string(
                             fromByteCount: Int64(bytes), countStyle: .file))
                     }
+                }
+
+                group("Network") {
+                    row("Interface", interfaceText)
                 }
 
                 group("Durability") {

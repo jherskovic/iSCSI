@@ -15,6 +15,9 @@ public protocol ConnectionTransport: Sendable {
 public enum TransportError: Error, Equatable, Sendable {
     case closed
     case connectFailed(String)
+    /// A pinned interface cannot carry the connection: it is absent, holds
+    /// no usable address, or has no route to the target.
+    case interfaceUnavailable(name: String, reason: String)
 }
 
 /// In-memory duplex pipe: two coupled transports, used by unit/integration

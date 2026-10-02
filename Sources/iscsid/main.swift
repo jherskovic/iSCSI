@@ -38,8 +38,8 @@ let core = DaemonCore(
     writeThrough: writeThrough,
     policy: policy,
     hostIdentity: nvmeHost
-) { host, port in
-    try await NetworkTransport.connect(host: host, port: port)
+) { host, port, binding in
+    try await NetworkTransport.connect(host: host, port: port, binding: binding)
 }
 
 let delegate = ISCSIListenerDelegate(core: core)

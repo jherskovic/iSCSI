@@ -15,7 +15,7 @@ struct DaemonCoreTests {
         config: MockTargetConfig = MockTargetConfig()
     ) -> (DaemonCore, @Sendable () -> Void) {
         let harnesses = HarnessBox()
-        let core = DaemonCore(initiatorName: "iqn.2026-08.com.example:daemon") { _, _ in
+        let core = DaemonCore(initiatorName: "iqn.2026-08.com.example:daemon") { _, _, _ in
             let (initiatorSide, targetSide) = MemoryPipe.pair()
             let target = MockTarget(config: config, disk: disk, transport: targetSide)
             let task = Task { await target.run() }
