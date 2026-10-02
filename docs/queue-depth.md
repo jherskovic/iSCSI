@@ -450,9 +450,33 @@ the option that wastes more for the same result — so the picker is gone and
 
 Weighted waste over the last three seconds of **activity** (0.6 / 0.3 / 0.1,
 most recent first), evaluated once per active second: above 15% the cap halves,
-below 6% it gains one, and in between it holds. Additive increase against
-multiplicative decrease, which converges instead of hunting; equilibrium
-therefore sits below the deadband's midpoint by construction.
+below 2% it doubles, from 2% to 6% it gains one, and in between it holds.
+Additive increase against multiplicative decrease for any workload that wastes
+anything, which converges instead of hunting; equilibrium therefore sits below
+the deadband's midpoint by construction.
+
+**The doubling band was added for 0.7.0.** At +1 per second alone, a big copy
+climbed from the seed of 8 to the ceiling over ~24 s of reading — derived from
+the code, not timed — and from the floor of 2 after VM-style use, ~30 s. Depth
+is what moves throughput through FSKit (391 / 636 / 1099 MB/s at depths 4 / 16
+/ 32, table above), so most of a multi-gigabyte copy ran below full speed. A
+clean stream now reaches the ceiling in two evaluations from the seed and four
+from the floor.
+
+The 2% line sits between two measured populations: the pure sequential pass
+settled at 0.0023% waste, the write-and-seek soak at 5.9–8.7% at its best
+depth. The mixed workload never sees a doubling, so its behaviour is unchanged.
+In steady state a doubling cannot overshoot into a cut: even if waste scaled
+with depth, a doubling from under 2% lands under 4%, far short of 15%. That
+bound is on *settled* waste, and waste settles at eviction (see "Why waste is
+counted at eviction" below) — so a workload that reads cleanly for a couple of
+seconds and then scatters, which is what a VM boot does, can take one or two
+doublings on stale evidence before its waste lands and the halving starts.
+That costs a few seconds of a deeper window, not correctness; whether it costs
+the boot anything is part of the pending hardware check. It deliberately is not
+TCP-style slow start, which grows additively for good after its first cut —
+that would leave exactly the slow case, a copy that follows a VM workload,
+climbing at +1 per second.
 
 Two details that are load-bearing rather than incidental:
 

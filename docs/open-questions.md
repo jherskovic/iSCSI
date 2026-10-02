@@ -254,9 +254,13 @@ reliably changed was wasted bandwidth. A setting whose options differ only in
 how much bandwidth they waste is not a choice worth offering a user, so
 `ReadaheadDepthController` now sets it: weighted waste over the last three
 seconds of *activity* (0.6/0.3/0.1), evaluated once per active second, halving
-the cap above 15% and adding one below 6%. Additive increase against
-multiplicative decrease, so it converges rather than hunts. It is driven by the
-read path rather than a timer, so an idle volume schedules nothing.
+the cap above 15%, adding one below 6%, and — since 0.7.0 — doubling it below
+2%, so a clean stream reaches the ceiling in seconds rather than the ~24 that
++1 per second took (`docs/queue-depth.md`, "The controller"). Additive increase
+against multiplicative decrease for anything that wastes, so it converges
+rather than hunts. It is driven by the read path rather than a timer, so an
+idle volume schedules nothing. The faster climb is unit-tested; its
+time-to-ceiling on real hardware has not yet been logged.
 
 Measured end to end: the write-and-seek-heavy soak drives it to depth 3 (8.7%
 waste, 93.1% hits, no mismatches); a pure 100 GB sequential pass takes it to the

@@ -3,8 +3,10 @@ import Foundation
 /// Chooses the speculation depth cap from what speculation is actually
 /// costing: measured, depth changed only wasted bandwidth (hit rate stayed
 /// flat), so raise it while speculation pays off and cut it when it doesn't
-/// (docs/soak-results-0.4.0.md). Additive increase, multiplicative decrease,
-/// so the loop converges instead of hunting across the deadband.
+/// (docs/soak-results-0.4.0.md). Multiplicative decrease; additive increase
+/// for a mixed workload, so the loop converges instead of hunting across the
+/// deadband; a doubling only for a clean stream, which reaches the ceiling in
+/// seconds instead of the ~24 it took at +1 per second.
 ///
 /// Pure state and no clock of its own — the caller feeds it elapsed time,
 /// which is what makes every rule testable without a mounted volume.
@@ -16,6 +18,14 @@ public struct ReadaheadDepthController: Sendable {
     /// Below this, speculation is nearly all being used and there is room to
     /// reach further.
     public static let lowWaterMark = 0.06
+    /// Below this, the reads are a clean stream and depth doubles. It sits
+    /// between two measured populations: a pure sequential pass settled
+    /// 0.0023% waste, the write-and-seek soak 5.9–8.7% at its best depth. On
+    /// settled waste a doubling cannot overshoot into a cut — even waste
+    /// proportional to depth lands under 4%. Waste settles at eviction,
+    /// though, so a stream that turns to scatter can be doubled once or twice
+    /// on stale clean evidence before the halving arrives.
+    public static let streamMark = 0.02
     /// Settled chunks the window must hold before any adjustment. A VM guest
     /// resolves only a handful per second; 80% waste on five chunks is noise.
     public static let minSamples = 20
@@ -89,6 +99,8 @@ public struct ReadaheadDepthController: Sendable {
         guard let share = wasteShare else { return }
         if share > Self.highWaterMark {
             cap = max(Self.floor, cap / 2)
+        } else if share < Self.streamMark {
+            cap = min(ceiling, cap * 2)
         } else if share < Self.lowWaterMark {
             cap = min(ceiling, cap + 1)
         }
