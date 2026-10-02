@@ -114,6 +114,10 @@ public final class PrefetchChunkCache: @unchecked Sendable {
     private let timeout: TimeInterval
     private let fetchSync: (UInt64, Int) throws -> Data
     private let fetchAsync: (UInt64, Int, @escaping (Data?) -> Void) -> Void
+    /// Receives each chunk evicted for capacity that a caller actually read —
+    /// the disk tier's only source. Called under the cache's lock: it must be
+    /// quick and must never call back into the cache.
+    private let onEvict: ((UInt64, Data) -> Void)?
 
     private let lock = NSLock()
     private var map: [UInt64: Entry] = [:]
@@ -145,7 +149,8 @@ public final class PrefetchChunkCache: @unchecked Sendable {
                 policy: ReadaheadPolicy, timeout: TimeInterval,
                 adaptiveDepth: Bool = false,
                 fetchSync: @escaping (UInt64, Int) throws -> Data,
-                fetchAsync: @escaping (UInt64, Int, @escaping (Data?) -> Void) -> Void) {
+                fetchAsync: @escaping (UInt64, Int, @escaping (Data?) -> Void) -> Void,
+                onEvict: ((UInt64, Data) -> Void)? = nil) {
         precondition(chunkBytes > 0)
         self.chunkBytes = chunkBytes
         self.capacity = capacity
@@ -154,6 +159,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         self.timeout = timeout
         self.fetchSync = fetchSync
         self.fetchAsync = fetchAsync
+        self.onEvict = onEvict
         if adaptiveDepth {
             let c = ReadaheadDepthController(initialCap: policy.chunkCap,
                                              ceiling: policy.maxSlots)
@@ -444,6 +450,12 @@ public final class PrefetchChunkCache: @unchecked Sendable {
             }
             guard let victim = coldest, let removed = removeLocked(victim.key) else { break }
             total -= removed.length
+            // Only what a caller read moves down a tier: unread speculation
+            // was never wanted the first time.
+            if let onEvict, !removed.speculative || removed.used,
+               case .ready(let data) = removed.snapshot {
+                onEvict(victim.key, data)
+            }
         }
     }
 
