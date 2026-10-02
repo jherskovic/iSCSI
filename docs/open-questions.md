@@ -486,9 +486,12 @@ Built and unit-tested; the binding mechanism was measured on the dev host
 
 - **App-level, on the VMs.** The picker, an attach pinned strict and prefer, a
   cable-pull recovery that keeps the pin, and the Sessions window's fallback
-  line. Rides with the 0.7.0 RC.
-- **IPv6.** A hostname that resolves only to IPv6 fails as "no route" under an
-  IPv4 pin; nobody has an IPv6-only portal to try it on.
+  line. Rides with the 0.7.0 RC. Keep the cable out for **more than 20 s**:
+  strict waits for the interface inside each attempt's 10 s deadline, so a
+  short pull never exercises the wait that keeps recovery's wall-clock budget
+  equal to an unpinned session's.
+- **IPv6.** Names are resolved before binding and the family follows what the
+  interface holds, but nobody has an IPv6 portal to try it on.
 - **No migration back.** A prefer-mode session that fell back stays on its path
   until its next reconnect. Deliberate; worth revisiting only if someone
   notices a session parked on Wi-Fi.

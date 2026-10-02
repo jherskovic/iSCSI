@@ -120,6 +120,13 @@ struct LoopbackTCPTests {
             InterfaceAddress(name: "lo0", address: "127.0.0.1", isIPv6: false)))
     }
 
+    @Test("the system resolver returns a literal as itself and resolves localhost")
+    func resolverAnswers() throws {
+        #expect(try SystemInterfaces.resolve("127.0.0.1") == ["127.0.0.1"])
+        #expect(try SystemInterfaces.resolve("localhost").contains("127.0.0.1"))
+        #expect(throws: (any Error).self) { try SystemInterfaces.resolve("nosuch.invalid") }
+    }
+
     @Test("a connection pinned to lo0 runs over lo0")
     func pinnedToLoopback() async throws {
         let server = try MockTargetServer { MockTargetConfig() }
@@ -134,17 +141,41 @@ struct LoopbackTCPTests {
         await transport.close()
     }
 
-    @Test("strict: a missing interface fails at once, naming it")
-    func strictMissingInterfaceFailsFast() async {
+    /// Strict waits for a missing interface within the connect deadline, as
+    /// an unpinned connect to a vanished link waits out its SYN — so a cable
+    /// re-seated inside recovery's budget heals the session — then names it.
+    @Test("strict: a missing interface fails once the deadline passes, naming it")
+    func strictMissingInterfaceWaitsOutTheDeadline() async {
         let clock = ContinuousClock()
         let start = clock.now
         await #expect(throws: TransportError.interfaceUnavailable(
             name: "nosuch0", reason: "it is not present")) {
             _ = try await NetworkTransport.connect(
                 host: "127.0.0.1", port: 9,
-                binding: InterfaceBinding(name: "nosuch0", fallback: false))
+                binding: InterfaceBinding(name: "nosuch0", fallback: false),
+                timeout: .milliseconds(800))
         }
-        #expect(clock.now - start < .seconds(2))
+        let elapsed = clock.now - start
+        #expect(elapsed >= .milliseconds(500), "gave up without waiting for the interface")
+        #expect(elapsed < .seconds(3))
+    }
+
+    /// A refusal (a stopped target, a NAS mid-reboot) is the target's answer,
+    /// not the interface's: reporting it as "no route" blamed the cable and,
+    /// failing instantly, cut a strict pin's recovery window to a quarter.
+    @Test("strict: a refused connection is not reported as an interface failure")
+    func strictRefusalIsNotAnInterfaceFailure() async {
+        do {
+            _ = try await NetworkTransport.connect(
+                host: "127.0.0.1", port: 1,
+                binding: InterfaceBinding(name: "lo0", fallback: false),
+                timeout: .milliseconds(500))
+            Issue.record("connected to a closed port")
+        } catch let TransportError.interfaceUnavailable(name, reason) {
+            Issue.record("a refusal was reported as an interface failure: \(name): \(reason)")
+        } catch {
+            // The deadline, exactly as an unpinned connect to a closed port.
+        }
     }
 
     @Test("prefer: a missing interface falls back to macOS routing and says so")

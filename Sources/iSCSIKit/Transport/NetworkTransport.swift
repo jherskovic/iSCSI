@@ -31,11 +31,35 @@ public final class NetworkTransport: ConnectionTransport, ConnectionPathReportin
         binding: InterfaceBinding? = nil,
         timeout: Duration = .seconds(10)
     ) async throws -> NetworkTransport {
+        // One deadline shared by every step of this connect — resolving, any
+        // wait for the interface, the bound attempt and a fallback — so a
+        // pinned connect never takes longer than an unpinned one would.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        func remaining() throws -> Duration {
+            let left = clock.now.duration(to: deadline)
+            guard left > .zero else { throw DeadlineError.timedOut }
+            return left
+        }
         let (transport, fallback) = try await InterfacePinning.connect(
-            binding: binding, host: host, snapshot: SystemInterfaces.snapshot
+            binding: binding, host: host,
+            snapshot: SystemInterfaces.snapshot,
+            resolve: { name in
+                try await withDeadline(try remaining()) {
+                    try await SystemInterfaces.resolveDetached(name)
+                }
+            },
+            waitForInterface: {
+                // Re-check the interface every quarter second until the
+                // deadline: a re-seated cable takes seconds to get a lease.
+                let poll = Duration.milliseconds(250)
+                guard clock.now.advanced(by: poll) < deadline else { return false }
+                try? await Task.sleep(for: poll)
+                return true
+            }
         ) { attempt in
             try await openConnection(host: host, port: port, attempt: attempt,
-                                     pinnedName: binding?.name, timeout: timeout)
+                                     pinnedName: binding?.name, timeout: try remaining())
         }
         transport.connectedPath.fallback = fallback
         return transport
@@ -51,11 +75,15 @@ public final class NetworkTransport: ConnectionTransport, ConnectionPathReportin
             tcp.enableKeepalive = true
             tcp.keepaliveIdle = 30
         }
-        if case .bound(let local) = attempt {
+        // Bound, connect to the address the policy resolved: a bound
+        // connection resolves names through the bound interface alone.
+        var target = host
+        if case .bound(let local, let remote) = attempt {
             params.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(local), port: .any)
+            target = remote
         }
         let endpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(host),
+            host: NWEndpoint.Host(target),
             port: NWEndpoint.Port(rawValue: port) ?? .init(integerLiteral: 3260)
         )
         let connection = NWConnection(to: endpoint, using: params)
@@ -104,7 +132,7 @@ public final class NetworkTransport: ConnectionTransport, ConnectionPathReportin
                     case .cancelled:
                         resumeOnce(.failure(TransportError.closed))
                     case .waiting(let error):
-                        if let unroutable {
+                        if let unroutable, Self.isRouteFailure(error) {
                             resumeOnce(.failure(TransportError.interfaceUnavailable(
                                 name: unroutable.name,
                                 reason: "it has no route to \(unroutable.host) (\(error))")))
@@ -116,6 +144,17 @@ public final class NetworkTransport: ConnectionTransport, ConnectionPathReportin
                 connection.start(queue: queue)
             }
         }
+    }
+
+    /// The `.waiting` reasons that mean the bound interface cannot reach the
+    /// target at all — measured: EADDRNOTAVAIL, ENETDOWN; plus their
+    /// siblings ENETUNREACH and EHOSTUNREACH. Anything else, a refusal above
+    /// all, is the target's answer: it runs the deadline exactly as an
+    /// unbound connect does, rather than being blamed on the interface and
+    /// spending recovery's attempts in milliseconds.
+    static func isRouteFailure(_ error: NWError) -> Bool {
+        guard case .posix(let code) = error else { return false }
+        return [.EADDRNOTAVAIL, .ENETDOWN, .ENETUNREACH, .EHOSTUNREACH].contains(code)
     }
 
     /// Deliver bytes, and give up if the caller stops waiting.

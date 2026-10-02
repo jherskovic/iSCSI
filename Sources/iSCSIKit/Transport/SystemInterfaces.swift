@@ -1,5 +1,6 @@
 #if canImport(Darwin)
 import Darwin
+import Foundation
 
 /// The interfaces and addresses the kernel reports right now. Lives beside
 /// `NetworkTransport` because it reads system state, which the rest of
@@ -36,6 +37,44 @@ public enum SystemInterfaces {
                                               isIPv6: family == AF_INET6))
         }
         return InterfaceSnapshot(present: present, addresses: addresses)
+    }
+
+    /// The addresses `host` resolves to through macOS's ordinary, unscoped
+    /// resolver: numeric strings, in the resolver's order, without
+    /// duplicates. A literal comes back as itself. Blocks; see
+    /// `resolveDetached`.
+    public static func resolve(_ host: String) throws -> [String] {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        var head: UnsafeMutablePointer<addrinfo>?
+        let status = getaddrinfo(host, nil, &hints, &head)
+        guard status == 0, let first = head else {
+            throw TransportError.connectFailed(
+                "could not resolve \(host): \(String(cString: gai_strerror(status)))")
+        }
+        defer { freeaddrinfo(head) }
+        var out: [String] = []
+        for entry in sequence(first: first, next: { $0.pointee.ai_next }) {
+            guard let sa = entry.pointee.ai_addr else { continue }
+            var name = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(sa, entry.pointee.ai_addrlen, &name, socklen_t(name.count),
+                              nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let address = name.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+            if !out.contains(address) { out.append(address) }
+        }
+        guard !out.isEmpty else { throw TransportError.connectFailed("could not resolve \(host)") }
+        return out
+    }
+
+    /// `resolve` on a dispatch queue, so a slow DNS server ties up a thread
+    /// of its own rather than one of Swift concurrency's few.
+    public static func resolveDetached(_ host: String) async throws -> [String] {
+        try await withCheckedThrowingContinuation { c in
+            DispatchQueue.global(qos: .userInitiated).async {
+                c.resume(with: Result { try resolve(host) })
+            }
+        }
     }
 }
 #endif

@@ -137,11 +137,15 @@ On the dev host, which has `en0` (Wi-Fi) and `en17` (wired) on 192.168.0/24,
 also claiming 192.168.0/24. All read-only.
 
     swift run iscsictl discover 192.168.20.1 --interface en18     # connected via en18, targets listed
+    swift run iscsictl discover 192.168.20.1.nip.io --interface en18   # a hostname: resolved unbound, then pinned
     swift run iscsictl discover 192.168.0.1 --port 80 --interface en18   # fails at once: en18 has no route
     swift run iscsictl discover 192.168.0.1 --port 80 --interface en17   # connected via en17, then a protocol error
     swift run iscsictl discover 192.168.0.1 --port 80 --interface en0    # connected via en0, then a protocol error
 
-The last two talk to the router's web port on purpose: what matters is the
+The hostname line matters: `en18` has no DNS resolver, and a bound connection
+resolves names through the bound interface alone, so this failed with "no
+route" until names were resolved before binding. The last two talk to the
+router's web port on purpose: what matters is the
 `connected via` line, which shows two interfaces on one subnet chosen apart —
 and Tailscale's route to the same subnet ignored. The protocol error after it
 is the router not speaking iSCSI.

@@ -83,22 +83,35 @@ public struct InterfaceBinding: Sendable, Equatable {
 `TargetRecord` → `InterfaceBinding?` (nil when `networkInterface` is nil/empty).
 
 At every connect attempt — the initial login, every recovery reconnect, both
-NVMe queues — the transport:
+NVMe queues — the transport, inside **one** connect deadline shared by every
+step below:
 
-1. Resolves the name to a current address with `getifaddrs`. Not cached: DHCP
-   and re-plugged cables change it. Address choice: IPv4 unless the target host
-   is an IPv6 literal, in which case IPv6 (a hostname that resolves only to
-   IPv6 therefore fails as no route under an IPv4 pin; not worth more
-   machinery until someone has one). Link-local addresses (169.254/16,
-   fe80::/10) do not count — an interface holding only a self-assigned address
-   has lost its network.
-2. If there is no usable address (interface absent, down, or address-less):
-   strict → throw `TransportError.interfaceUnavailable(name:, reason:)`;
-   prefer → connect unbound and record the fallback.
-3. Otherwise connects with `requiredLocalEndpoint = .hostPort(address, .any)`.
-   While bound, `.waiting` ends the attempt at once with
+1. Resolves the target name the ordinary, unscoped way (`getaddrinfo`, off the
+   concurrency pool). A bound connection resolves names through the bound
+   interface alone, and a storage link usually has no resolver — so a pinned
+   hostname could otherwise never connect (review finding I1, reproduced
+   against the NAS). A name that does not resolve fails both modes: an
+   unbound connect would fail the same way.
+2. Picks the endpoints from the interface's current addresses (`getifaddrs`,
+   not cached: DHCP and re-plugged cables change it): the first target
+   address, IPv4 before IPv6, whose family the interface holds a usable
+   address in. Link-local addresses (169.254/16, fe80::/10) do not count — an
+   interface holding only a self-assigned address has lost its network.
+3. If there is no usable address (interface absent, down, or address-less):
+   strict → re-check every 250 ms until the deadline, then throw
+   `TransportError.interfaceUnavailable(name:, reason:)`; prefer → connect
+   unbound at once and record the fallback. Strict waits because failing
+   instantly ran recovery's whole budget out in ~16 s, against ~65 s for an
+   unpinned session whose link is pulled — so a re-seated cable that heals an
+   unpinned session would have unmounted a pinned one (review finding M1).
+4. Otherwise binds `requiredLocalEndpoint = .hostPort(local, .any)` and
+   connects to the resolved target address. While bound, a `.waiting` whose
+   reason is a route failure (EADDRNOTAVAIL, ENETDOWN, ENETUNREACH,
+   EHOSTUNREACH) ends the attempt at once with
    `interfaceUnavailable(name:, reason: "no route to <host>")`; prefer then
-   retries unbound, strict throws.
+   retries unbound, strict throws. Any other `.waiting` — a refusal above all —
+   is the target's answer and runs the deadline exactly as unbound does
+   (review finding I2: reporting a refusal as "no route" blamed the cable).
 
 Prefer falls back **only on these fast signals** (no address, no route). An
 interface that is up and routed but whose SYNs go unanswered is a target
