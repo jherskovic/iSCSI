@@ -130,6 +130,22 @@ extension with fsShortName found" — the row still names the old appex's
 UUID. `pluginkit -a <appex>`, `pluginkit -e use -i me.herko.iSCSIInitiator.fsext`,
 then `sudo killall fskitd` brings it back without a reboot.
 
+## Interface pinning (0.7.0)
+
+On the dev host, which has `en0` (Wi-Fi) and `en17` (wired) on 192.168.0/24,
+`en18` on the NAS's 192.168.20/24 with no default route, and Tailscale (`utun4`)
+also claiming 192.168.0/24. All read-only.
+
+    swift run iscsictl discover 192.168.20.1 --interface en18     # connected via en18, targets listed
+    swift run iscsictl discover 192.168.0.1 --port 80 --interface en18   # fails at once: en18 has no route
+    swift run iscsictl discover 192.168.0.1 --port 80 --interface en17   # connected via en17, then a protocol error
+    swift run iscsictl discover 192.168.0.1 --port 80 --interface en0    # connected via en0, then a protocol error
+
+The last two talk to the router's web port on purpose: what matters is the
+`connected via` line, which shows two interfaces on one subnet chosen apart —
+and Tailscale's route to the same subnet ignored. The protocol error after it
+is the router not speaking iSCSI.
+
 ## Fuzzing
 
 `scripts/fuzz.sh [seconds]` builds `pdu-fuzz` with AddressSanitizer and runs a
