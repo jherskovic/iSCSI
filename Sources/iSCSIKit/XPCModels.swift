@@ -84,12 +84,16 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
     /// When `networkInterface` cannot carry the connection: nil/false fails
     /// it (strict), true falls back to macOS routing (prefer).
     public var interfaceFallback: Bool?
+    /// Local disk cache size in GB (GiB), 1…16, used only while attached.
+    /// nil — and any other value — is off. See `DiskChunkTier`.
+    public var localCacheGB: Int?
 
     public init(id: String, displayName: String, host: String, port: UInt16 = 3260,
                 targetIQN: String, lun: UInt64 = 0, chapUser: String? = nil,
                 mutualChapUser: String? = nil, autoAttach: Bool = false,
                 flushIntervalSeconds: Int? = nil, workloadProfile: String? = nil,
-                networkInterface: String? = nil, interfaceFallback: Bool? = nil) {
+                networkInterface: String? = nil, interfaceFallback: Bool? = nil,
+                localCacheGB: Int? = nil) {
         self.id = id
         self.displayName = displayName
         self.host = host
@@ -103,6 +107,7 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
         self.workloadProfile = workloadProfile
         self.networkInterface = networkInterface
         self.interfaceFallback = interfaceFallback
+        self.localCacheGB = localCacheGB
     }
 
     /// Derived from the name, never stored.
@@ -112,6 +117,13 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
     /// routing. Derived, never stored.
     public var interfaceBinding: InterfaceBinding? {
         InterfaceBinding.named(networkInterface, fallback: interfaceFallback ?? false)
+    }
+
+    /// The cache size in bytes; 0 when off. A hand-edited value outside
+    /// 1…16 is off rather than clamped: a typo must not silently claim disk.
+    public var localCacheBytes: Int {
+        guard let gb = localCacheGB, (1 ... 16).contains(gb) else { return 0 }
+        return gb << 30
     }
 }
 

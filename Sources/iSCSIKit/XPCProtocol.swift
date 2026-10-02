@@ -51,6 +51,11 @@ import Foundation
     /// from it, keeping the lookup on the daemon's side of the trust boundary.
     func readaheadBudget(session: String, reply: @escaping (NSNumber, Error?) -> Void)
 
+    /// Local disk cache size for this session's target, in bytes (0 = off),
+    /// resolved at login. Keyed on the session handle for the same reason as
+    /// `readaheadBudget`: the extension forwards nothing about the target.
+    func localCacheBytes(session: String, reply: @escaping (NSNumber, Error?) -> Void)
+
     /// Block read. offset/length in bytes, block-aligned. Reply: data.
     func read(session: String, offset: NSNumber, length: NSNumber, reply: @escaping (Data?, Error?) -> Void)
 

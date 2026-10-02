@@ -24,6 +24,11 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     var flushes = 0
     /// When set, the next write fails — the error path drops the cache overlap.
     var failNextWrite = false
+    /// What `localCacheBytes` answers.
+    var localCache = 0
+    /// false: `localCacheBytes` never replies, like an older daemon that
+    /// lacks the selector.
+    var answersLocalCache = true
 
     init(byteCount: Int) { bytes = Data(count: byteCount) }
 
@@ -71,6 +76,11 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
 
     func readaheadBudget(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
         reply(0, nil)
+    }
+
+    func localCacheBytes(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
+        guard answersLocalCache else { return }
+        reply(NSNumber(value: localCache), nil)
     }
 
     /// Contents of the LUN, for comparing against what was written.
