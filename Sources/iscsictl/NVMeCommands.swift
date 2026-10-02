@@ -46,9 +46,21 @@ struct NVMeOptions: ParsableArguments {
         return HostIdentity.nvmeHost()
     }
 
+    @Option(help: ArgumentHelp(
+        "Network interface to connect over, by BSD name (e.g. en18).",
+        discussion: "Strict: the connection fails rather than use any other interface. "
+            + "Omit to let macOS routing choose."))
+    var interface: String?
+
     func openTransport() async throws -> any ConnectionTransport {
         #if canImport(Network)
-        let tcp = try await NetworkTransport.connect(host: host, port: port)
+        let tcp = try await NetworkTransport.connect(
+            host: host, port: port,
+            binding: InterfaceBinding.named(interface, fallback: false))
+        if interface != nil {
+            FileHandle.standardError.write(Data(
+                "connected via \(tcp.connectedPath.interfaceName ?? "an unknown interface")\n".utf8))
+        }
         return debug ? NVMeTracingTransport(tcp, label: host) : tcp
         #else
         throw ValidationError("Network.framework unavailable on this platform")
