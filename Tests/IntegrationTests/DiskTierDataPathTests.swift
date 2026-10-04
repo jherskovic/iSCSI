@@ -98,6 +98,41 @@ struct DiskTierDataPathTests {
         #expect(try read(rig.store, at: 0) == Self.pattern(2))
     }
 
+    /// Review finding Critical #1: a reader running while the write is on the
+    /// wire evicts the chunk's pre-write bytes from RAM. Spilled and served,
+    /// they would be cached again after the write was acknowledged.
+    @Test("a chunk is neither spilled nor served while a write to it is in flight")
+    func nothingSpillsDuringAWrite() throws {
+        let rig = makeRig()
+        _ = try rig.store.write(Self.pattern(1), at: 0)
+        _ = try read(rig.store, at: 0)                    // chunk 0 in RAM, pre-write bytes
+        var ran = false
+        var leaked = false
+        rig.daemon.onWrite = { [self] in
+            rig.daemon.onWrite = nil
+            ran = true
+            _ = try? read(rig.store, at: 4 * Self.chunk)
+            _ = try? read(rig.store, at: 8 * Self.chunk)    // evicts chunk 0
+            rig.drain()
+            leaked = rig.tier.lookup(offset: 0, length: Self.chunk) != nil
+        }
+        _ = try rig.store.write(Self.pattern(2), at: 0)
+        #expect(ran)
+        #expect(!leaked, "the disk tier held pre-write bytes of a chunk being written")
+        #expect(try read(rig.store, at: 0) == Self.pattern(2))
+    }
+
+    @Test("releasing the local cache leaves reads working and says so")
+    func releaseKeepsReadsWorking() throws {
+        let rig = makeRig()
+        _ = try rig.store.write(Self.pattern(1), at: 0)
+        try evictChunkZero(rig)
+        rig.store.releaseLocalCache()
+        #expect(rig.file.discarded)
+        #expect(try read(rig.store, at: 0) == Self.pattern(1))
+        #expect(rig.store.summary.contains("diskOff=detached"))
+    }
+
     @Test("reads keep working after the tier disables itself")
     func readsSurviveDisable() throws {
         let rig = makeRig()

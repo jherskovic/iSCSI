@@ -106,6 +106,10 @@ public final class DiskChunkTier: @unchecked Sendable {
     static let reserveBytes: Int64 = 10 << 30
     /// Below this, a tier is not worth its bookkeeping.
     static let minimumBytes = 1 << 30
+    /// Most spills waiting to be written. A spill is optional; past this,
+    /// one is dropped rather than buffered, so a backlog cannot grow the
+    /// extension's memory 256 KiB at a time.
+    static let maxQueuedSpills = 64
 
     let chunkBytes: Int
     let slotCount: Int
@@ -129,7 +133,19 @@ public final class DiskChunkTier: @unchecked Sendable {
     /// Chunk offset → ticket of the spill queued for it. `invalidate` removes
     /// the ticket; a queued spill lands only if its ticket is still current.
     private var tickets: [UInt64: UInt64] = [:]
+    /// Chunk offset → writes in flight over it. A fenced chunk is never
+    /// spilled, landed or served: between a write's edges the RAM tier can
+    /// evict the chunk's pre-write bytes, and its generation guard protects
+    /// only what it fetches — not bytes this tier would hand back after the
+    /// write is acknowledged.
+    private var fences: [UInt64: Int] = [:]
     private var nextTicket: UInt64 = 0
+    /// Free-space recheck as the file grows: slots below `checkedSlots` were
+    /// cleared by a check; past `growthLimit` the file may not grow at all.
+    private let freeSpaceCheck: (() -> Int64?)?
+    private let growthCheckSlots: Int
+    private var checkedSlots = 0
+    private var growthLimit: Int
     private var sealCount: UInt64 = 0
     private var statsStore = Stats()
 
@@ -143,7 +159,8 @@ public final class DiskChunkTier: @unchecked Sendable {
 
     init(file: ChunkFile, budgetBytes: Int, chunkBytes: Int,
          spillQueue: DispatchQueue = DispatchQueue(label: "me.herko.iSCSIInitiator.fsext.spill",
-                                                    qos: .utility)) {
+                                                    qos: .utility),
+         freeSpace: (() -> Int64?)? = nil, growthCheckSlots: Int? = nil) {
         precondition(chunkBytes > 0)
         self.file = file
         self.chunkBytes = chunkBytes
@@ -152,13 +169,16 @@ public final class DiskChunkTier: @unchecked Sendable {
         freeSlots = Array((0 ..< slotCount).reversed())
         order = SegmentedLRU(protectedCapacity: slotCount * 4 / 5)
         self.spillQueue = spillQueue
+        freeSpaceCheck = freeSpace
+        self.growthCheckSlots = max(1, growthCheckSlots ?? ((256 << 20) / (chunkBytes + Self.tagRoom)))
+        growthLimit = slotCount
     }
 
     /// The tier for an attach: an unlinked file under `directory`, sized to
     /// `min(budget, free space − reserve)`. A failure is a reason to log, never
     /// a reason to fail the mount.
     static func make(directory: URL, budgetBytes: Int, chunkBytes: Int,
-                     freeSpace: (URL) -> Int64? = DiskChunkTier.freeSpace)
+                     freeSpace: @escaping (URL) -> Int64? = DiskChunkTier.freeSpace)
         -> Result<DiskChunkTier, Unavailable> {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -172,7 +192,8 @@ public final class DiskChunkTier: @unchecked Sendable {
         }
         do {
             let file = try UnlinkedFile(directory: directory)
-            return .success(DiskChunkTier(file: file, budgetBytes: Int(usable), chunkBytes: chunkBytes))
+            return .success(DiskChunkTier(file: file, budgetBytes: Int(usable), chunkBytes: chunkBytes,
+                                          freeSpace: { freeSpace(directory) }))
         } catch {
             return .failure(.cannotCreate("\(error)"))
         }
@@ -194,7 +215,8 @@ public final class DiskChunkTier: @unchecked Sendable {
     func spill(offset: UInt64, data: Data) {
         lock.lock()
         guard statsStore.disabledReason == nil, !data.isEmpty, data.count <= chunkBytes,
-              slots[offset] == nil, tickets[offset] == nil else {
+              slots[offset] == nil, tickets[offset] == nil, fences[offset] == nil,
+              tickets.count < Self.maxQueuedSpills else {
             lock.unlock()
             return
         }
@@ -211,11 +233,15 @@ public final class DiskChunkTier: @unchecked Sendable {
             lock.unlock()
             return
         }
-        if freeSlots.isEmpty, let victim = order.evict(),
-           let freed = slots.removeValue(forKey: victim) {
-            freeSlots.append(freed.index)
+        // Grow into a fresh slot while the disk can afford it; otherwise
+        // reuse the coldest chunk's.
+        var slot: Int?
+        if let next = freeSlots.last, next < growthLimit, growthAllowedLocked(through: next) {
+            slot = freeSlots.popLast()
+        } else if let victim = order.evict(), let freed = slots.removeValue(forKey: victim) {
+            slot = freed.index
         }
-        guard let index = freeSlots.popLast() else {
+        guard let index = slot else {
             tickets[offset] = nil
             lock.unlock()
             return
@@ -269,7 +295,7 @@ public final class DiskChunkTier: @unchecked Sendable {
         var co = offset
         while co < end {
             let clen = Int(min(chunk, end - co))
-            guard let slot = slots[co], slot.length == clen else {
+            guard let slot = slots[co], slot.length == clen, fences[co] == nil else {
                 lock.unlock()
                 return nil
             }
@@ -301,10 +327,14 @@ public final class DiskChunkTier: @unchecked Sendable {
         }
 
         lock.lock()
+        defer { lock.unlock() }
+        // Read without the lock, so check again: a chunk invalidated, reused
+        // or fenced by a write meanwhile must not be returned.
+        guard wanted.allSatisfy({ slots[$0.offset]?.version == $0.slot.version
+                                  && fences[$0.offset] == nil }) else { return nil }
         statsStore.hits += 1
         statsStore.savedBytes += UInt64(length)
-        for (co, slot) in wanted where slots[co]?.version == slot.version { order.hit(co) }
-        lock.unlock()
+        for (co, _) in wanted { order.hit(co) }
         return out
     }
 
@@ -329,41 +359,100 @@ public final class DiskChunkTier: @unchecked Sendable {
     /// any spill queued for one. Synchronous: no read after this returns can
     /// find the old bytes.
     func invalidate(offset: UInt64, length: Int) {
+        forEachChunk(offset: offset, length: length) { dropLocked($0) }
+    }
+
+    /// A write is about to be sent: drop the range and fence it, so nothing
+    /// for it is spilled, landed or served until `endWrite`.
+    func beginWrite(offset: UInt64, length: Int) {
+        forEachChunk(offset: offset, length: length) { co in
+            dropLocked(co)
+            fences[co, default: 0] += 1
+        }
+    }
+
+    /// The write is acknowledged and the RAM tier patched (or the write
+    /// failed and the RAM tier dropped it): drop the range again and lift
+    /// this write's fence. Every exit of a write must reach this.
+    func endWrite(offset: UInt64, length: Int) {
+        forEachChunk(offset: offset, length: length) { co in
+            dropLocked(co)
+            if let n = fences[co] { fences[co] = n > 1 ? n - 1 : nil }
+        }
+    }
+
+    /// Run `body` under the lock for each chunk key overlapping the range.
+    private func forEachChunk(offset: UInt64, length: Int, _ body: (UInt64) -> Void) {
         guard length > 0 else { return }
         let chunk = UInt64(chunkBytes)
         let end = offset &+ UInt64(length)
         lock.lock()
         var co = (offset / chunk) * chunk
         while co < end {
-            tickets[co] = nil
-            if let slot = slots.removeValue(forKey: co) {
-                order.remove(co)
-                freeSlots.append(slot.index)
-            }
+            body(co)
             co += chunk
         }
         lock.unlock()
     }
+
+    /// Forget `co` and cancel its queued spill. Must hold `lock`.
+    private func dropLocked(_ co: UInt64) {
+        tickets[co] = nil
+        if let slot = slots.removeValue(forKey: co) {
+            order.remove(co)
+            freeSlots.append(slot.index)
+        }
+    }
+
+    /// Whether the file may grow into slot `next`. Every `growthCheckSlots`
+    /// slots of growth, free space is checked again: the reserve must still
+    /// hold past the next stretch, or the tier stops growing for good and
+    /// evicts instead. Must hold `lock`.
+    private func growthAllowedLocked(through next: Int) -> Bool {
+        guard next >= checkedSlots else { return true }
+        guard let freeSpaceCheck else {
+            checkedSlots = slotCount
+            return true
+        }
+        let free = freeSpaceCheck() ?? 0
+        let stretch = Int64(growthCheckSlots) * Int64(stride)
+        if free - stretch >= Self.reserveBytes {
+            checkedSlots = next + growthCheckSlots
+            return true
+        }
+        growthLimit = next
+        fsLog.log("local cache stopped growing at \(next) slots: the disk is down to its reserve")
+        return false
+    }
+
+    /// The volume is detaching: give the space back now rather than whenever
+    /// the last reference goes, which FSKit decides. Not a failure, so quiet.
+    func release() { shutDown("detached", failure: false) }
 
     // MARK: - Failure
 
     /// Turn the tier off for the rest of the session: forget everything, give
     /// the file's space back, log once. Every later lookup misses without
     /// touching the file.
-    private func disable(_ reason: String) {
+    private func disable(_ reason: String) { shutDown(reason, failure: true) }
+
+    private func shutDown(_ reason: String, failure: Bool) {
         lock.lock()
         let first = statsStore.disabledReason == nil
         if first {
             statsStore.disabledReason = reason
             slots.removeAll()
             tickets.removeAll()
+            fences.removeAll()
             freeSlots.removeAll()
             order = SegmentedLRU(protectedCapacity: 0)
         }
         lock.unlock()
         guard first else { return }
         file.discard()
-        fsLog.error("local cache disabled: \(reason, privacy: .public); reads go to the network")
+        if failure {
+            fsLog.error("local cache disabled: \(reason, privacy: .public); reads go to the network")
+        }
     }
 
     // MARK: - Crypto framing

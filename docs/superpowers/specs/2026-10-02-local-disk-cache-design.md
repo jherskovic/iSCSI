@@ -135,17 +135,23 @@ protected survives it.
 The invariants, each with a test:
 
 1. **Only the RAM tier writes to the disk tier.** (Admission above.)
-2. **Every write invalidates overlapping disk entries at both edges** — in
-   `DaemonStore.write`, alongside `cache.willWrite` (before the device write)
-   and again alongside `cache.didWrite` / `cache.writeFailed` (after it). Both
-   edges, because the RAM tier can evict a chunk *between* them, and that spill
-   carries pre-write bytes.
+2. **Every write fences its chunks for as long as it is in flight** —
+   `beginWrite` alongside `cache.willWrite` (drop the range, fence it) and
+   `endWrite` after `cache.didWrite` / `cache.writeFailed` (drop it again, lift
+   the fence). A fenced chunk is never spilled, landed or served. Invalidating
+   at the two edges alone was not enough (review finding, reproduced with a
+   probe): the RAM tier can evict a chunk's pre-write bytes between the edges,
+   and a read after `didWrite` but before the second edge would pull them back
+   from disk past the RAM tier's generation guard — stale data after an
+   acknowledged write, once reads and writes overlap.
 3. **A pending spill can never land after an invalidation of its chunk.** When a
    spill is enqueued it records a per-chunk ticket under the tier's lock;
    invalidation removes the ticket; the queued job inserts only if its ticket is
    still current.
 4. **Invalidation is synchronous** — the in-memory index entry is gone before
-   `invalidate` returns, so no read after the write can find the old slot.
+   `invalidate` returns, so no read after the write can find the old slot. A
+   lookup, which reads the file without the lock, checks its slots and fences
+   again before returning anything.
 
 Concurrency: the tier's index is guarded by its own lock; file reads and the
 queued spills use `pread`/`pwrite` on one descriptor, so the file I/O itself
@@ -169,6 +175,17 @@ Stated as an invariant, with tests:
   later read goes to the network exactly as with the cache off.
 - Creating the tier at attach is best effort too: if anything fails, the volume
   mounts with the tier off and says so in the log.
+
+## Resource bounds
+
+- **Spill backlog:** at most 64 spills wait to be written (~16 MiB); past
+  that a spill is dropped, not buffered. A spill is optional.
+- **Free space, continuously:** the attach-time check sizes the tier, and the
+  file is re-checked every 256 MiB it grows; once free space would fall below
+  the 10 GiB reserve, the tier stops growing and evicts instead. Two tiers
+  sized against the same free space cannot together fill the boot volume.
+- **Detach:** the extension releases the tier at unmount, truncating the file
+  at once rather than when FSKit drops the volume.
 
 ## Storage
 

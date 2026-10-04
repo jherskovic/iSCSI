@@ -138,6 +138,109 @@ struct DiskChunkTierTests {
         #expect(tier.stats.spilled == 0)
     }
 
+    // MARK: - Writes in flight (review finding: Critical #1)
+
+    @Test("a chunk being written is never spilled")
+    func noSpillWhileFenced() {
+        let (tier, file, queue) = makeTier(slots: 4)
+        tier.beginWrite(offset: 0, length: Self.chunk)
+        tier.spill(offset: 0, data: Self.pattern(1))
+        queue.sync {}
+        tier.endWrite(offset: 0, length: Self.chunk)
+        #expect(tier.lookup(offset: 0, length: Self.chunk) == nil)
+        #expect(file.writes == 0)
+    }
+
+    @Test("a chunk being written is never served, and is gone once the write ends")
+    func noLookupWhileFenced() {
+        let (tier, _, queue) = makeTier(slots: 4)
+        tier.spill(offset: 0, data: Self.pattern(1))
+        queue.sync {}
+        tier.beginWrite(offset: 0, length: Self.chunk)
+        #expect(tier.lookup(offset: 0, length: Self.chunk) == nil)
+        tier.endWrite(offset: 0, length: Self.chunk)
+        #expect(tier.lookup(offset: 0, length: Self.chunk) == nil)
+    }
+
+    /// A lookup copies its slot and reads without the lock; a write that
+    /// begins in between must still stop those bytes from being returned.
+    @Test("a lookup whose chunk starts being written mid-read returns nothing")
+    func lookupRechecksAfterReading() {
+        let file = MemoryChunkFile()
+        let (tier, _, queue) = makeTier(slots: 4, file: file)
+        tier.spill(offset: 0, data: Self.pattern(1))
+        queue.sync {}
+        var once = true
+        file.onRead = {
+            guard once else { return }
+            once = false
+            tier.beginWrite(offset: 0, length: Self.chunk)
+        }
+        #expect(tier.lookup(offset: 0, length: Self.chunk) == nil)
+        file.onRead = nil
+        tier.endWrite(offset: 0, length: Self.chunk)
+    }
+
+    @Test("overlapping writes keep a chunk fenced until the last one ends")
+    func fencesCount() {
+        let (tier, _, queue) = makeTier(slots: 4)
+        tier.beginWrite(offset: 0, length: Self.chunk)
+        tier.beginWrite(offset: 0, length: 100)
+        tier.endWrite(offset: 0, length: 100)
+        tier.spill(offset: 0, data: Self.pattern(1))
+        queue.sync {}
+        #expect(tier.stats.spilled == 0, "still fenced by the first write")
+        tier.endWrite(offset: 0, length: Self.chunk)
+        tier.spill(offset: 0, data: Self.pattern(1))
+        queue.sync {}
+        #expect(tier.lookup(offset: 0, length: Self.chunk) == Self.pattern(1))
+    }
+
+    // MARK: - Resource bounds (review findings: Important #2-#4)
+
+    @Test("spills beyond the queue cap are dropped, not buffered")
+    func spillQueueIsBounded() {
+        let (tier, _, queue) = makeTier(slots: 100)
+        queue.suspend()
+        for i in 0 ..< 70 { tier.spill(offset: UInt64(i * Self.chunk), data: Self.pattern(UInt8(i))) }
+        queue.resume()
+        queue.sync {}
+        #expect(tier.stats.spilled == DiskChunkTier.maxQueuedSpills)
+    }
+
+    @Test("releasing the tier returns its space and turns it off quietly")
+    func releaseReturnsSpace() {
+        let (tier, file, queue) = makeTier(slots: 4)
+        tier.spill(offset: 0, data: Self.pattern(1))
+        queue.sync {}
+        tier.release()
+        #expect(file.discarded)
+        #expect(tier.stats.disabledReason == "detached")
+        #expect(tier.lookup(offset: 0, length: Self.chunk) == nil)
+    }
+
+    /// Free space is rechecked as the file grows, not only at attach: two
+    /// tiers sized against the same free space, or other apps filling the
+    /// disk, must not take the boot volume below the reserve.
+    @Test("the tier stops growing once free space reaches the reserve")
+    func growthStopsAtReserve() {
+        var checks = 0
+        let file = MemoryChunkFile()
+        let queue = DispatchQueue(label: "test.growth")
+        let tier = DiskChunkTier(
+            file: file, budgetBytes: 100 * Self.stride, chunkBytes: Self.chunk, spillQueue: queue,
+            freeSpace: {
+                checks += 1
+                return checks == 1 ? DiskChunkTier.reserveBytes + (1 << 30) : DiskChunkTier.reserveBytes
+            },
+            growthCheckSlots: 4)
+        for i in 0 ..< 20 { tier.spill(offset: UInt64(i * Self.chunk), data: Self.pattern(UInt8(i))) }
+        queue.sync {}
+        #expect(file.extent <= Int64(4 * Self.stride))
+        #expect(tier.lookup(offset: UInt64(19 * Self.chunk), length: Self.chunk) == Self.pattern(19))
+        #expect(tier.lookup(offset: 0, length: Self.chunk) == nil)
+    }
+
     // MARK: - Never more than a miss
 
     @Test("a tampered slot is a miss, freed and counted, never data")

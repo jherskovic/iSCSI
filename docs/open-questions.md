@@ -514,8 +514,14 @@ Built and tested against an in-memory daemon and an in-memory cache file
   and the admission rule are the first suspects, not the size.
 - **`F_NOCACHE`'s effect** on the tier's own reads is assumed, not measured.
 - **Several volumes at 16 GB each** on a small boot disk: each tier is sized at
-  its own attach against the free space then, so attach order decides who gets
-  room. Deliberate (per-target), unexercised.
+  attach and re-checks free space every 256 MiB it grows, stopping at the
+  10 GiB reserve. Unexercised on hardware.
+- **Space back at detach.** The extension releases the tier at unmount; whether
+  `df` shows the space back at once has not been watched.
+- **SSD wear.** Every chunk read and later evicted is written once: a 100 GB
+  copy off a cached volume writes ~100 GB to the local SSD. Opt-in and per the
+  spec's admission rule; worth measuring at the RC before recommending the
+  cache for bulk copies.
 
 ## A note on method
 

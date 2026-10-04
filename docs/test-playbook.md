@@ -166,6 +166,8 @@ destructive, scratch LUN only:
 
 Zero mismatches is the bar. Detach, and read `disk=`, `diskSaved=`, `spilled=`
 and `diskCorrupt=` from the unmount summary line; `diskCorrupt` must be 0.
+Run `df -h /` before the soak, at its end, and after the detach: the space the
+cache took must be back after the detach.
 
 ## Fuzzing
 

@@ -29,6 +29,9 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     /// false: `localCacheBytes` never replies, like an older daemon that
     /// lacks the selector.
     var answersLocalCache = true
+    /// Runs at the start of every write, before it is applied or answered —
+    /// for interleaving reads into a write that is on the wire.
+    var onWrite: (() -> Void)?
 
     init(byteCount: Int) { bytes = Data(count: byteCount) }
 
@@ -51,6 +54,7 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
 
     func write(session: String, offset: NSNumber, data: Data,
                reply: @escaping (Error?) -> Void) {
+        onWrite?()
         lock.lock()
         if failNextWrite {
             failNextWrite = false

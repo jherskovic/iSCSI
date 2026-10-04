@@ -51,6 +51,12 @@ public protocol LUNStore: AnyObject {
     func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int
     func write(_ data: Data, at offset: UInt64) throws -> Int
     func flush() throws
+    /// The volume is going away: return any local cache space now.
+    func releaseLocalCache()
+}
+
+extension LUNStore {
+    public func releaseLocalCache() {}
 }
 
 /// A local sparse file (resource URL host `proto`); isolates FSKit problems
@@ -629,7 +635,7 @@ public final class DaemonStore: LUNStore {
         // range is the RMW-widened one throughout. The RMW branch reads via
         // `rawRead`, never the cache, so it cannot pick up a stale edge block.
         cache.willWrite(offset: plan.alignedOffset, length: plan.alignedLength)
-        diskTier?.invalidate(offset: plan.alignedOffset, length: plan.alignedLength)
+        diskTier?.beginWrite(offset: plan.alignedOffset, length: plan.alignedLength)
         do {
             // `ioLock` covers every write: it serialises RMW (two partial
             // writes to one block must not lose an update) and pins
@@ -648,13 +654,10 @@ public final class DaemonStore: LUNStore {
                 try rawWrite(offset: plan.alignedOffset, data: block)
                 cache.didWrite(block, at: plan.alignedOffset)
             }
-            // After the RAM patch, never before: a chunk the RAM tier evicts
-            // between the device write and here spills pre-write bytes, and
-            // this cancels that spill.
-            diskTier?.invalidate(offset: plan.alignedOffset, length: plan.alignedLength)
+            diskTier?.endWrite(offset: plan.alignedOffset, length: plan.alignedLength)
         } catch {
             cache.writeFailed(offset: plan.alignedOffset, length: plan.alignedLength)
-            diskTier?.invalidate(offset: plan.alignedOffset, length: plan.alignedLength)
+            diskTier?.endWrite(offset: plan.alignedOffset, length: plan.alignedLength)
             throw error
         }
 
@@ -663,6 +666,8 @@ public final class DaemonStore: LUNStore {
         trace("write off=\(offset) len=\(plan.count) rmw=\(!plan.isExact)")
         return plan.count
     }
+
+    public func releaseLocalCache() { diskTier?.release() }
 
     /// SYNCHRONIZE CACHE. FSKit never signals barriers (see
     /// docs/backend-a-fskit-notes.md), so this only runs on final close — which
