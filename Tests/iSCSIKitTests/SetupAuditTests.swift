@@ -70,7 +70,7 @@ struct SetupAuditTests {
                                             home: "/Users/herko")
         #expect(text.hasPrefix("Another copy of iSCSI Initiator is registered with macOS: "))
         #expect(text.contains("/Volumes/iSCSI Initiator/iSCSI Initiator.app (no longer exists)"))
-        #expect(text.contains("not found"))
+        #expect(text.contains("attaching can fail"))
     }
 
     @Test("several copies: counted, each named, the home directory shown as ~")

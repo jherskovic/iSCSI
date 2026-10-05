@@ -50,9 +50,9 @@ public enum RegisteredCopies {
         let lead = copies.count == 1
             ? "Another copy of iSCSI Initiator is registered with macOS: "
             : "\(copies.count) other copies of iSCSI Initiator are registered with macOS: "
-        return lead + listed + ". With more than one, macOS cannot tell which filesystem "
-            + "extension to load, so attaching fails with \"not found\" even while this "
-            + "screen is green."
+        return lead + listed + ". macOS can load the filesystem extension or start the "
+            + "background service from any of them, so attaching can fail while every "
+            + "other step here is green."
     }
 }
 

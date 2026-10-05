@@ -13,10 +13,13 @@
 //
 //  Ordering is not cosmetic:
 //
-//    location -> daemon -> registered -> enabled
+//    location -> other copies -> daemon -> registered -> enabled
 //
 //  Location first because SMAppService registration from a translocated bundle
-//  points at a path that will not exist. Daemon before enabled because on macOS
+//  points at a path that will not exist. Other copies next: a second
+//  registered copy (a once-launched DMG, a build product) is what lets the
+//  later steps report green over a broken install, and cleaning it up does
+//  not depend on the daemon. Daemon before enabled because on macOS
 //  26.x the enablement fallback needs the daemon to signal fskitd as root, so
 //  the daemon has to be answering before that step can succeed.
 //
@@ -70,6 +73,7 @@ final class SetupCoordinator: ObservableObject {
     init() {
         steps = [
             InstallLocation(),
+            OtherCopies(),
             DaemonStep(controller: daemon),
             ModuleRegistration(),
             ModuleEnablement(),
