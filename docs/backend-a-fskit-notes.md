@@ -572,6 +572,18 @@ only `/Applications`. So a record of a copy that is gone is reported as a note,
 not a fault. (The update also dropped our entry from `enabledModules.plist`, as
 every re-registration does on 26.x — see "The rule" below.)
 
+**RC5 (build 44), same VM, 08:28–08:37.** Installed over RC4 and opened:
+"Only this copy registered" was green with the note about the ejected image;
+the daemon — still RC4's — was a version mismatch, and Reinstall brought up
+build 44 from `/Applications` in ~1.5 s (two "Operation not permitted" retries
+while launchd let go). Enable wrote the entry and restarted `fskit_agent`; the
+re-check that followed caught FSKit mid-restart ("Couldn't communicate with a
+helper application") on a row whose only button was Register, which would have
+re-registered the module and invalidated the entry. Re-check was green, and
+name-testing attached and mounted with the ejected image's record still in the
+dump — so that record is inert. Since fixed: the FSKit query retries for ~2 s,
+and Register is offered only when FSKit answers without the module.
+
 ### `hdiutil attach -nomount` is deprecated with no usable replacement
 
 Attaching a LUN that has no filesystem needs `-nomount`, or `hdiutil` refuses
