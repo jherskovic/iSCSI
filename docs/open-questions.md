@@ -259,8 +259,10 @@ the cap above 15%, adding one below 6%, and — since 0.7.0 — doubling it belo
 +1 per second took (`docs/queue-depth.md`, "The controller"). Additive increase
 against multiplicative decrease for anything that wastes, so it converges
 rather than hunts. It is driven by the read path rather than a timer, so an
-idle volume schedules nothing. The faster climb is unit-tested; its
-time-to-ceiling on real hardware has not yet been logged.
+idle volume schedules nothing. On hardware (0.7.1 RC2, 2026-10-05, SIP-off VM
+to the NAS over NVMe/TCP): an 8 GiB sequential read of the raw image ran at
+its plateau (~700 MB/s) from the first one-second sample, and the unmount
+summary showed `maxDepth=32 cap=32` with no speculation wasted.
 
 Measured end to end: the write-and-seek-heavy soak drives it to depth 3 (8.7%
 waste, 93.1% hits, no mismatches); a pure 100 GB sequential pass takes it to the
@@ -497,12 +499,14 @@ What it deliberately does not do:
 Built and unit-tested; the binding mechanism was measured on the dev host
 (`docs/superpowers/specs/2026-10-02-interface-pinning-design.md`). Not yet run:
 
-- **App-level, on the VMs.** The picker, an attach pinned strict and prefer, a
-  cable-pull recovery that keeps the pin, and the Sessions window's fallback
-  line. Rides with the 0.7.0 RC. Keep the cable out for **more than 20 s**:
-  strict waits for the interface inside each attempt's 10 s deadline, so a
-  short pull never exercises the wait that keeps recovery's wall-clock budget
-  equal to an unpinned session's.
+- **Prefer mode's fallback, on the VMs.** Strict was run end to end on the
+  SIP-on 26.6.2 VM with 0.7.1 RC2 (2026-10-05): name-testing pinned strict to
+  `en2`, `connected via en2`; `en2` down for 30 s under a read loop — loss
+  noticed 13 s in, recovery attempt 1/5, attempt 2/5 at its 10 s deadline,
+  `en2` back, `connected via en2` and `recovered` 2 s later; the volume stayed
+  mounted and a file written afterwards read back identical. Prefer's fallback
+  and the Sessions window's fallback line are still unrun: that VM's other
+  network has no route to the NAS.
 - **IPv6.** Names are resolved before binding and the family follows what the
   interface holds, but nobody has an IPv6 portal to try it on.
 - **No migration back.** A prefer-mode session that fell back stays on its path
@@ -514,23 +518,28 @@ Built and unit-tested; the binding mechanism was measured on the dev host
 Built and tested against an in-memory daemon and an in-memory cache file
 (`docs/superpowers/specs/2026-10-02-local-disk-cache-design.md`). Not yet run:
 
-- **On hardware, with the cache on.** `scripts/readahead-soak.py` against a
-  cached volume must report zero mismatches; its region must exceed the 32 MiB
-  memory tier for the disk tier to be exercised at all. Rides with the 0.7.0 RC.
-- **Whether it pays.** No reuse measurement exists: reads are not traced. The
-  RC's long VM session and a run over Tailscale should show `diskSaved` in the
-  summary line; if they barely move it, the segmented-LRU split (80% protected)
-  and the admission rule are the first suspects, not the size.
+- **On hardware, with the cache on — done (0.7.1 RC2, 2026-10-05).** A 4 GB
+  cache on name-testing, SIP-off VM: `readahead-soak.py` for 600 s over its
+  2 GiB region, **no mismatches** (25,347 runs, 11,472 interleaved writes,
+  9,210 seeks, ~240 GB read), `diskCorrupt=0`, 894,060 of 1,008,956 lookups
+  served from the local tier.
+- **Whether it pays.** On a working set that fits — the soak's — it serves
+  most reads (`diskSaved` 234 GB in 10 minutes). Unmeasured on a real one: the
+  long VM session and a run over Tailscale; if they barely move `diskSaved`,
+  the segmented-LRU split (80% protected) and the admission rule are the first
+  suspects, not the size.
 - **`F_NOCACHE`'s effect** on the tier's own reads is assumed, not measured.
 - **Several volumes at 16 GB each** on a small boot disk: each tier is sized at
   attach and re-checks free space every 256 MiB it grows, stopping at the
   10 GiB reserve. Unexercised on hardware.
-- **Space back at detach.** The extension releases the tier at unmount; whether
-  `df` shows the space back at once has not been watched.
-- **SSD wear.** Every chunk read and later evicted is written once: a 100 GB
-  copy off a cached volume writes ~100 GB to the local SSD. Opt-in and per the
-  spec's admission rule; worth measuring at the RC before recommending the
-  cache for bulk copies.
+- **Space back at detach — yes, at once.** `df` 36.94 GiB before the soak,
+  35.04 at its end, 36.93 right after the unmount; the same after the app's
+  detach of an 8 GiB read.
+- **SSD wear, measured.** An 8 GiB sequential read wrote 950 MiB locally
+  (`spilled=3798` chunks) — the spill cap sheds most of a bulk read, so a
+  100 GB copy does not write 100 GB. The churning soak wrote ~23 GB over its
+  10 minutes (`spilled=93785`). Still worth stating before recommending the
+  cache for write-heavy or churning workloads.
 
 ## A note on method
 
