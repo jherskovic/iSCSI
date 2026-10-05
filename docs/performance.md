@@ -15,7 +15,15 @@ scratch LUN over the LAN, APFS on the attached disk image.
 > before and after the fix, alternated, three runs each. No measurable
 > difference: 4 KiB at depth 1 ~14 MB/s both; 4 KiB at depth 8 70–75 both;
 > 64 KiB at depth 8 590–730 both (noisy); 1 MiB at depth 4 ~1160 both. The
-> first run of each shape was a warm-up outlier. Writes not yet re-measured.
+> first run of each shape was a warm-up outlier.
+>
+> Writes, the same way with `iscsictl nvme write-bench --fua` (the daemon's
+> default), a build with only the old broken cast restored against `main`:
+> no measurable difference either — 4 KiB at depth 1 2.0–2.7 MB/s both, 4 KiB
+> at depth 8 ~12 both, 64 KiB at depth 8 91–98 both, 1 MiB at depth 4 ~280
+> both. FUA writes here are bound by the NAS persisting each one (~2 ms per
+> 4 KiB write at depth 1), not by TCP. The fix is correct and, on this LAN,
+> neutral.
 
 ## Baseline: 137 GB, verified (2026-08-13)
 
