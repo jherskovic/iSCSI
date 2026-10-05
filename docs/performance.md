@@ -9,6 +9,13 @@ scratch LUN over the LAN, APFS on the attached disk image.
 > Small PDUs — command headers, R2T-driven Data-Out tails, NOP-Outs — could
 > wait behind an unacknowledged segment. Re-measure before comparing against
 > anything after that date.
+>
+> First re-measurement (2026-10-05): NVMe/TCP `read-bench` on name-testing
+> from a SIP-off 27.0 VM on the storage subnet, the same `iscsictl` built
+> before and after the fix, alternated, three runs each. No measurable
+> difference: 4 KiB at depth 1 ~14 MB/s both; 4 KiB at depth 8 70–75 both;
+> 64 KiB at depth 8 590–730 both (noisy); 1 MiB at depth 4 ~1160 both. The
+> first run of each shape was a warm-up outlier. Writes not yet re-measured.
 
 ## Baseline: 137 GB, verified (2026-08-13)
 
