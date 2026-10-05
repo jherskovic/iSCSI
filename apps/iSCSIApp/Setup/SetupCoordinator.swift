@@ -70,14 +70,16 @@ final class SetupCoordinator: ObservableObject {
 
     private let steps: [any SetupStep]
     let daemon = DaemonController()
+    /// One local test mount per check pass, shared by both FSKit steps.
+    private let fskitProbe = FSKitAttachProbe()
 
     init() {
         steps = [
             InstallLocation(),
             OtherCopies(),
             DaemonStep(controller: daemon),
-            ModuleRegistration(),
-            ModuleEnablement(),
+            ModuleRegistration(probe: fskitProbe),
+            ModuleEnablement(probe: fskitProbe),
         ]
     }
 

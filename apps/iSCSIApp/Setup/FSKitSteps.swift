@@ -12,6 +12,7 @@ import AppKit
 import Foundation
 import FSKit
 import iSCSIKit
+import os
 
 /// `FSClient.installedExtensions`, retried briefly before an error is believed.
 /// Enabling restarts the FSKit agent, and a check that lands in that window
@@ -30,6 +31,64 @@ private func installedFSModules() async throws -> [FSModuleIdentity] {
     throw lastError ?? CocoaError(.featureUnsupported)
 }
 
+/// Whether `mount -F` can use the module, asked by mounting the extension's
+/// local test store and unmounting it (FSKitMountProbe). Consulted only when
+/// FSKit's list leaves the module out — a list that can omit a module FSKit
+/// loads without complaint (SIP-on VM, 2026-10-05), while attaching depends on
+/// the mount alone. Shared by both FSKit steps so one check pass mounts once;
+/// either step's action drops the answer.
+@MainActor
+final class FSKitAttachProbe {
+    private var cached: (outcome: FSKitMountProbe.Outcome, at: ContinuousClock.Instant)?
+    private static let maxAge: Duration = .seconds(15)
+    private static let log = Logger(subsystem: "me.herko.iSCSIInitiator.app", category: "fskit-probe")
+
+    func outcome() async -> FSKitMountProbe.Outcome {
+        if let cached, ContinuousClock.now - cached.at < Self.maxAge { return cached.outcome }
+        let outcome = await Task.detached { Self.probe() }.value
+        Self.log.log("FSKit's list omits the module; test mount: \(String(describing: outcome), privacy: .public)")
+        cached = (outcome, .now)
+        return outcome
+    }
+
+    func invalidate() { cached = nil }
+
+    nonisolated private static func probe() -> FSKitMountProbe.Outcome {
+        let point = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fskit-probe-\(UUID().uuidString)").path
+        guard mkdir(point, 0o700) == 0 else { return .failed("could not create \(point)") }
+        // rmdir, never a recursive remove: if the unmount failed, the volume's
+        // own file is in there.
+        defer { rmdir(point) }
+        let mounted = run("/sbin/mount", ["-F", "-t", "iSCSI", FSKitMountProbe.testURL, point])
+        let outcome = FSKitMountProbe.classify(status: mounted.status, output: mounted.output)
+        if outcome == .mounts, run("/sbin/umount", [point]).status != 0 {
+            _ = run("/sbin/umount", ["-f", point])
+        }
+        return outcome
+    }
+
+    /// A subprocess with a deadline: `mount -F` waits on FSKit, and a wedged
+    /// FSKit must cost a check pass 20 seconds, not the app.
+    nonisolated private static func run(_ path: String, _ arguments: [String]) -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        do { try process.run() } catch { return (-1, error.localizedDescription) }
+        guard finished.wait(timeout: .now() + 20) == .success else {
+            process.terminate()
+            return (-1, "\((path as NSString).lastPathComponent) did not finish within 20 s")
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+}
+
 // MARK: - D: registered
 
 @MainActor
@@ -37,18 +96,32 @@ final class ModuleRegistration: SetupStep {
     let id = "module-registered"
     let title = "Filesystem extension registered"
     private(set) var state: StepState = .checking
+    private let probe: FSKitAttachProbe
+
+    init(probe: FSKitAttachProbe) { self.probe = probe }
 
     func check() async {
         do {
             let modules = try await installedFSModules()
             if modules.contains(where: { $0.bundleIdentifier == FSKitEnablement.moduleBundleID }) {
                 state = .satisfied(FSKitEnablement.moduleBundleID)
-            } else {
+                return
+            }
+            // Not on FSKit's list — which is not the same as not registered.
+            switch await probe.outcome() {
+            case .mounts, .disabled:
+                state = .satisfied(
+                    "\(FSKitEnablement.moduleBundleID) — macOS's list of extensions leaves "
+                    + "it out, but FSKit loads it (checked with a local test mount)")
+            case .notFound:
                 state = .actionable(
                     "macOS has not registered the extension inside this app yet. "
                     + "This usually resolves itself a moment after the app is "
                     + "moved or launched; if it does not, registering explicitly "
                     + "fixes it.")
+            case .failed(let why):
+                state = .blocked("macOS's list of extensions leaves it out, and a local "
+                                 + "test mount failed: \(why)")
             }
         } catch {
             state = .blocked("could not ask FSKit: \(error.localizedDescription)")
@@ -78,6 +151,7 @@ final class ModuleRegistration: SetupStep {
     /// by scripts, installers, or a restore.
     func perform() async {
         state = .checking
+        probe.invalidate()
         var attempted: [String] = []
 
         let lsregister = "/System/Library/Frameworks/CoreServices.framework"
@@ -142,6 +216,9 @@ final class ModuleEnablement: SetupStep {
     let id = "module-enabled"
     let title = "Filesystem extension enabled"
     private(set) var state: StepState = .checking
+    private let probe: FSKitAttachProbe
+
+    init(probe: FSKitAttachProbe) { self.probe = probe }
 
     /// The branch, decided at runtime and never at compile time.
     ///
@@ -164,27 +241,40 @@ final class ModuleEnablement: SetupStep {
             guard let mine = modules.first(where: {
                 $0.bundleIdentifier == FSKitEnablement.moduleBundleID
             }) else {
-                state = .blocked("the extension is not registered yet — "
-                                 + "that step has to pass first")
+                // Off FSKit's list: a local test mount says what the list cannot.
+                switch await probe.outcome() {
+                case .mounts:
+                    state = .satisfied("enabled (checked with a local test mount; macOS's "
+                                       + "list of extensions leaves it out)")
+                case .disabled:
+                    state = Self.notEnabled
+                case .notFound:
+                    state = .blocked("the extension is not registered yet — "
+                                     + "that step has to pass first")
+                case .failed(let why):
+                    state = .blocked("could not tell whether it is enabled: a local test "
+                                     + "mount failed: \(why)")
+                }
                 return
             }
-            if mine.isEnabled {
-                state = .satisfied("enabled")
-            } else if Self.switchWorks {
-                state = .actionable(
-                    "macOS needs your permission to run the filesystem "
-                    + "extension. Turn on “iSCSI Initiator” under File System "
-                    + "Extensions.")
-            } else {
-                state = .actionable(
-                    "macOS \(ProcessInfo.processInfo.operatingSystemVersionString) "
-                    + "has a bug that leaves the File System Extensions switch "
-                    + "stuck off for third-party extensions, so it has to be "
-                    + "enabled another way.")
-            }
+            state = mine.isEnabled ? .satisfied("enabled") : Self.notEnabled
         } catch {
             state = .blocked("could not ask FSKit: \(error.localizedDescription)")
         }
+    }
+
+    private static var notEnabled: StepState {
+        if switchWorks {
+            return .actionable(
+                "macOS needs your permission to run the filesystem "
+                + "extension. Turn on “iSCSI Initiator” under File System "
+                + "Extensions.")
+        }
+        return .actionable(
+            "macOS \(ProcessInfo.processInfo.operatingSystemVersionString) "
+            + "has a bug that leaves the File System Extensions switch "
+            + "stuck off for third-party extensions, so it has to be "
+            + "enabled another way.")
     }
 
     var actionLabel: String? {
@@ -217,6 +307,7 @@ final class ModuleEnablement: SetupStep {
         }
 
         state = .checking
+        probe.invalidate()
         let report = await Task.detached { FSKitEnablement.enableModule() }.value
         guard report.succeeded else {
             state = .blocked("could not enable it: \(report.failure ?? "unknown"). "

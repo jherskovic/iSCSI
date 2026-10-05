@@ -672,6 +672,37 @@ these signals:
   on this machine, unprompted. The earlier note tying it to toggle attempts
   overstated it; the real finding is only that macOS 27 never logs it at all.
 
+#### It happened on the clean SIP-on VM too (2026-10-05)
+
+So "the remaining difference is the machine" was wrong, or at least not the
+whole story. On the SIP-on VM (26.6.2), after a reboot followed by installing
+0.7.1 RC1 over 0.7.0 RC5, `FSClient.installedExtensions` again returned
+Apple's modules (plus CoreDevice's DeviceFS) and not ours, through a re-check,
+a relaunch, an explicit `lsregister -f -R -trusted` (which took ~3 minutes
+under post-boot load) and an `fskitd`/`fskit_agent` restart — while:
+
+| probe | result |
+|---|---|
+| `pluginkit -m -v -p com.apple.fskit.fsmodule` | ours, 0.7.1, at `/Applications` |
+| LaunchServices | exactly one app record and one appex record, both in `/Applications` |
+| `enabledModules.plist` | ours, written after the last registration |
+| the appex vs RC5's (which listed fine that morning) | identical but for the version strings |
+| `mount -F` of name-testing, and of `iscsi://proto/setup-probe` | **both mount** |
+
+`fskit_agent` logged `Loading modules from LS` → `Added 4 identifiers` — the
+four the list shows — so the omission happens in its own LaunchServices load.
+Its identifiers are `<private>`, so the log cannot say why.
+
+**Setup now falls back on a mount.** When the list omits the module, both
+FSKit steps ask `FSKitAttachProbe`, which mounts the extension's local test
+store (`iscsi://proto/setup-probe`: a sparse file in the extension's sandbox,
+no network), unmounts it and classifies `mount`'s answer
+(`FSKitMountProbe`): mounts → registered and enabled; "Module … is disabled!"
+→ registered, not enabled; "File system named … not found" / "No extension
+with fsShortName" → not registered. One mount per check pass, ~0.2 s. Before
+this, Setup showed "not registered" with a Register button that could not
+help, and an unsatisfied step hides every target and session.
+
 ### Decision: v1 keeps a 26.0 floor and branches at runtime
 
 | | macOS 27+ | macOS 26.x |
