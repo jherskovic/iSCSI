@@ -31,15 +31,21 @@ public struct DaemonInfo: Codable, Sendable, Equatable {
     /// The iSCSI initiator name (IQN) this daemon presents, for the user to
     /// add to a target's allowed initiators. Optional for the same reason.
     public var initiatorName: String?
+    /// The app bundle this daemon runs from — which copy launchd actually
+    /// starts. Optional so an app and an older daemon still decode each
+    /// other; nil for a daemon not inside an .app (a loose `swift run`).
+    public var bundlePath: String?
 
     public init(version: String, build: String, pid: Int32, authorizationRelaxed: Bool,
-                hostNQN: String? = nil, initiatorName: String? = nil) {
+                hostNQN: String? = nil, initiatorName: String? = nil,
+                bundlePath: String? = nil) {
         self.version = version
         self.build = build
         self.pid = pid
         self.authorizationRelaxed = authorizationRelaxed
         self.hostNQN = hostNQN
         self.initiatorName = initiatorName
+        self.bundlePath = bundlePath
     }
 }
 
