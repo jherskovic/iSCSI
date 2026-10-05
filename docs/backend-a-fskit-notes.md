@@ -532,6 +532,37 @@ The app now prunes duplicates from the Register button and diagnoses them when a
 mount fails, rather than on every check: a full `lsregister -dump` is ~2.3s over
 300k lines, which is far too slow for something that runs on every foreground.
 
+### What LaunchServices keeps after a DMG (measured 2026-10-05, SIP-on VM)
+
+The scenario behind the setup-repair step: the app launched once from its
+mounted disk image, then the image ejected. RC2 (0.7.0 build 41) on the SIP-on
+VM, with `/Applications/iSCSI Initiator.app` already installed. "Fast" is
+`NSWorkspace.urlsForApplications(withBundleIdentifier:)`, the app's own ~4 ms
+query; "dump" is the `iSCSIFSExtension.appex` records in `lsregister -dump`.
+
+| stage | fast lists | dump lists | attach / daemon |
+|---|---|---|---|
+| baseline | /Applications | /Applications | — |
+| DMG mounted (`hdiutil attach`, not opened) | /Applications | /Applications | — |
+| app launched from the DMG, then quit | /Applications **and** /Volumes/… | /Applications **and** /Volumes/… | `mount -F` **works**; `iscsid` (root) now runs **from the DMG copy**, so the image cannot be ejected ("Resource busy") |
+| that `iscsid` stopped, image ejected | /Applications only | /Applications **and** /Volumes/… (stale) | `mount -F` **fails** — "Loading resource: Input/output error"; launchd cannot start the daemon ("not running", 1 run) |
+
+Three things follow, and they correct the section above:
+
+- **Two registered copies did not break `mount -F` while both existed.** On
+  26.6.2 FSKit chose a module with the DMG copy alongside the installed one.
+  The "registered twice → not found" failure above was measured on a machine
+  with fourteen copies; with two live copies it did not reproduce.
+- **What breaks is the daemon.** Launching from the image was enough for launchd
+  to start `iscsid` out of that copy — nothing was registered by hand, and the
+  location step had refused to register anything. Once the image is gone the job
+  points at nothing, the extension cannot log in, and every attach fails with an
+  I/O error. Setup today reports that only as "approved but not answering".
+- **The fast query forgets vanished copies; the dump does not.** So the
+  setup-repair step takes branch B: it adds the dump's paths (once per Setup
+  check, on a detached task) to find stale registrations, and the daemon step's
+  Reinstall re-registers from the running copy.
+
 ### `hdiutil attach -nomount` is deprecated with no usable replacement
 
 Attaching a LUN that has no filesystem needs `-nomount`, or `hdiutil` refuses
