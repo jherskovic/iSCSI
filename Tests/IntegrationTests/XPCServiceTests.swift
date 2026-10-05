@@ -388,5 +388,8 @@ struct XPCServiceTests {
         #expect(error == nil)
         let info = try JSONDecoder().decode(DaemonInfo.self, from: try #require(data))
         #expect(info.initiatorName == "iqn.test:initiator")
+        // Wiring only: the rule (an .app reports its path, anything else nil)
+        // is unit-tested in SetupAuditTests.
+        #expect(info.bundlePath == DaemonPlacement.bundlePath(ofBundleAt: Bundle.main.bundleURL))
     }
 }

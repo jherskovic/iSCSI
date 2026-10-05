@@ -259,7 +259,10 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
             pid: ProcessInfo.processInfo.processIdentifier,
             authorizationRelaxed: relaxed,
             hostNQN: core.hostNQN,
-            initiatorName: core.initiatorName
+            initiatorName: core.initiatorName,
+            // Which copy launchd runs, so the app can tell a daemon registered
+            // from another copy of itself (docs/daemon-registration.md).
+            bundlePath: DaemonPlacement.bundlePath(ofBundleAt: Bundle.main.bundleURL)
         )
         do {
             reply(try JSONEncoder().encode(payload), nil)
