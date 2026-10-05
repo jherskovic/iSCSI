@@ -66,9 +66,85 @@ private final class FakeBacking: @unchecked Sendable {
     var asyncCount: Int { lock.lock(); defer { lock.unlock() }; return asyncFetches.count }
 }
 
+/// Every chunk the cache hands to `onEvict`, in order.
+private final class EvictLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [(offset: UInt64, data: Data)] = []
+    func add(_ offset: UInt64, _ data: Data) { lock.lock(); seen.append((offset, data)); lock.unlock() }
+    var offsets: [UInt64] { lock.lock(); defer { lock.unlock() }; return seen.map(\.offset) }
+    var all: [(offset: UInt64, data: Data)] { lock.lock(); defer { lock.unlock() }; return seen }
+}
+
 @Suite("Prefetch chunk cache")
 struct PrefetchChunkCacheTests {
     static let chunk = 4096
+
+    // MARK: - Eviction hook (the disk tier's only source)
+
+    private static func makeEvictingCache(backing: FakeBacking, log: EvictLog,
+                                          maxCachedBytes: Int,
+                                          minStreamBytes: Int = .max) -> PrefetchChunkCache {
+        PrefetchChunkCache(
+            chunkBytes: chunk,
+            capacity: backing.capacity,
+            maxCachedBytes: maxCachedBytes,
+            policy: ReadaheadPolicy(budgetBytes: 8 * chunk, maxSlots: 32,
+                                    minStreamBytes: minStreamBytes, chunkBytes: chunk),
+            timeout: 5,
+            fetchSync: backing.fetchSync,
+            fetchAsync: backing.fetchAsync,
+            onEvict: { log.add($0, $1) })
+    }
+
+    @Test("a chunk that was read is handed to onEvict with its bytes when evicted")
+    func readChunkIsHandedToOnEvict() throws {
+        let backing = Self.makeBacking()
+        let log = EvictLog()
+        let cache = Self.makeEvictingCache(backing: backing, log: log, maxCachedBytes: 2 * Self.chunk)
+        for i in [0, 4, 8] { _ = try cache.read(offset: UInt64(i * Self.chunk), length: 100) }
+        #expect(log.offsets == [0])
+        #expect(log.all.first?.data == FakeBacking.pattern(offset: 0, length: Self.chunk))
+    }
+
+    /// Reads chunks 0 and 1 back to back (16 KiB stream gate at 8 KiB), which
+    /// speculates 2 and 3; then four far reads evict everything older. Only
+    /// the two chunks a caller read reach the hook — speculation nobody read
+    /// was never wanted the first time and must not cost a disk write.
+    @Test("unread speculation is never handed to onEvict")
+    func unreadSpeculationIsNotHandedOn() throws {
+        let backing = Self.makeBacking()
+        let log = EvictLog()
+        let cache = Self.makeEvictingCache(backing: backing, log: log,
+                                           maxCachedBytes: 4 * Self.chunk, minStreamBytes: 8192)
+        _ = try cache.read(offset: 0, length: Self.chunk)
+        _ = try cache.read(offset: UInt64(Self.chunk), length: Self.chunk)
+        #expect(backing.asyncCount == 2, "chunks 2 and 3 speculated")
+        for i in [7, 8, 9, 10] { _ = try cache.read(offset: UInt64(i * Self.chunk), length: 100) }
+        #expect(log.offsets == [0, UInt64(Self.chunk)])
+    }
+
+    @Test("a speculative chunk that was read is handed to onEvict")
+    func usedSpeculationIsHandedOn() throws {
+        let backing = Self.makeBacking()
+        let log = EvictLog()
+        let cache = Self.makeEvictingCache(backing: backing, log: log,
+                                           maxCachedBytes: 4 * Self.chunk, minStreamBytes: 8192)
+        _ = try cache.read(offset: 0, length: Self.chunk)
+        _ = try cache.read(offset: UInt64(Self.chunk), length: Self.chunk)
+        _ = try cache.read(offset: UInt64(2 * Self.chunk), length: 100)   // speculated, now read
+        for i in [7, 8, 9, 10] { _ = try cache.read(offset: UInt64(i * Self.chunk), length: 100) }
+        #expect(log.offsets.contains(UInt64(2 * Self.chunk)))
+    }
+
+    @Test("chunks dropped by a failed write are not handed to onEvict")
+    func writeRemovalsAreNotSpills() throws {
+        let backing = Self.makeBacking()
+        let log = EvictLog()
+        let cache = Self.makeEvictingCache(backing: backing, log: log, maxCachedBytes: 4 * Self.chunk)
+        _ = try cache.read(offset: 0, length: 100)
+        cache.writeFailed(offset: 0, length: Self.chunk)
+        #expect(log.offsets.isEmpty)
+    }
 
     /// A cache over ten-and-a-half 4 KiB chunks. `minStreamBytes` of 8 KiB
     /// means two consecutive chunk-sized reads open the gate; passing

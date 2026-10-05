@@ -282,6 +282,9 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
     func unmount(replyHandler reply: @escaping () -> Void) {
         fsLog.log("unmount — \(self.store.summary, privacy: .public)")
         try? store.flush()
+        // The local cache's space comes back now, not whenever FSKit lets go
+        // of this volume.
+        store.releaseLocalCache()
         reply()
     }
 

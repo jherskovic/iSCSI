@@ -150,6 +150,25 @@ router's web port on purpose: what matters is the
 and Tailscale's route to the same subnet ignored. The protocol error after it
 is the router not speaking iSCSI.
 
+## Local disk cache (0.7.0)
+
+On the SIP-off VM, with the RC installed from its notarized DMG. Set a scratch
+target's Local cache to 4 GB, attach it, and confirm the extension logged its
+size:
+
+    /usr/bin/log show --last 5m --info --debug \
+      --predicate 'subsystem == "me.herko.iSCSIInitiator.fsext"' | grep "local cache"
+
+Then run the readahead soak over a region larger than the 32 MiB memory tier —
+destructive, scratch LUN only:
+
+    scripts/readahead-soak.py /Volumes/<scratch>/lun0.img --seconds 600
+
+Zero mismatches is the bar. Detach, and read `disk=`, `diskSaved=`, `spilled=`
+and `diskCorrupt=` from the unmount summary line; `diskCorrupt` must be 0.
+Run `df -h /` before the soak, at its end, and after the detach: the space the
+cache took must be back after the detach.
+
 ## Fuzzing
 
 `scripts/fuzz.sh [seconds]` builds `pdu-fuzz` with AddressSanitizer and runs a

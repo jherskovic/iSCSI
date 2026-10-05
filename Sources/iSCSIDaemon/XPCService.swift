@@ -29,14 +29,20 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         self.targets = targets
     }
 
-    /// Readahead budget per owned handle, resolved once at login (like
-    /// `FlushPolicy`): editing a target takes effect on the next attach, not
-    /// under a live session.
-    private let budgets = OSAllocatedUnfairLock(initialState: [String: Int]())
+    /// Readahead budget and local cache size per owned handle, resolved once
+    /// at login (like `FlushPolicy`): editing a target takes effect on the
+    /// next attach, not under a live session.
+    private let budgets = OSAllocatedUnfairLock(initialState: [String: SessionBudgets]())
 
-    private func claim(_ handle: String, readaheadBudget: Int) {
+    /// What the extension asks for after login, resolved once from the record.
+    private struct SessionBudgets {
+        var readahead: Int
+        var localCache: Int
+    }
+
+    private func claim(_ handle: String, budgets value: SessionBudgets) {
         owned.withLock { $0.insert(handle) }
-        budgets.withLock { $0[handle] = readaheadBudget }
+        budgets.withLock { $0[handle] = value }
     }
 
     private func release(_ handle: String) {
@@ -124,8 +130,9 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                     flushPolicy: FlushPolicy(intervalSeconds: record.flushIntervalSeconds),
                     binding: record.interfaceBinding
                 )
-                self.claim(handle, readaheadBudget: WorkloadProfile
-                    .pinnedBudgetBytes(stored: record.workloadProfile) ?? 0)
+                self.claim(handle, budgets: SessionBudgets(
+                    readahead: WorkloadProfile.pinnedBudgetBytes(stored: record.workloadProfile) ?? 0,
+                    localCache: record.localCacheBytes))
                 box.value(handle, nil)
             } catch {
                 box.value(nil, ISCSIError.nsError(from: error,
@@ -188,7 +195,15 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         if let denied = checkOwned(session) { reply(0, denied); return }
         // 0 means nothing pinned, adapt — also the right answer for a missing
         // entry; failing a mount over a tuning parameter would be worse.
-        let bytes = budgets.withLock { $0[session] } ?? 0
+        let bytes = budgets.withLock { $0[session]?.readahead } ?? 0
+        reply(NSNumber(value: bytes), nil)
+    }
+
+    public func localCacheBytes(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
+        if let denied = checkOwned(session) { reply(0, denied); return }
+        // 0 is off — also the answer for a missing entry: a mount must never
+        // fail for a cache.
+        let bytes = budgets.withLock { $0[session]?.localCache } ?? 0
         reply(NSNumber(value: bytes), nil)
     }
 

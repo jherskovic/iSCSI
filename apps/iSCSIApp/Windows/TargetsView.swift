@@ -176,6 +176,8 @@ struct TargetEditor: View {
     @State private var networkInterface: String?
     /// Prefer (true) or strict (false); stored only when an interface is set.
     @State private var interfaceFallback: Bool
+    /// nil = off. Mirrors `TargetRecord.localCacheGB` for valid sizes.
+    @State private var localCacheGB: Int?
 
     init(model: AppModel, target: TargetRecord?) {
         self.model = model
@@ -195,6 +197,8 @@ struct TargetEditor: View {
         _flushInterval = State(initialValue: target?.flushIntervalSeconds)
         _networkInterface = State(initialValue: target?.interfaceBinding?.name)
         _interfaceFallback = State(initialValue: target?.interfaceFallback ?? false)
+        // A hand-edited out-of-range size shows as Off, which is what it is.
+        _localCacheGB = State(initialValue: (target?.localCacheBytes ?? 0) > 0 ? target?.localCacheGB : nil)
     }
 
     /// The protocol is the name's prefix and nothing else: `nqn.` is
@@ -343,6 +347,21 @@ struct TargetEditor: View {
                         .foregroundStyle(flushInterval == nil ? AnyShapeStyle(.secondary)
                                                               : AnyShapeStyle(.red))
                 }
+
+                Section {
+                    Picker("Size", selection: $localCacheGB) {
+                        Text("Off").tag(Int?.none)
+                        ForEach(1 ... 16, id: \.self) { gb in
+                            Text("\(gb) GB").tag(Int?.some(gb))
+                        }
+                    }
+                } header: {
+                    Text("Local cache")
+                } footer: {
+                    Text("Kept on this Mac's disk, encrypted, only while the target is attached. "
+                         + "Takes effect the next time it is attached.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             .formStyle(.grouped)
             .onChange(of: flushInterval) { old, new in
@@ -480,7 +499,8 @@ struct TargetEditor: View {
             // targets.json is carried through an edit rather than erased by it.
             workloadProfile: existing?.workloadProfile,
             networkInterface: networkInterface,
-            interfaceFallback: networkInterface == nil ? nil : interfaceFallback)
+            interfaceFallback: networkInterface == nil ? nil : interfaceFallback,
+            localCacheGB: localCacheGB)
 
         LastPortal.remember(host: record.host, port: record.port)
         Task {
