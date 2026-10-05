@@ -3,6 +3,13 @@
 All figures from the SIP-off test VM (4 cores, 16 GiB) against the TrueNAS
 scratch LUN over the LAN, APFS on the attached disk image.
 
+> **Every number below was measured with Nagle on and TCP keepalive off.**
+> `NetworkTransport` set `noDelay` and keepalive on a cast of the IP options
+> that never succeeded, so neither took effect until the fix of 2026-10-05.
+> Small PDUs — command headers, R2T-driven Data-Out tails, NOP-Outs — could
+> wait behind an unacknowledged segment. Re-measure before comparing against
+> anything after that date.
+
 ## Baseline: 137 GB, verified (2026-08-13)
 
 `scripts/bench.py --file-gib 4 --files 8 --rounds 2`, 1 MiB sequential I/O,

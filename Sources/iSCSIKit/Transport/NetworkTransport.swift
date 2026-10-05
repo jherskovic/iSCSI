@@ -65,16 +65,23 @@ public final class NetworkTransport: ConnectionTransport, ConnectionPathReportin
         return transport
     }
 
+    /// The TCP parameters every connection uses. The options are built and
+    /// handed over, not fished out of a default stack by cast: until
+    /// 2026-10-05 they were set on a cast of the *IP* options that never
+    /// succeeded, and every connection ran with Nagle on and keepalive off.
+    static func connectionParameters() -> NWParameters {
+        let tcp = NWProtocolTCP.Options()
+        tcp.noDelay = true // iSCSI PDUs are latency-sensitive; disable Nagle
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = 30
+        return NWParameters(tls: nil, tcp: tcp)
+    }
+
     private static func openConnection(
         host: String, port: UInt16, attempt: InterfacePinning.Attempt,
         pinnedName: String?, timeout: Duration
     ) async throws -> NetworkTransport {
-        let params = NWParameters.tcp
-        if let tcp = params.defaultProtocolStack.internetProtocol as? NWProtocolTCP.Options {
-            tcp.noDelay = true // iSCSI PDUs are latency-sensitive; disable Nagle
-            tcp.enableKeepalive = true
-            tcp.keepaliveIdle = 30
-        }
+        let params = connectionParameters()
         // Bound, connect to the address the policy resolved: a bound
         // connection resolves names through the bound interface alone.
         var target = host
