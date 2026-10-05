@@ -915,6 +915,24 @@ MBR-only disks, whole-disk filesystems such as a bare-HFS+ LUN, anything not
 provably blank — attaches with exactly the arguments it always had. The
 decision is logged under `me.herko.iSCSIInitiator.app`, category `attach`.
 
+Verified end to end with 0.7.1 RC2 (build 46) on the SIP-on 26.6.2 VM, against
+two `iscsi-target-sim` LUNs with 4096-byte blocks on another VM (2026-10-05) —
+which also settles that `-blocksize` *behaves* on 26.6.2, not only exists:
+
+| LUN | attach log | result |
+|---|---|---|
+| GPT + APFS written at 4096 (the issue's layout) | `GPT at 4096, LUN 4096 → -blocksize 4096` | 4096-byte device, volume mounts |
+| blank | `GPT at none, LUN 4096 → -blocksize 4096` | 4096-byte device, "not formatted" |
+| that one after `diskutil partitionDisk … GPT APFS` | `GPT at 4096, LUN 4096 → -blocksize 4096` | header at byte 4096 in the backing file; mounts |
+| name-testing (512-byte namespace) | `GPT at none, LUN 512 → default` | unchanged; mounts |
+
+Disk Utility's default erase of the blank 4Kn disk wrote APFS onto the whole
+disk, with no partition map; that disk re-attaches at the default 512 (no GPT,
+not blank) and mounts — APFS addresses its container in its own 4096-byte
+blocks. Disk Utility offered no partition-scheme choice for the disk image even
+with "Show All Devices"; `diskutil partitionDisk diskN GPT APFS <name> 100%` is
+the way to get a GPT.
+
 ## Earlier: end to end with a local backing store
 
 Our FSKit module mounts and the whole Backend A stack runs on it:
