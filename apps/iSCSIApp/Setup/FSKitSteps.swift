@@ -169,6 +169,8 @@ final class ModuleEnablement: SetupStep {
         return Self.switchWorks ? "Open System Settings" : "Enable"
     }
 
+    var consentTitle: String? { "Enable the filesystem extension?" }
+
     var consentPrompt: String? {
         guard !state.isSatisfied, !Self.switchWorks else { return nil }
         return """

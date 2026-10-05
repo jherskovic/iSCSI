@@ -62,6 +62,35 @@ struct SetupAuditTests {
         #expect(others.count == 1)
     }
 
+    @Test("the running copy is recognised through /private and a firmlinked path")
+    func privateAndFirmlink() throws {
+        let dir = "/tmp/" + UUID().uuidString + ".app"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let others = RegisteredCopies.others(registered: ["/private" + dir], running: dir,
+                                             exists: { _ in true })
+        #expect(others.isEmpty)
+        #expect(RegisteredCopies.canonical("/System/Volumes/Data/Applications")
+                == RegisteredCopies.canonical("/Applications"))
+    }
+
+    // MARK: - Reading the lsregister dump
+
+    @Test("the dump yields each containing app once, and ignores other records")
+    func dumpParsing() {
+        let dump = """
+            path:                       /Applications/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex (0x1a2b)
+            path:                       /Volumes/iSCSI Initiator/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex (0x3c4d)
+            path:                       /Volumes/iSCSI Initiator/iSCSI Initiator.app/Contents/Extensions/iSCSIFSExtension.appex (0x5e6f)
+            path:                       /Applications/Other.app/Contents/Extensions/Other.appex (0x7a8b)
+            bundle id:                  me.herko.iSCSIInitiator.fsext (0x1a2b)
+            """
+        #expect(RegisteredCopies.appBundles(inDump: dump)
+                == ["/Applications/iSCSI Initiator.app",
+                    "/Volumes/iSCSI Initiator/iSCSI Initiator.app"])
+        #expect(RegisteredCopies.appBundles(inDump: "").isEmpty)
+    }
+
     // MARK: - What the step says
 
     @Test("one copy: named, marked gone, home abbreviated where it applies")
@@ -83,6 +112,15 @@ struct SetupAuditTests {
         #expect(text.contains("~/Downloads/iSCSI Initiator.app"))
         #expect(!text.contains("/Users/herko/"))
         #expect(!text.contains("(no longer exists)"))
+    }
+
+    @Test("a look-alike home directory is not abbreviated")
+    func summaryLookalikeHome() {
+        let text = RegisteredCopies.summary(
+            [RegisteredCopy(path: "/Users/herko2/iSCSI Initiator.app", exists: true)],
+            home: "/Users/herko")
+        #expect(text.contains("/Users/herko2/iSCSI Initiator.app"))
+        #expect(!text.contains("~"))
     }
 
     // MARK: - Which copy the daemon runs from

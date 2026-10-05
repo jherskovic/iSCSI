@@ -88,8 +88,10 @@ registration of the copies listed above so only this one is used. It does not
 delete any files." `perform()` runs `lsregister -u <path>` for each, **off the
 main actor** (as every subprocess the app waits on now does), then re-checks.
 
-Like every unsatisfied step it holds back Connect: a ghost copy breaks
-attaching, so proceeding over one would only move the failure later. On a
+Like every unsatisfied step it holds back Connect. (*Revised:* a gone copy
+that survives Clean up no longer does — LaunchServices may refuse to drop it,
+and holding back every target and session for a record that attaching was
+measured not to depend on would be a lockout.) On a
 development Mac every build product shows up here. That is accurate — they are
 registered — and one click clears them.
 

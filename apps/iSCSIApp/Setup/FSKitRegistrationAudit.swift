@@ -24,12 +24,14 @@
 //  reports one entry. Only LaunchServices sees them all, and FSKit reads
 //  LaunchServices.
 //
-//  The scan costs ~2.3 seconds over a 300k-line dump, so it is deliberately not
-//  part of the routine setup checks — it runs when a mount has already failed,
-//  where the time is free because the user is stuck anyway.
+//  The scan costs ~2.3 seconds over a 300k-line dump. Setup's "No other copies
+//  registered" step runs it once per launch, off the main actor and with a
+//  bounded wait (OtherCopies.swift); it also runs when a mount has already
+//  failed, where the time is free because the user is stuck anyway.
 //
 
 import Foundation
+import iSCSIKit
 
 enum FSKitRegistrationAudit {
     private static let lsregister =
@@ -40,16 +42,7 @@ enum FSKitRegistrationAudit {
     /// One is healthy. More than one is the bug.
     static func registeredAppBundles() -> [String] {
         guard let dump = run(lsregister, ["-dump"]) else { return [] }
-        var found: Set<String> = []
-        for line in dump.split(separator: "\n") {
-            guard line.contains("iSCSIFSExtension.appex") else { continue }
-            // Records appear as `path: /…/X.app/Contents/Extensions/…appex (0x…)`.
-            // Take the containing .app, which is what `lsregister -u` accepts.
-            guard let appRange = line.range(of: #"/[^"]*?\.app(?=/Contents/Extensions/)"#,
-                                            options: .regularExpression) else { continue }
-            found.insert(String(line[appRange]))
-        }
-        return found.sorted()
+        return RegisteredCopies.appBundles(inDump: dump)
     }
 
     /// Bundles other than the running one. These are the ones to remove.

@@ -40,6 +40,7 @@ final class SetupCoordinator: ObservableObject {
         let state: StepState
         let actionLabel: String?
         let consentPrompt: String?
+        let consentTitle: String?
         /// True for the first not-yet-satisfied step only. Everything after it
         /// renders its state but offers no button — clicking "Enable" before the
         /// daemon exists produces a failure that teaches the user nothing.
@@ -114,6 +115,7 @@ final class SetupCoordinator: ObservableObject {
                           state: step.state,
                           actionLabel: step.actionLabel,
                           consentPrompt: step.consentPrompt,
+                          consentTitle: step.consentTitle,
                           isNext: isNext)
         }
     }
@@ -171,6 +173,18 @@ final class DaemonStep: SetupStep {
         default:                return nil
         }
     }
+
+    /// Reinstall over a daemon that is answering stops it, and every session
+    /// it holds goes with it; those sessions are hidden while this step is
+    /// unsatisfied, so the user cannot see what they would lose.
+    var consentPrompt: String? {
+        guard case .otherCopy = controller.state else { return nil }
+        return "This stops the background service running from the other copy and "
+            + "starts it from this one. Disks attached through it lose their "
+            + "connection — eject them in Finder first."
+    }
+
+    var consentTitle: String? { "Reinstall the background service?" }
 
     func check() async { await controller.refresh() }
 

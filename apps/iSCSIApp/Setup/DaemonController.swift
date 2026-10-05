@@ -257,12 +257,24 @@ final class DaemonController: ObservableObject {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             service.unregister { error in
                 if let error = error as NSError?, error.code != kSMErrorJobNotFound {
-                    Task { @MainActor in self.detail = "unregister: \(Self.describe(error))" }
+                    Task { @MainActor in
+                        Self.log.error("reregister: unregister failed: \(Self.describe(error), privacy: .public)")
+                        self.detail = "unregister: \(Self.describe(error))"
+                    }
                 }
                 continuation.resume()
             }
         }
         await register()
+        // Registering from this copy and getting a daemon from another one
+        // back means launchd resolved the job to that copy again; offering
+        // Reinstall once more would be a loop that explains nothing.
+        if case .otherCopy(let path) = state {
+            transition(to: .failed("macOS started the background service from \(path) again "
+                                   + "instead of this copy. Remove or clean up that copy, "
+                                   + "then quit and reopen this app."),
+                       "reregister: daemon still reports bundlePath=\(path)")
+        }
     }
 
     func unregister() async {

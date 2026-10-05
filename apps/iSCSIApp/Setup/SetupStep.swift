@@ -61,16 +61,19 @@ protocol SetupStep: AnyObject {
     /// storage. The view puts it in a confirmation dialog and does not proceed
     /// without a yes.
     ///
-    /// Exactly one step needs this today: the macOS 26.x enablement fallback
-    /// writes to a file belonging to the OS. The System Settings switch it
-    /// replaces is a *consent* gate, so bypassing it silently would be taking
-    /// the consent rather than asking for it. Name the file and say what will
-    /// happen.
+    /// The macOS 26.x enablement fallback writes to a file belonging to the
+    /// OS; the System Settings switch it replaces is a *consent* gate, so
+    /// bypassing it silently would be taking the consent rather than asking
+    /// for it. Clean up removes other copies' registrations, and Reinstall
+    /// over a running daemon drops its sessions. Say what will happen.
     var consentPrompt: String? { get }
+    /// The dialog's question. Its confirming button is `actionLabel`.
+    var consentTitle: String? { get }
 }
 
 extension SetupStep {
     var actionLabel: String? { nil }
     var consentPrompt: String? { nil }
+    var consentTitle: String? { nil }
     func perform() async {}
 }

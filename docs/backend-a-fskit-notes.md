@@ -559,8 +559,8 @@ Three things follow, and they correct the section above:
   points at nothing, the extension cannot log in, and every attach fails with an
   I/O error. Setup today reports that only as "approved but not answering".
 - **The fast query forgets vanished copies; the dump does not.** So the
-  setup-repair step takes branch B: it adds the dump's paths (once per Setup
-  check, on a detached task) to find stale registrations, and the daemon step's
+  setup-repair step takes branch B: it adds the dump's paths (once per launch, on a detached task, waiting at most
+  10 s) to find stale registrations, and the daemon step's
   Reinstall re-registers from the running copy.
 
 ### `hdiutil attach -nomount` is deprecated with no usable replacement

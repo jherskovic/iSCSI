@@ -37,12 +37,12 @@ struct SetupView: View {
             Task { await setup.checkAll() }
         }
         .confirmationDialog(
-            "Enable the filesystem extension?",
+            consentFor?.consentTitle ?? "Continue?",
             isPresented: Binding(get: { consentFor != nil },
                                  set: { if !$0 { consentFor = nil } }),
             presenting: consentFor
         ) { report in
-            Button("Enable") {
+            Button(report.actionLabel ?? "Continue") {
                 let id = report.id
                 consentFor = nil
                 Task { await setup.perform(id) }

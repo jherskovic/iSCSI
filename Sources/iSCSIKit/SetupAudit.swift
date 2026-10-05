@@ -38,6 +38,21 @@ public enum RegisteredCopies {
         return copies.sorted { $0.path < $1.path }
     }
 
+    /// The app bundles an `lsregister -dump` attributes our filesystem
+    /// extension to. Records appear as
+    /// `path: /…/X.app/Contents/Extensions/iSCSIFSExtension.appex (0x…)`;
+    /// the containing `.app` is what `lsregister -u` accepts. Sorted, once each.
+    public static func appBundles(inDump dump: String) -> [String] {
+        var found: Set<String> = []
+        for line in dump.split(separator: "\n") {
+            guard line.contains("iSCSIFSExtension.appex") else { continue }
+            guard let appRange = line.range(of: #"/[^"]*?\.app(?=/Contents/Extensions/)"#,
+                                            options: .regularExpression) else { continue }
+            found.insert(String(line[appRange]))
+        }
+        return found.sorted()
+    }
+
     /// What the step says when other copies exist: each one named, gone ones
     /// marked, the home directory shown as `~`, and why it matters.
     public static func summary(_ copies: [RegisteredCopy], home: String) -> String {
