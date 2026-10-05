@@ -559,9 +559,18 @@ Three things follow, and they correct the section above:
   points at nothing, the extension cannot log in, and every attach fails with an
   I/O error. Setup today reports that only as "approved but not answering".
 - **The fast query forgets vanished copies; the dump does not.** So the
-  setup-repair step takes branch B: it adds the dump's paths (once per launch, on a detached task, waiting at most
-  10 s) to find stale registrations, and the daemon step's
-  Reinstall re-registers from the running copy.
+  setup-repair step takes branch B: it adds the dump's paths (once per launch,
+  on a detached task, waiting at most 10 s) to find stale registrations, and
+  the daemon step's Reinstall re-registers from the running copy.
+
+**After the update (RC4, build 43, same VM, minutes later).** Installing the new
+build over `/Applications` and opening it was enough: the first probe found the
+job approved but not running, and 138 ms later launchd had started `iscsid` from
+`/Applications/iSCSI Initiator.app`. No Reinstall. The ejected copy's record was
+still in the dump and nowhere else — the bundle-ID query and `pluginkit` listed
+only `/Applications`. So a record of a copy that is gone is reported as a note,
+not a fault. (The update also dropped our entry from `enabledModules.plist`, as
+every re-registration does on 26.x — see "The rule" below.)
 
 ### `hdiutil attach -nomount` is deprecated with no usable replacement
 

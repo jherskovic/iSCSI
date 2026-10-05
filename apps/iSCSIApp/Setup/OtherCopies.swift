@@ -21,7 +21,7 @@ private let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework"
 @MainActor
 final class OtherCopies: SetupStep {
     let id = "other-copies"
-    let title = "No other copies registered"
+    let title = "Only this copy registered"
     private(set) var state: StepState = .checking
     private var others: [RegisteredCopy] = []
 
@@ -32,8 +32,6 @@ final class OtherCopies: SetupStep {
     /// The dump in flight, shared: launch and a return to the foreground can
     /// both start a check before the first dump is back.
     private var dumping: Task<[String], Never>?
-    /// Copies Clean up has already tried to unregister.
-    private var attempted: Set<String> = []
 
     /// How long a check waits for the dump. Idle it takes ~2.3 s; on a VM
     /// just after boot lsregister has run for minutes (FSKitSteps.swift), and
@@ -51,22 +49,21 @@ final class OtherCopies: SetupStep {
         others = RegisteredCopies.others(registered: registered + (dump ?? []),
                                          running: Bundle.main.bundleURL.path,
                                          exists: { FileManager.default.fileExists(atPath: $0) })
-        // A copy that is gone and survived Clean up is a record LaunchServices
-        // will not drop. Attaching was measured not to depend on such records
-        // (a stuck daemon does, and the daemon step owns that), so it must not
-        // hold back every target and session for good.
-        let stuck = others.filter { !$0.exists && attempted.contains($0.path) }
-        let open = others.filter { !stuck.contains($0) }
+        // Only copies that exist hold Setup back. A record of one that is gone
+        // is a note: with the copy gone the daemon came back from this one and
+        // FSKit listed only this one (2026-10-05), and while any step is
+        // unsatisfied every target and session is hidden — and the steps after
+        // this one, Enable included, offer no button.
+        let present = others.filter(\.exists)
+        let gone = others.filter { !$0.exists }
+        let home = NSHomeDirectory()
+        let note = gone.isEmpty ? nil : RegisteredCopies.goneNote(gone, home: home)
         let pending = dump == nil ? " (the full LaunchServices scan is still running)" : ""
-        if !open.isEmpty {
-            state = .actionable(RegisteredCopies.summary(open, home: NSHomeDirectory()))
-        } else if !stuck.isEmpty {
-            let paths = stuck.map(\.path).joined(separator: "; ")
-            let verb = stuck.count == 1 ? "exists" : "exist"
-            state = .satisfied("only this copy can be used; macOS still lists \(paths), "
-                               + "which no longer \(verb) and would not unregister" + pending)
+        if !present.isEmpty {
+            state = .actionable([RegisteredCopies.summary(present, home: home), note]
+                .compactMap { $0 }.joined(separator: " "))
         } else {
-            state = .satisfied("only this copy is registered" + pending)
+            state = .satisfied((note ?? "only this copy is registered") + pending)
         }
     }
 
@@ -117,7 +114,6 @@ final class OtherCopies: SetupStep {
     /// assume it worked — a copy that would not unregister stays listed.
     func perform() async {
         let paths = others.map(\.path)
-        attempted.formUnion(paths)
         state = .checking
         // Off the main actor, like every subprocess the app waits on.
         await Task.detached {

@@ -93,25 +93,41 @@ struct SetupAuditTests {
 
     // MARK: - What the step says
 
-    @Test("one copy: named, marked gone, home abbreviated where it applies")
+    @Test("one existing copy: named, home abbreviated, says what it can break")
     func summaryOfOne() {
-        let text = RegisteredCopies.summary([RegisteredCopy(path: Self.dmg, exists: false)],
+        let text = RegisteredCopies.summary([RegisteredCopy(path: Self.downloads, exists: true)],
                                             home: "/Users/herko")
-        #expect(text.hasPrefix("Another copy of iSCSI Initiator is registered with macOS: "))
-        #expect(text.contains("/Volumes/iSCSI Initiator/iSCSI Initiator.app (no longer exists)"))
-        #expect(text.contains("attaching can fail"))
+        #expect(text.hasPrefix("Another copy is registered at ~/Downloads/iSCSI Initiator.app."))
+        #expect(text.contains("background service"))
+        #expect(!text.contains("/Users/herko/"))
     }
 
-    @Test("several copies: counted, each named, the home directory shown as ~")
+    @Test("several existing copies: counted and each named")
     func summaryOfSeveral() {
         let text = RegisteredCopies.summary(
             [RegisteredCopy(path: Self.downloads, exists: true),
              RegisteredCopy(path: Self.dmg, exists: true)],
             home: "/Users/herko")
-        #expect(text.hasPrefix("2 other copies of iSCSI Initiator are registered with macOS: "))
-        #expect(text.contains("~/Downloads/iSCSI Initiator.app"))
-        #expect(!text.contains("/Users/herko/"))
-        #expect(!text.contains("(no longer exists)"))
+        #expect(text.hasPrefix("2 other copies are registered: "))
+        #expect(text.contains("~/Downloads/iSCSI Initiator.app; /Volumes/iSCSI Initiator/iSCSI Initiator.app"))
+    }
+
+    @Test("a gone copy is a note that says nothing uses it")
+    func goneNoteOfOne() {
+        let text = RegisteredCopies.goneNote([RegisteredCopy(path: Self.dmg, exists: false)],
+                                             home: "/Users/herko")
+        #expect(text == "macOS still has a record of /Volumes/iSCSI Initiator/iSCSI Initiator.app, "
+                + "which no longer exists — usually an ejected disk image. Nothing uses it.")
+    }
+
+    @Test("several gone copies are counted")
+    func goneNoteOfSeveral() {
+        let text = RegisteredCopies.goneNote(
+            [RegisteredCopy(path: Self.downloads, exists: false),
+             RegisteredCopy(path: Self.dmg, exists: false)],
+            home: "/Users/herko")
+        #expect(text.hasPrefix("macOS still has records of 2 copies that no longer exist"))
+        #expect(text.hasSuffix("Nothing uses them."))
     }
 
     @Test("a look-alike home directory is not abbreviated")

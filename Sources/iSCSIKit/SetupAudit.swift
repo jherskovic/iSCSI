@@ -13,7 +13,7 @@ public struct RegisteredCopy: Sendable, Equatable {
     }
 }
 
-/// The rules behind Setup's "No other copies registered" step. Pure: the
+/// The rules behind Setup's "Only this copy registered" step. Pure: the
 /// caller supplies what LaunchServices reported and how to test existence,
 /// so none of this needs LaunchServices to test. See
 /// docs/superpowers/specs/2026-10-05-setup-repair-design.md.
@@ -53,21 +53,38 @@ public enum RegisteredCopies {
         return found.sorted()
     }
 
-    /// What the step says when other copies exist: each one named, gone ones
-    /// marked, the home directory shown as `~`, and why it matters.
+    /// What the step says about copies that still exist — the orange state.
+    /// Measured on the SIP-on VM (2026-10-05): launching the app from its disk
+    /// image was enough for launchd to run the daemon from there, which kept
+    /// the image from ejecting and broke every attach once it was forced off.
     public static func summary(_ copies: [RegisteredCopy], home: String) -> String {
-        let listed = copies.map { copy -> String in
-            let shown = copy.path.hasPrefix(home + "/")
-                ? "~" + copy.path.dropFirst(home.count)
-                : copy.path
-            return copy.exists ? shown : "\(shown) (no longer exists)"
-        }.joined(separator: "; ")
-        let lead = copies.count == 1
-            ? "Another copy of iSCSI Initiator is registered with macOS: "
-            : "\(copies.count) other copies of iSCSI Initiator are registered with macOS: "
-        return lead + listed + ". macOS can load the filesystem extension or start the "
-            + "background service from any of them, so attaching can fail while every "
-            + "other step here is green."
+        let listed = copies.map { shown($0.path, home: home) }.joined(separator: "; ")
+        if copies.count == 1 {
+            return "Another copy is registered at \(listed). macOS can run the background "
+                + "service from it instead of this one; if it is on a disk image, the image "
+                + "can't be ejected and attaching stops working once it is gone."
+        }
+        return "\(copies.count) other copies are registered: \(listed). macOS can run the "
+            + "background service from any of them instead of this one; if one is on a disk "
+            + "image, the image can't be ejected and attaching stops working once it is gone."
+    }
+
+    /// What the step says about records of copies that no longer exist — a
+    /// note on a row that stays green. With the copy gone, the daemon came back
+    /// from this one and FSKit listed only this one (SIP-on VM, 2026-10-05).
+    public static func goneNote(_ copies: [RegisteredCopy], home: String) -> String {
+        let listed = copies.map { shown($0.path, home: home) }.joined(separator: "; ")
+        if copies.count == 1 {
+            return "macOS still has a record of \(listed), which no longer exists — usually "
+                + "an ejected disk image. Nothing uses it."
+        }
+        return "macOS still has records of \(copies.count) copies that no longer exist — "
+            + "usually ejected disk images: \(listed). Nothing uses them."
+    }
+
+    /// A path for display: the home directory as `~`.
+    private static func shown(_ path: String, home: String) -> String {
+        path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
     }
 }
 

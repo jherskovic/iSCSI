@@ -88,10 +88,12 @@ registration of the copies listed above so only this one is used. It does not
 delete any files." `perform()` runs `lsregister -u <path>` for each, **off the
 main actor** (as every subprocess the app waits on now does), then re-checks.
 
-Like every unsatisfied step it holds back Connect. (*Revised:* a gone copy
-that survives Clean up no longer does — LaunchServices may refuse to drop it,
-and holding back every target and session for a record that attaching was
-measured not to depend on would be a lockout.) On a
+Like every unsatisfied step it holds back Connect. (*Revised after RC4, by the
+user's choice:* only copies that still exist do. A record of a copy that is gone
+is a note on a green row — "Nothing uses it" — because with the copy gone the
+daemon came back from the installed one and FSKit listed only that one, and an
+orange row here hides every target and session and the Enable button below it.
+The step is titled "Only this copy registered".) On a
 development Mac every build product shows up here. That is accurate — they are
 registered — and one click clears them.
 
