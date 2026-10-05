@@ -142,7 +142,8 @@ At each stage, record what the bundle-ID query returns, what
 - **If it does not:** `OtherCopies.check()` additionally runs the dump-based
   `FSKitRegistrationAudit.registeredAppBundles()` once per launch, on a detached
   task, and merges its paths into the list. The step shows `.checking` until it
-  returns; ~2.3 s on an idle Mac, off the main actor.
+  returns; ~2.3 s on an idle Mac, off the main actor. (*Revised:* the wait
+  is bounded at 10 s; a later check picks up a slower dump's answer.)
 
 Whichever branch is taken is recorded in `docs/backend-a-fskit-notes.md` next to
 the duplicate-registration section.
