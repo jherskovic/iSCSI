@@ -13,6 +13,23 @@ import Foundation
 import FSKit
 import iSCSIKit
 
+/// `FSClient.installedExtensions`, retried briefly before an error is believed.
+/// Enabling restarts the FSKit agent, and a check that lands in that window
+/// fails with "Couldn't communicate with a helper application" (SIP-on VM,
+/// 2026-10-05) — once in the middle of two that succeeded.
+private func installedFSModules() async throws -> [FSModuleIdentity] {
+    var lastError: Error?
+    for attempt in 0 ..< 4 {
+        if attempt > 0 { try? await Task.sleep(for: .milliseconds(750)) }
+        do {
+            return try await FSClient.shared.installedExtensions
+        } catch {
+            lastError = error
+        }
+    }
+    throw lastError ?? CocoaError(.featureUnsupported)
+}
+
 // MARK: - D: registered
 
 @MainActor
@@ -23,7 +40,7 @@ final class ModuleRegistration: SetupStep {
 
     func check() async {
         do {
-            let modules = try await FSClient.shared.installedExtensions
+            let modules = try await installedFSModules()
             if modules.contains(where: { $0.bundleIdentifier == FSKitEnablement.moduleBundleID }) {
                 state = .satisfied(FSKitEnablement.moduleBundleID)
             } else {
@@ -38,7 +55,13 @@ final class ModuleRegistration: SetupStep {
         }
     }
 
-    var actionLabel: String? { state.isSatisfied ? nil : "Register" }
+    /// Only when FSKit answered and did not list the module. Registering does
+    /// nothing for an FSKit that will not answer, and right after Enable it
+    /// re-registers the module — which invalidates the entry just written.
+    var actionLabel: String? {
+        guard case .actionable = state else { return nil }
+        return "Register"
+    }
 
     /// Re-register the *app* with LaunchServices, not the appex with pluginkit.
     ///
@@ -137,7 +160,7 @@ final class ModuleEnablement: SetupStep {
 
     func check() async {
         do {
-            let modules = try await FSClient.shared.installedExtensions
+            let modules = try await installedFSModules()
             guard let mine = modules.first(where: {
                 $0.bundleIdentifier == FSKitEnablement.moduleBundleID
             }) else {
