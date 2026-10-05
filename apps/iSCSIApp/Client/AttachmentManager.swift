@@ -16,6 +16,7 @@
 import AppKit
 import Foundation
 import iSCSIKit
+import os
 
 struct Attachment: Identifiable, Equatable, Sendable {
     var id: String { tag }
@@ -79,6 +80,10 @@ enum AttachmentError: LocalizedError {
         }
     }
 }
+
+/// What the attach decided and why, for `/usr/bin/log` — the block size most
+/// of all, which nothing else on screen shows.
+private let attachLog = Logger(subsystem: "me.herko.iSCSIInitiator.app", category: "attach")
 
 @MainActor
 final class AttachmentManager: ObservableObject {
@@ -186,10 +191,11 @@ final class AttachmentManager: ObservableObject {
             var common = ["attach", "-imagekey", "diskimage-class=CRawDiskImage",
                           "-noverify", "-plist"]
             // A GPT written with 4096-byte blocks is invisible at DiskImages'
-            // default of 512 (GitHub issue #2; PartitionTableProbe). Every
-            // other disk gets exactly the arguments it always has.
-            if Self.gptBlockSize(ofImage: imagePath) == 4096 {
-                common += ["-blocksize", "4096"]
+            // default of 512 (GitHub issue #2), and a blank 4Kn LUN should be
+            // partitioned at 4096; see PartitionTableProbe. Every other disk
+            // gets exactly the arguments it always has.
+            if let blockSize = Self.attachBlockSize(image: imagePath, volume: hiddenPath) {
+                common += ["-blocksize", String(blockSize)]
             }
             common.append(imagePath)
             var result = try Self.run("/usr/bin/hdiutil", common)
@@ -306,17 +312,27 @@ final class AttachmentManager: ObservableObject {
 
     // MARK: - Asking the system
 
-    /// The block size the image's GPT was written with, from its first 8 KiB
-    /// — one read, through FSKit to the target like the attach that follows.
-    /// nil if there is no GPT or the read fails, which leaves the attach
-    /// exactly as it was.
-    nonisolated private static func gptBlockSize(ofImage path: String) -> Int? {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+    /// The `-blocksize` for this image, from its first MiB — one read,
+    /// through FSKit to the target like the attach that follows — and the
+    /// LUN's block size, which the FSKit volume reports as its own (statfs
+    /// `f_bsize`, iSCSIFSExtension `volumeStatistics`). nil if either read
+    /// fails, which leaves the attach exactly as it was.
+    nonisolated private static func attachBlockSize(image: String, volume: String) -> Int? {
+        guard let handle = FileHandle(forReadingAtPath: image) else { return nil }
         defer { try? handle.close() }
         guard let prefix = try? handle.read(upToCount: PartitionTableProbe.prefixLength) else {
             return nil
         }
-        return PartitionTableProbe.gptBlockSize(prefix: prefix)
+        var stats = statfs()
+        let lunBlockSize = statfs(volume, &stats) == 0 ? Int(stats.f_bsize) : nil
+        let chosen = PartitionTableProbe.attachBlockSize(prefix: prefix, lunBlockSize: lunBlockSize)
+        attachLog.log("""
+            block size: read \(prefix.count, privacy: .public) bytes, \
+            GPT at \(PartitionTableProbe.gptBlockSize(prefix: prefix).map(String.init) ?? "none", privacy: .public), \
+            LUN \(lunBlockSize.map(String.init) ?? "unknown", privacy: .public) → \
+            \(chosen.map { "-blocksize \($0)" } ?? "default", privacy: .public)
+            """)
+        return chosen
     }
 
     nonisolated private static func isMounted(_ path: String) -> Bool {

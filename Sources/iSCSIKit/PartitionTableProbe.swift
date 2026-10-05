@@ -12,8 +12,32 @@ import Foundation
 /// same way (both measured with DiskImages alone, 2026-10-05). So the block
 /// size follows the header, not the LUN.
 public enum PartitionTableProbe {
-    /// The bytes a caller should read: enough to hold a header at 4096.
-    public static let prefixLength = 8192
+    /// The bytes a caller should read: enough to hold a header at 4096, and
+    /// the span a disk has to be all zeros across to count as blank.
+    public static let prefixLength = 1 << 20
+
+    /// The `-blocksize` to attach with, or nil for DiskImages' default of 512
+    /// — which is also what every disk that attaches today keeps.
+    ///
+    /// 4096 when the primary GPT header is at byte 4096, or when the disk is
+    /// blank — `prefix` holds a full `prefixLength` of zeros — on a LUN whose
+    /// blocks are 4096 bytes, so that Disk Utility partitions it the way a
+    /// 4Kn-aware initiator elsewhere will read it. Anything else without a
+    /// GPT (an MBR, a filesystem on the whole disk, as on a bare-HFS+ LUN)
+    /// was laid out at 512 by this app and stays there.
+    public static func attachBlockSize(prefix: Data, lunBlockSize: Int?) -> Int? {
+        if let gpt = gptBlockSize(prefix: prefix) {
+            return gpt == 4096 ? 4096 : nil
+        }
+        guard lunBlockSize == 4096, isBlank(prefix) else { return nil }
+        return 4096
+    }
+
+    /// A full `prefixLength` of zeros: a fresh zvol, never written. A short
+    /// read proves nothing.
+    static func isBlank(_ prefix: Data) -> Bool {
+        prefix.count >= prefixLength && !prefix.prefix(prefixLength).contains { $0 != 0 }
+    }
 
     /// 512 or 4096 when `prefix` — the first bytes of the disk — holds a
     /// primary GPT header written with that block size; nil when it holds

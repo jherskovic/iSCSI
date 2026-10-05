@@ -94,6 +94,56 @@ struct PartitionTableProbeTests {
         #expect(PartitionTableProbe.gptBlockSize(prefix: disk(headersAt: [512, 4096])) == 512)
     }
 
+    // MARK: - The block size to attach at
+
+    private var blankDisk: Data { Data(count: PartitionTableProbe.prefixLength) }
+
+    @Test("a GPT at 4096 attaches at 4096, whatever the LUN reports")
+    func attachFollowsGPT4096() {
+        var prefix = blankDisk
+        prefix.replaceSubrange(0 ..< 8192, with: disk(headersAt: [4096]))
+        #expect(PartitionTableProbe.attachBlockSize(prefix: prefix, lunBlockSize: 4096) == 4096)
+        #expect(PartitionTableProbe.attachBlockSize(prefix: prefix, lunBlockSize: 512) == 4096)
+        #expect(PartitionTableProbe.attachBlockSize(prefix: prefix, lunBlockSize: nil) == 4096)
+    }
+
+    @Test("a GPT at 512 on a 4Kn LUN keeps the default — every disk this app partitioned until now")
+    func attachKeepsGPT512() {
+        var prefix = blankDisk
+        prefix.replaceSubrange(0 ..< 8192, with: disk(headersAt: [512]))
+        #expect(PartitionTableProbe.attachBlockSize(prefix: prefix, lunBlockSize: 4096) == nil)
+    }
+
+    @Test("a blank 4Kn LUN attaches at 4096, so it is partitioned the way other initiators read it")
+    func blank4Kn() {
+        #expect(PartitionTableProbe.attachBlockSize(prefix: blankDisk, lunBlockSize: 4096) == 4096)
+    }
+
+    @Test("a blank LUN that is not 4Kn, or of unknown block size, keeps the default")
+    func blankOther() {
+        #expect(PartitionTableProbe.attachBlockSize(prefix: blankDisk, lunBlockSize: 512) == nil)
+        #expect(PartitionTableProbe.attachBlockSize(prefix: blankDisk, lunBlockSize: nil) == nil)
+        #expect(PartitionTableProbe.attachBlockSize(prefix: blankDisk, lunBlockSize: 8192) == nil)
+    }
+
+    @Test("anything written in the first MiB is not blank: MBR, HFS+, a byte near the end")
+    func notBlank() {
+        var mbrOnly = blankDisk
+        mbrOnly.replaceSubrange(0 ..< 8192, with: disk(headersAt: []))
+        var hfsPlus = blankDisk
+        hfsPlus[1024] = UInt8(ascii: "H"); hfsPlus[1025] = UInt8(ascii: "+")
+        var lastByte = blankDisk
+        lastByte[PartitionTableProbe.prefixLength - 1] = 1
+        for prefix in [mbrOnly, hfsPlus, lastByte] {
+            #expect(PartitionTableProbe.attachBlockSize(prefix: prefix, lunBlockSize: 4096) == nil)
+        }
+    }
+
+    @Test("a short read cannot prove a disk blank")
+    func shortReadIsNotBlank() {
+        #expect(PartitionTableProbe.attachBlockSize(prefix: Data(count: 8192), lunBlockSize: 4096) == nil)
+    }
+
     @Test("the probe reads from wherever the Data's indices start")
     func slicedData() {
         let padded = Data(count: 100) + disk(headersAt: [4096])

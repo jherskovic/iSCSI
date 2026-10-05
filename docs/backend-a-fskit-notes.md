@@ -873,14 +873,16 @@ partitioner saw. Measured with DiskImages alone (scratch image on a SIP-off
 | 512 — header at byte 512 (every disk this app has partitioned) | GPT + APFS | protective MBR only |
 
 So neither fixed setting is safe: the block size has to follow the header.
-The attach now reads the image's first 8 KiB and passes `-blocksize 4096` only
-when the primary header is at byte 4096 (`PartitionTableProbe`, signature plus
-`MyLBA` = 1); every other disk — 512-block GPTs, blank disks, MBR-only disks,
-whole-disk filesystems — attaches with exactly the arguments it always had.
-A *blank* 4Kn LUN therefore still gets a 512-block GPT when formatted through
-this app, which a 4Kn-aware initiator elsewhere would in turn see as
-unformatted; presenting such a disk at its native block size would need the
-LUN's block size from the daemon and is a separate decision.
+The attach reads the image's first MiB and passes `-blocksize 4096` when the
+primary header is at byte 4096 (`PartitionTableProbe`, signature plus
+`MyLBA` = 1), or when the disk is **blank** — that whole MiB zeros, a fresh
+zvol — on a LUN with 4096-byte blocks, so Disk Utility partitions it the way a
+4Kn-aware initiator elsewhere will read it. The LUN's block size comes from the
+FSKit volume itself: `volumeStatistics` reports it, and the app reads it back
+with `statfs(2)` on the hidden mount point. Every other disk — 512-block GPTs,
+MBR-only disks, whole-disk filesystems such as a bare-HFS+ LUN, anything not
+provably blank — attaches with exactly the arguments it always had. The
+decision is logged under `me.herko.iSCSIInitiator.app`, category `attach`.
 
 ## Earlier: end to end with a local backing store
 
