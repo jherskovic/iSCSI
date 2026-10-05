@@ -2,7 +2,9 @@
 //  iSCSIFSExtension.swift
 //  Backend A: an FSKit module presenting a LUN as a regular file, which
 //  `hdiutil attach -imagekey diskimage-class=CRawDiskImage` turns into a real
-//  /dev/diskN. The resource URL selects the backing store:
+//  /dev/diskN — with `-blocksize 4096` when the LUN's GPT was written with
+//  4096-byte blocks (PartitionTableProbe). The resource URL selects the
+//  backing store:
 //
 //    iscsi://proto/lun0                      -> local sparse file, no network
 //    iscsi://[user@]host[:port]/<iqn>/<lun>  -> real session via iscsid (XPC)

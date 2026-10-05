@@ -183,8 +183,15 @@ final class AttachmentManager: ObservableObject {
             }
             // -noverify: a raw LUN has no checksum, and verification would
             // read the whole device over the network first.
-            let common = ["attach", "-imagekey", "diskimage-class=CRawDiskImage",
-                          "-noverify", "-plist", imagePath]
+            var common = ["attach", "-imagekey", "diskimage-class=CRawDiskImage",
+                          "-noverify", "-plist"]
+            // A GPT written with 4096-byte blocks is invisible at DiskImages'
+            // default of 512 (GitHub issue #2; PartitionTableProbe). Every
+            // other disk gets exactly the arguments it always has.
+            if Self.gptBlockSize(ofImage: imagePath) == 4096 {
+                common += ["-blocksize", "4096"]
+            }
+            common.append(imagePath)
             var result = try Self.run("/usr/bin/hdiutil", common)
             if result.status != 0 {
                 // "No mountable file systems" is a *new* LUN, not a broken
@@ -298,6 +305,19 @@ final class AttachmentManager: ObservableObject {
     }
 
     // MARK: - Asking the system
+
+    /// The block size the image's GPT was written with, from its first 8 KiB
+    /// — one read, through FSKit to the target like the attach that follows.
+    /// nil if there is no GPT or the read fails, which leaves the attach
+    /// exactly as it was.
+    nonisolated private static func gptBlockSize(ofImage path: String) -> Int? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        guard let prefix = try? handle.read(upToCount: PartitionTableProbe.prefixLength) else {
+            return nil
+        }
+        return PartitionTableProbe.gptBlockSize(prefix: prefix)
+    }
 
     nonisolated private static func isMounted(_ path: String) -> Bool {
         // getmntinfo: no subprocess, no locale, no substring false matches.

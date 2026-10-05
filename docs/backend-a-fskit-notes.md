@@ -858,6 +858,30 @@ The arithmetic now lives in `BlockAligner` (iSCSIKit) with 10 unit tests, so it
 can be exercised without a live 4Kn target. One test records why this hid for so
 long: with a 512-byte LUN every such request is already exact.
 
+### A 4Kn LUN partitioned elsewhere looked unformatted (GitHub issue #2)
+
+DiskImages presents a `CRawDiskImage` with 512-byte blocks unless
+`hdiutil attach -blocksize` says otherwise — an option missing from the man
+page but present in `hdiutil` on 26.6.2 and 27.x. A GPT names its locations in
+blocks, so where its primary header sits depends on the block size the
+partitioner saw. Measured with DiskImages alone (scratch image on a SIP-off
+27.0 VM, 2026-10-05):
+
+| partitioned at | attached at 512 (the app until now) | attached at `-blocksize 4096` |
+|---|---|---|
+| 4096 — header at byte 4096 (a 4Kn-aware initiator) | protective MBR only: "unformatted" | GPT + APFS |
+| 512 — header at byte 512 (every disk this app has partitioned) | GPT + APFS | protective MBR only |
+
+So neither fixed setting is safe: the block size has to follow the header.
+The attach now reads the image's first 8 KiB and passes `-blocksize 4096` only
+when the primary header is at byte 4096 (`PartitionTableProbe`, signature plus
+`MyLBA` = 1); every other disk — 512-block GPTs, blank disks, MBR-only disks,
+whole-disk filesystems — attaches with exactly the arguments it always had.
+A *blank* 4Kn LUN therefore still gets a 512-block GPT when formatted through
+this app, which a 4Kn-aware initiator elsewhere would in turn see as
+unformatted; presenting such a disk at its native block size would need the
+LUN's block size from the daemon and is a separate decision.
+
 ## Earlier: end to end with a local backing store
 
 Our FSKit module mounts and the whole Backend A stack runs on it:
