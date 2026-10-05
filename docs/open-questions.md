@@ -528,6 +528,17 @@ Built and tested against an in-memory daemon and an in-memory cache file
   long VM session and a run over Tailscale; if they barely move `diskSaved`,
   the segmented-LRU split (80% protected) and the admission rule are the first
   suspects, not the size.
+- **A new extension against an old daemon — found and fixed at the 0.7.1 RC.**
+  The extension updates with the app; the daemon stays the old one until Setup
+  reinstalls it. With the 0.7.1 extension and the 0.6.1 daemon (2026-10-05,
+  SIP-off VM, `mount -F` before Reinstall), asking for the cache size — a
+  method 0.6.1 does not have — made NSXPC drop the connection, the daemon
+  logged out the session it carried, and every read failed with EIO after a
+  5 s stall. The extension now asks `daemonInfo` first and asks for the cache
+  only from build 40 on (`DaemonCapabilities`). Any XPC method added later
+  needs the same gate. The app has the same hazard in `discoverSubsystems`,
+  which gained an `interfaceName` argument in 0.7.0; Setup holds the app until
+  Reinstall, so it is noted rather than gated.
 - **`F_NOCACHE`'s effect** on the tier's own reads is assumed, not measured.
 - **Several volumes at 16 GB each** on a small boot disk: each tier is sized at
   attach and re-checks free space every 256 MiB it grows, stopping at the

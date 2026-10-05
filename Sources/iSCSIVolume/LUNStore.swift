@@ -430,10 +430,19 @@ public final class DaemonStore: LUNStore {
         let pinned = budgetReply.intValue > 0
         let budgetBytes = pinned ? budgetReply.intValue : Self.readaheadBytes
         // Local disk cache: best effort. Anything short of a usable tier
-        // mounts without one and says why.
-        let cacheBytes = Self.localCacheSetting(from: proxy, session: handle)
+        // mounts without one and says why. Asked only of a daemon that has the
+        // method: one that lacks it drops this connection, and with it the
+        // session just logged in (DaemonCapabilities).
         var tier: DiskChunkTier?
         var tierOff: String?
+        let info = Self.daemonInfo(from: proxy)
+        var cacheBytes = 0
+        if DaemonCapabilities.answersLocalCache(info) {
+            cacheBytes = Self.localCacheSetting(from: proxy, session: handle)
+        } else {
+            let who = info.map { "\($0.version) (\($0.build))" } ?? "unknown"
+            fsLog.log("local cache not asked: the background service \(who, privacy: .public) predates it")
+        }
         if cacheBytes > 0 {
             switch DiskChunkTier.make(directory: Self.cacheDirectory, budgetBytes: cacheBytes,
                                       chunkBytes: Self.chunkBytes(forBlockSize: Int(bs))) {
@@ -566,9 +575,25 @@ public final class DaemonStore: LUNStore {
         }
     }
 
-    /// The target's local cache size, or 0. Its own short timeout: an older
-    /// daemon without the selector never replies, and that must cost a
-    /// mount seconds, not the 30 s a data call is allowed.
+    /// The daemon's account of itself, or nil. Every daemon since 0.4 answers;
+    /// a short timeout so a wedged one costs a mount seconds.
+    static func daemonInfo(from proxy: ISCSIDaemonProtocol, timeout: TimeInterval = 5) -> DaemonInfo? {
+        let reply = OSAllocatedUnfairLock<DaemonInfo?>(initialState: nil)
+        try? blocking(timeout: timeout) { done in
+            proxy.daemonInfo { data, error in
+                if error == nil, let data, let info = try? JSONDecoder().decode(DaemonInfo.self, from: data) {
+                    reply.withLock { $0 = info }
+                }
+                done()
+            }
+        }
+        return reply.withLock { $0 }
+    }
+
+    /// The target's local cache size, or 0. Its own short timeout, so a slow
+    /// answer costs a mount seconds, not the 30 s a data call is allowed.
+    /// Only for a daemon that has the method — see `DaemonCapabilities`: one
+    /// that lacks it does not stay silent, it drops the connection.
     static func localCacheSetting(from proxy: ISCSIDaemonProtocol, session: String,
                                   timeout: TimeInterval = 5) -> Int {
         let reply = OSAllocatedUnfairLock(initialState: 0)
