@@ -359,6 +359,15 @@ Still open, in cost order:
   SIP-on acceptance box. The `attachmentsGeneration` resurrection-race guard
   (from making `reconcile` async) is now load-bearing, since `attach`/`detach`
   suspend too.
+
+  **The Setup screen had the same bug (found 2026-10-04, fixed in 0.7.0 build
+  41).** The "Register" step ran `lsregister -f -R -trusted` with
+  `waitUntilExit()` on the main actor. On the SIP-off rig (now `.33`) just after
+  boot — load ~20, the virtual disk saturated by boot-time indexing —
+  `lsregister` ran for over 2.5 minutes and the window froze for all of it,
+  even though `pluginkit` already listed the module as registered and enabled.
+  It and the uninstaller's `pluginkit -r` now run on detached tasks; every
+  subprocess the app waits on is off the main actor.
 - **Latch has no self-heal, and it fails fast into the extension.** After
   recovery exhausts, the session stays dead until an explicit re-attach; an
   outage that outlasts five attempts will not reconnect on its own. The latch

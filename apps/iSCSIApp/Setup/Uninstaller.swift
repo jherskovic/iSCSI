@@ -150,11 +150,15 @@ final class Uninstaller: ObservableObject {
 
         let appex = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Extensions/iSCSIFSExtension.appex")
-        let pluginkit = Process()
-        pluginkit.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
-        pluginkit.arguments = ["-r", appex.path]
-        try? pluginkit.run()
-        pluginkit.waitUntilExit()
+        // Off the main actor, like every subprocess the app waits on: a slow
+        // pluginkit must not freeze the window mid-uninstall.
+        await Task.detached {
+            let pluginkit = Process()
+            pluginkit.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
+            pluginkit.arguments = ["-r", appex.path]
+            try? pluginkit.run()
+            pluginkit.waitUntilExit()
+        }.value
 
         return removed ? "disabled and unregistered" : "was not enabled"
     }

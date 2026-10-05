@@ -60,7 +60,13 @@ final class ModuleRegistration: SetupStep {
         let lsregister = "/System/Library/Frameworks/CoreServices.framework"
             + "/Frameworks/LaunchServices.framework/Support/lsregister"
         if FileManager.default.isExecutableFile(atPath: lsregister) {
-            attempted.append(run(lsregister, ["-f", "-R", "-trusted", Bundle.main.bundleURL.path]))
+            // Off the main actor: on a loaded machine lsregister runs for
+            // minutes — measured past 2.5 on a VM just after boot (2026-10-04)
+            // — and waiting for it here froze the whole window.
+            let bundlePath = Bundle.main.bundleURL.path
+            attempted.append(await Task.detached {
+                Self.run(lsregister, ["-f", "-R", "-trusted", bundlePath])
+            }.value)
         } else {
             attempted.append("lsregister not present at the expected path")
         }
@@ -92,7 +98,7 @@ final class ModuleRegistration: SetupStep {
         }
     }
 
-    private func run(_ path: String, _ arguments: [String]) -> String {
+    nonisolated private static func run(_ path: String, _ arguments: [String]) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
