@@ -12,7 +12,7 @@ struct NVMe: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "nvme",
         abstract: "NVMe/TCP operations against a subsystem: discover, verify, read-bench.",
-        subcommands: [NVMeDiscover.self, NVMeVerify.self, NVMeReadBench.self]
+        subcommands: [NVMeDiscover.self, NVMeVerify.self, NVMeReadBench.self, NVMeWriteBench.self]
     )
 }
 
@@ -283,6 +283,107 @@ struct NVMeReadBench: AsyncParsableCommand {
         let el = Date().timeIntervalSince(start)
         let mbps = Double(moved) / el / 1_000_000
         print(String(format: "read %.2f GB in %.2fs = %.1f MB/s", Double(moved) / 1e9, el, mbps))
+        try await controller.logout()
+    }
+}
+
+// MARK: write-bench
+
+/// Sequential write throughput over raw NVMe/TCP — the write-side twin of
+/// `read-bench`, and the way to compare transports without the FSKit path in
+/// the way (it measured TCP's Nagle setting, 2026-10-05). DESTRUCTIVE.
+struct NVMeWriteBench: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "write-bench",
+        abstract: "Sequential write throughput over raw NVMe/TCP. DESTRUCTIVE — scratch namespaces only."
+    )
+
+    @OptionGroup var options: NVMeOptions
+
+    @Option(help: "Subsystem NQN to connect to.")
+    var subsystem: String
+
+    @Option(help: "Namespace ID.")
+    var nsid: UInt32 = 1
+
+    @Option(help: "Megabytes to write.")
+    var megabytes: Int = 512
+
+    @Option(help: "Bytes per request.")
+    var chunk: Int = 1 << 20
+
+    @Option(help: "Starting offset in megabytes.")
+    var offsetMB: Int = 0
+
+    @Option(help: "Requests to keep outstanding at once.")
+    var queueDepth: Int = 1
+
+    @Option(help: "Cap on a single NVMe command; a larger request is split into several issued together.")
+    var maxTransfer: Int = 256 << 10
+
+    @Flag(help: "Send every write with FUA (what the shipping daemon does by default).")
+    var fua = false
+
+    func run() async throws {
+        guard queueDepth >= 1 else { throw ValidationError("--queue-depth must be at least 1") }
+        let controller = try options.controller(subsystem: subsystem)
+        try await controller.activate()
+        let device = NVMeBlockDevice(controller: controller, nsid: nsid,
+                                     maxTransferBytes: maxTransfer, writeThrough: fua)
+        let (blockSize, blockCount) = try await device.readCapacity()
+        let capacity = UInt64(blockSize) * blockCount
+        print("capacity \(capacity / 1_048_576) MiB, blockSize \(blockSize), "
+              + "chunk \(chunk), maxTransfer \(maxTransfer), queueDepth \(queueDepth), fua \(fua)")
+
+        var offset = UInt64(offsetMB) * 1_048_576
+        offset -= offset % UInt64(blockSize)
+        var plan: [(offset: UInt64, length: Int)] = []
+        var remaining = megabytes * 1_048_576
+        while remaining > 0, offset < capacity {
+            let n = min(chunk, remaining, Int(capacity - offset))
+            plan.append((offset, n - (n % blockSize)))
+            offset += UInt64(n)
+            remaining -= n
+        }
+        // One pattern, sliced per request: what is written does not matter,
+        // only that it is not all zeros a target could shortcut.
+        let pattern = Data((0 ..< chunk).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+
+        let start = Date()
+        var moved = 0
+        if queueDepth == 1 {
+            for request in plan {
+                try await device.write(offset: request.offset, data: pattern.prefix(request.length))
+                moved += request.length
+            }
+        } else {
+            moved = try await withThrowingTaskGroup(of: Int.self) { group in
+                var issued = 0
+                var total = 0
+                for _ in 0 ..< min(queueDepth, plan.count) {
+                    let request = plan[issued]
+                    issued += 1
+                    group.addTask {
+                        try await device.write(offset: request.offset, data: pattern.prefix(request.length))
+                        return request.length
+                    }
+                }
+                while let done = try await group.next() {
+                    total += done
+                    guard issued < plan.count else { continue }
+                    let request = plan[issued]
+                    issued += 1
+                    group.addTask {
+                        try await device.write(offset: request.offset, data: pattern.prefix(request.length))
+                        return request.length
+                    }
+                }
+                return total
+            }
+        }
+        let el = Date().timeIntervalSince(start)
+        let mbps = Double(moved) / el / 1_000_000
+        print(String(format: "wrote %.2f GB in %.2fs = %.1f MB/s", Double(moved) / 1e9, el, mbps))
         try await controller.logout()
     }
 }
