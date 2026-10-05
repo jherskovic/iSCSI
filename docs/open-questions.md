@@ -535,7 +535,10 @@ Built and tested against an in-memory daemon and an in-memory cache file
   method 0.6.1 does not have — made NSXPC drop the connection, the daemon
   logged out the session it carried, and every read failed with EIO after a
   5 s stall. The extension now asks `daemonInfo` first and asks for the cache
-  only from build 40 on (`DaemonCapabilities`). Any XPC method added later
+  only from build 40 on (`DaemonCapabilities`). Verified with 0.7.1 RC3
+  (build 47) against the same 0.6.1 daemon: mounted in 0.05 s, logged "local
+  cache not asked … 0.6.1 (39) predates it", read at 634 MB/s, and a 1 MiB
+  write read back identical past the page cache. Any XPC method added later
   needs the same gate. The app has the same hazard in `discoverSubsystems`,
   which gained an `interfaceName` argument in 0.7.0; Setup holds the app until
   Reinstall, so it is noted rather than gated.
