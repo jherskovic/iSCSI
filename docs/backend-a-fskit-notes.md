@@ -584,6 +584,24 @@ name-testing attached and mounted with the ejected image's record still in the
 dump — so that record is inert. Since fixed: the FSKit query retries for ~2 s,
 and Register is offered only when FSKit answers without the module.
 
+**A daemon from another copy, then from a deleted one (RC5, 08:38–08:45).** A
+second copy at `/Applications/Test/iSCSI Initiator.app`, opened: the row named
+`/Applications/iSCSI Initiator.app` and offered Clean up; the service row said
+the daemon belonged to that copy. Clean up unregistered it — and ran
+`lsregister -u` on the ejected image's path too, **which left that record in
+place: `-u` does not remove a record whose bundle no longer exists.** Had such a
+record blocked Setup, nothing in the app could have cleared it. Reinstall (behind
+its dialog) moved the daemon to the Test copy. Then, with that daemon running,
+`/Applications/Test` was deleted and `/Applications/iSCSI Initiator.app`
+opened: both gone copies were a note on a green row, the service row named the
+deleted copy, and Reinstall moved the daemon back. name-testing attached.
+
+Opening the `/Applications` copy re-registered it (Clean up had removed it), and
+**the enabled entry vanished from `enabledModules.plist` that same minute,
+without a reboot or an `fskit_agent` restart** — so on 26.6.2 a re-registration
+prunes the entry at once, not only at the next boot as the table under "The
+rule" recorded. Enable again fixed it.
+
 ### `hdiutil attach -nomount` is deprecated with no usable replacement
 
 Attaching a LUN that has no filesystem needs `-nomount`, or `hdiutil` refuses
