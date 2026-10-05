@@ -78,6 +78,11 @@ bundle exists on disk) or *gone* (it does not).
   filesystem extension to load, so attaching fails with 'not found' even while
   this screen is green."
 
+  *Revised during implementation:* two live copies attached fine on the SIP-on
+  VM (2026-10-05); what broke was the daemon left running from, then pointing
+  at, the ejected copy. The step's text says so instead of "not found" — see
+  `docs/backend-a-fskit-notes.md`, "What LaunchServices keeps after a DMG".
+
 **Action** "Clean up", behind a consent prompt: "This removes macOS's
 registration of the copies listed above so only this one is used. It does not
 delete any files." `perform()` runs `lsregister -u <path>` for each, **off the

@@ -118,8 +118,9 @@ from the running copy.
 This is not hypothetical. On the SIP-on VM (2026-10-05), launching the app
 once from its mounted disk image — with the installed copy already approved,
 and nothing registered by hand — left launchd running `iscsid` out of the
-image. The image then could not be ejected ("Resource busy"); once forced off,
-the job could not start and every attach failed with an I/O error
+image. The image then could not be ejected ("Resource busy"); once that
+`iscsid` was stopped and the image ejected, the job could not start again and
+every attach failed with an I/O error
 (`docs/backend-a-fskit-notes.md`, "What LaunchServices keeps after a DMG").
 
 ## Development cleanup
