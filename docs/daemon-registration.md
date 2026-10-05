@@ -103,6 +103,25 @@ and need opposite instructions, so `DaemonController` pairs the status with the
 `daemonInfo` round trip and gives the latter its own state
 (`registeredNotResponding`).
 
+## Which copy the daemon runs from (0.7.0)
+
+launchd will not tell an unprivileged app which bundle a registered daemon runs
+from: `launchctl print system/me.herko.iSCSIInitiator.daemon` shows only
+`program identifier = Contents/MacOS/iscsid` and the parent bundle identifier.
+So the daemon reports it — `DaemonInfo.bundlePath`, its own containing `.app` —
+and the app compares that with itself before comparing versions. A daemon from
+another copy (a once-mounted DMG, a second install) is `.otherCopy`, and
+"approved but not answering" — most often a daemon whose copy is gone — is no
+longer a dead end: both offer **Reinstall**, which unregisters and registers
+from the running copy.
+
+This is not hypothetical. On the SIP-on VM (2026-10-05), launching the app
+once from its mounted disk image — with the installed copy already approved,
+and nothing registered by hand — left launchd running `iscsid` out of the
+image. The image then could not be ejected ("Resource busy"); once forced off,
+the job could not start and every attach failed with an I/O error
+(`docs/backend-a-fskit-notes.md`, "What LaunchServices keeps after a DMG").
+
 ## Development cleanup
 
 A registration made from `build/export/` survives the next `release.sh`, which
