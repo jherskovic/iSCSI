@@ -26,6 +26,9 @@ enum DaemonState: Equatable {
     /// Answering, but it is not the build this app shipped with — the usual
     /// cause is an update that replaced the executable without re-registering.
     case versionMismatch(daemon: String, app: String)
+    /// Answering, but launchd runs it out of a different copy of the app —
+    /// a once-mounted DMG, a second install. Wrong even at the same version.
+    case otherCopy(path: String)
     /// The plist is not in the bundle at all. A packaging bug, not a user problem.
     case notFound
     case failed(String)
@@ -41,6 +44,8 @@ enum DaemonState: Equatable {
         case .running(let info):       return "running \(info.version) (\(info.build)), pid \(info.pid)"
         case .versionMismatch(let d, let a):
             return "running \(d) but this app is \(a) — needs re-registering"
+        case .otherCopy(let path):
+            return "running from another copy of the app at \(path) — needs reinstalling from this one"
         case .notFound:
             return "the LaunchDaemon plist is missing from the app bundle (packaging bug)"
         case .failed(let why):         return "failed: \(why)"
@@ -50,7 +55,7 @@ enum DaemonState: Equatable {
     var color: Color {
         switch self {
         case .running:                            return .green
-        case .requiresApproval, .versionMismatch: return .orange
+        case .requiresApproval, .versionMismatch, .otherCopy: return .orange
         case .checking:                           return .secondary
         default:                                  return .red
         }
@@ -136,6 +141,15 @@ final class DaemonController: ObservableObject {
     private func probe() async {
         do {
             let info = try await DaemonConnection.info()
+            // Placement before version: a daemon from another copy is the wrong
+            // daemon even when the versions agree.
+            let appPath = Bundle.main.bundleURL.path
+            if DaemonPlacement.isOtherCopy(daemonBundlePath: info.bundlePath,
+                                           appBundlePath: appPath) {
+                transition(to: .otherCopy(path: info.bundlePath ?? "?"),
+                           "daemonInfo: bundlePath=\(info.bundlePath ?? "nil") app=\(appPath)")
+                return
+            }
             let matches = info.version == appVersion && info.build == appBuild
             transition(to: matches
                        ? .running(info)

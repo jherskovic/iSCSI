@@ -141,8 +141,12 @@ final class DaemonStep: SetupStep {
             return .actionable("macOS is waiting for you to allow the background "
                                + "service in System Settings.")
         case .registeredNotResponding:
-            return .blocked("the background service is approved but not running. "
-                            + "Reinstalling from the disk image usually fixes this.")
+            return .actionable("the background service is approved but not running — "
+                               + "most often because it belongs to a copy of the app that "
+                               + "no longer exists. Reinstall it from this copy.")
+        case .otherCopy(let path):
+            return .actionable("the background service belongs to another copy of the app "
+                               + "at \(path); it needs reinstalling from this one.")
         case .versionMismatch(let daemon, let app):
             return .actionable("the background service is version \(daemon) but "
                                + "this app is \(app); it needs reinstalling.")
@@ -158,7 +162,8 @@ final class DaemonStep: SetupStep {
         switch controller.state {
         case .notRegistered:    return "Install"
         case .requiresApproval: return "Open System Settings"
-        case .versionMismatch:  return "Reinstall"
+        case .versionMismatch, .otherCopy, .registeredNotResponding:
+            return "Reinstall"
         default:                return nil
         }
     }
@@ -169,7 +174,8 @@ final class DaemonStep: SetupStep {
         switch controller.state {
         case .notRegistered:    await controller.register()
         case .requiresApproval: controller.openLoginItemsSettings()
-        case .versionMismatch:  await controller.reregister()
+        case .versionMismatch, .otherCopy, .registeredNotResponding:
+            await controller.reregister()
         default:                break
         }
     }
