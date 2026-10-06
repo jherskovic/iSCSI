@@ -180,8 +180,8 @@ struct PerRequestFlushISCSITests {
         await fleet.shutdown()
     }
 
-    @Test("WCE=0: the flush is skipped, since it cannot matter")
-    func writeCacheDisabledSkipsTheFlush() async throws {
+    @Test("WCE=0: no flush; FUA throughout, which such a target honours for free")
+    func writeCacheDisabledUsesFUA() async throws {
         let disk = RAMDisk(blockSize: blockSize, capacityBlocks: capacityBlocks)
         var config = MockTargetConfig()
         config.writeCacheEnabled = false
@@ -189,9 +189,12 @@ struct PerRequestFlushISCSITests {
 
         try await device.write(offset: 0, data: payload(10))
         try await device.write(offset: UInt64(8 * blockSize), data: payload(11))
-        #expect(await disk.cachedWrites == 8)
-        #expect(await disk.fuaWrites == 0)
+        // FUA, not bare writes: the mock caches whatever WCE says, the way a
+        // target whose cache was switched on without a UNIT ATTENTION would.
+        #expect(await disk.fuaWrites == 8)
+        #expect(await disk.cachedWrites == 0)
         #expect(await disk.flushCount == 0)
+        #expect(await disk.crash() == 0)
         await fleet.shutdown()
     }
 }
@@ -290,16 +293,18 @@ struct PerRequestFlushNVMeTests {
         await fleet.shutdown()
     }
 
-    @Test("VWC=0: the Flush is skipped, since it cannot matter")
-    func noVolatileCacheSkipsTheFlush() async throws {
+    @Test("VWC=0: no Flush; FUA throughout")
+    func noVolatileCacheUsesFUA() async throws {
         let disk = RAMDisk(blockSize: blockSize, capacityBlocks: capacityBlocks)
         var config = MockNVMeConfig()
         config.volatileWriteCache = false
         let (device, fleet) = try await makeDevice(disk: disk, config: config)
 
         try await device.write(offset: 0, data: payload(26))
-        #expect(await disk.cachedWrites == 4)
+        #expect(await disk.fuaWrites == 4)
+        #expect(await disk.cachedWrites == 0)
         #expect(await disk.flushCount == 0)
+        #expect(await disk.crash() == 0)
         await fleet.shutdown()
     }
 }

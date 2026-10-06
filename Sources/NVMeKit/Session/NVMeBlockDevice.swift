@@ -144,14 +144,16 @@ public actor NVMeBlockDevice: BlockDeviceBackend {
 
     /// `.flushPerRequest` for a request that spans several commands; the
     /// reasoning is `ISCSIBlockDevice.writeFlushingOnce`'s. VWC comes from
-    /// Identify Controller, which every association re-reads, so it is
-    /// current for the epoch read just before it.
+    /// Identify Controller, which every association re-reads.
     private func writeFlushingOnce(_ plan: [(lba: UInt64, bytes: Range<Data.Index>)],
                                    from data: Data, blockSize bs: Int) async throws {
         let before = await controller.associationGeneration
-        let volatile = await controller.volatileWriteCachePresent != .some(false)
+        guard await controller.volatileWriteCachePresent != .some(false) else {
+            try await writeChunks(plan, from: data, blockSize: bs, fua: true)
+            return
+        }
         try await writeChunks(plan, from: data, blockSize: bs, fua: false)
-        if volatile { try await flush() }
+        try await flush()
         guard await controller.associationGeneration == before else {
             try await writeChunks(plan, from: data, blockSize: bs, fua: true)
             return

@@ -96,9 +96,9 @@ public struct MockTargetConfig: Sendable {
     /// Targets advertised by SendTargets.
     public var discoveryTargets: [(name: String, addresses: [String])] = []
     public var faults = MockTargetFaults()
-    /// The caching page's WCE bit. The RAMDisk caches regardless: a target
-    /// that reports WCE=0 and caches anyway is the lying target no flush
-    /// policy can help, so tests about WCE=0 assert on the wire, not on loss.
+    /// The caching page's WCE bit. The RAMDisk caches regardless, which
+    /// models a cache switched on after the initiator asked, or a target that
+    /// reports WCE=0 and caches anyway.
     public var writeCacheEnabled = true
 
     public init() {}

@@ -36,8 +36,9 @@ public enum WriteDurability: Sendable, Equatable {
     /// target reported a reset) anywhere between the first command and the
     /// flush's completion, the target may have lost acknowledged cached data
     /// and the flush proves nothing, so the whole request is written again
-    /// with FUA. The flush is skipped when the device says its cache is not
-    /// volatile (WCE=0, VWC=0). See docs/per-request-sync.md.
+    /// with FUA. A device that says its cache is not volatile (WCE=0, VWC=0)
+    /// gets FUA throughout instead: free there, and still right if the cache
+    /// is switched on behind our back. See docs/per-request-sync.md.
     case flushPerRequest
 }
 
@@ -308,16 +309,21 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     /// `.flushPerRequest` for a request that spans several commands.
     ///
     /// The epoch is read before the first command is issued and again after
-    /// the flush completes. Reading it first is what makes the cached WCE
-    /// answer safe to act on: a change between the two reads — a reconnect,
-    /// a reset, a MODE SELECT reported as UNIT ATTENTION — forces the FUA
-    /// replay, so a stale "not volatile" can cost a replay but never a write.
+    /// the flush completes; any change between the two — a reconnect, a
+    /// reset, a MODE SELECT reported as UNIT ATTENTION — forces the FUA
+    /// replay.
     private func writeFlushingOnce(_ plan: [(lba: UInt64, bytes: Range<Data.Index>)],
                                    from data: Data, blockSize bs: Int) async throws {
         let before = await epoch()
-        let volatile = await cacheIsVolatile(epoch: before)
+        // WCE=0: nothing to batch. FUA costs such a target nothing, and unlike
+        // skipping the flush it stays right if the cache is switched on by
+        // someone who does not raise a UNIT ATTENTION for it.
+        guard await cacheIsVolatile(epoch: before) else {
+            try await writeChunks(plan, from: data, blockSize: bs, fua: true)
+            return
+        }
         try await writeChunks(plan, from: data, blockSize: bs, fua: false)
-        if volatile { try await synchronizeCache() }
+        try await synchronizeCache()
         guard await epoch() == before else {
             // Whatever the target acknowledged before the change may have
             // been in a cache that is gone, and a flush on the new nexus says

@@ -31,8 +31,9 @@ the first two. Under `.flushPerRequest`:
   `write` returns only when it completes.
 - **An epoch is read before the first command and again after the flush.** If
   it moved, the whole request is written again with FUA.
-- **The flush is skipped** on a positive WCE=0 (SCSI caching page, cached per
-  epoch) or VWC=0 (NVMe Identify Controller, re-read on every association).
+- **On a positive WCE=0** (SCSI caching page, cached per epoch) **or VWC=0**
+  (NVMe Identify Controller, re-read on every association) there is nothing to
+  batch, and the request is written with FUA throughout, exactly as today.
 
 `FlushPolicy.flushPerRequest` selects it at login in `DaemonCore`. It counts as
 durable at acknowledgement: no detach flush, and `SessionInfo.writeThrough` is
@@ -47,7 +48,7 @@ it yet.** See "What shipping would still need".
 | transparent recovery hides a lost cache | epoch check + FUA replay (new) | `PerRequestFlushTests`, both protocols, with negative controls |
 | a failed flush must fail the request and drop the cache range | **existing structure** | the flush runs inside the XPC `write` call |
 | `ioLock` held until the flush completes | **existing structure** | the same |
-| SYNCHRONIZE CACHE(10)-only targets, WCE=0, NVMe VWC=0 | fallback + skip (new) | `PerRequestFlushTests` |
+| SYNCHRONIZE CACHE(10)-only targets, WCE=0, NVMe VWC=0 | fallback; FUA when not volatile (new) | `PerRequestFlushTests` |
 
 ### Transparent recovery
 
@@ -70,9 +71,9 @@ The false positive costs one extra write of one request after each reconnect.
 silently retried every UNIT ATTENTION. A 29h UA (POWER ON, RESET, OR BUS DEVICE
 RESET OCCURRED) is how SCSI reports that a target lost state, which can include
 its cache, *without* the connection dropping. Every absorbed UA now counts
-toward the iSCSI epoch. Counting every UA, not just ASC 29h, is deliberate.
-2A/01 (MODE PARAMETERS CHANGED) is how a WCE flip made by another initiator
-arrives, and that is exactly when the cached WCE answer goes stale. NVMe/TCP
+toward the iSCSI epoch. It counts every UA, not just ASC 29h. A UA is rare,
+and a false positive costs one replay. Counting 2A/01 (MODE PARAMETERS
+CHANGED) also refreshes the cached WCE answer. NVMe/TCP
 has no in-band equivalent: a controller reset ends the association, and the
 generation covers that.
 
@@ -117,11 +118,17 @@ separate XPC call would break both properties.
   whatever the LUN's size. Ranging the flush to the request would buy nothing
   on ZFS, where a flush commits the whole zvol's log either way, and would
   bring the problem back.
-- **WCE=0 / VWC=0.** The flush is skipped only on a positive "not volatile".
-  No caching page, or a failed MODE SENSE, counts as volatile. The answer is
-  cached per epoch, because a MODE SENSE per request would cost the round trip
-  this mode exists to save. The epoch is read before the cache answer, so a
-  stale "not volatile" can cost a replay but never a write.
+- **WCE=0 / VWC=0.** The maintainer's note was that the extra command buys
+  nothing there. So the mode sends no flush, but it writes with FUA rather than
+  without. **Skipping the flush and writing without FUA was the first version,
+  and it was weaker than what ships.** A cache switched on at the target with
+  no UNIT ATTENTION to tell us, an admin toggle being the obvious case, would
+  have left acknowledged writes volatile. Shipping FUA is immune to that, and
+  FUA costs a write-through target nothing. Only a positive "not volatile"
+  takes this path. No caching page, or a failed MODE SENSE, counts as volatile.
+  The answer is cached per epoch, because a MODE SENSE per request would cost
+  the round trip this mode exists to save. A stale answer in either direction
+  is now harmless.
 - **A target that reports WCE=0 and caches anyway** defeats FUA as well, so
   this mode is no worse there. The same holds for SCST `nv_cache=1` or ZFS
   `sync=disabled`, both of which return GOOD to FUA and to a flush without
