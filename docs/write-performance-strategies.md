@@ -242,6 +242,21 @@ should be the user's decision, not a default.
 
 ---
 
+## Strategy 7 — One flush per request instead of FUA per command: PROTOTYPED
+
+**Expected gain: modest (+11–13% reported on ZFS), large sequential writes
+only. Risk: none to durability by design, opt-in until power-cut tested.**
+
+Write a multi-command request without FUA, then one SYNCHRONIZE CACHE, and
+acknowledge only after it completes, with a FUA replay if a reconnect or reset
+could have emptied the cache in between. It keeps FUA's guarantee, unlike
+Strategy 6. It cannot beat the per-byte ZIL cost above, and FSKit's
+one-request-at-a-time delivery caps a batch at four commands. Design, the
+pitfalls and how each is handled, tests and the remaining work:
+`per-request-sync.md`.
+
+---
+
 ## Not worth doing
 
 - **Pipelining SCSI commands** — measured, no gain, and it would weaken the RMW

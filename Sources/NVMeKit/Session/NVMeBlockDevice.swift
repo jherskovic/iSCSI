@@ -3,7 +3,7 @@ import iSCSIKit
 
 /// A linear, byte-addressable block device backed by one NVMe namespace —
 /// the `ISCSIBlockDevice` twin, with the same chunking, the same in-flight
-/// bound, and FUA on every write when `writeThrough` is set.
+/// bound, and the same `WriteDurability` modes.
 public actor NVMeBlockDevice: BlockDeviceBackend {
     private let controller: NVMeController
     public let nsid: UInt32
@@ -19,17 +19,23 @@ public actor NVMeBlockDevice: BlockDeviceBackend {
     /// block size in use.
     private let requestedMaxTransferBytes: Int
 
-    /// When true, every Write carries Force Unit Access. Backend A gets no
-    /// barrier signal from FSKit, so with a volatile controller cache an
+    /// How an acknowledged write is made durable. Backend A gets no barrier
+    /// signal from FSKit, so with a volatile controller cache an
     /// acknowledged-but-cached write breaks APFS's ordering guarantees.
-    private let writeThrough: Bool
+    private let durability: WriteDurability
 
     public init(controller: NVMeController, nsid: UInt32, maxTransferBytes: Int = 256 << 10,
                 writeThrough: Bool = false) {
+        self.init(controller: controller, nsid: nsid, maxTransferBytes: maxTransferBytes,
+                  durability: writeThrough ? .forceUnitAccess : .cached)
+    }
+
+    public init(controller: NVMeController, nsid: UInt32, maxTransferBytes: Int = 256 << 10,
+                durability: WriteDurability) {
         self.controller = controller
         self.nsid = nsid
         self.requestedMaxTransferBytes = min(maxTransferBytes, NVMeController.maxIOTransferBytes)
-        self.writeThrough = writeThrough
+        self.durability = durability
     }
 
     /// VWC from Identify Controller: never nil once the controller is up.
@@ -129,8 +135,33 @@ public actor NVMeBlockDevice: BlockDeviceBackend {
             remaining -= blocks
         }
 
+        if durability == .flushPerRequest, plan.count > 1 {
+            try await writeFlushingOnce(plan, from: data, blockSize: bs)
+        } else {
+            try await writeChunks(plan, from: data, blockSize: bs, fua: durability != .cached)
+        }
+    }
+
+    /// `.flushPerRequest` for a request that spans several commands; the
+    /// reasoning is `ISCSIBlockDevice.writeFlushingOnce`'s. VWC comes from
+    /// Identify Controller, which every association re-reads, so it is
+    /// current for the epoch read just before it.
+    private func writeFlushingOnce(_ plan: [(lba: UInt64, bytes: Range<Data.Index>)],
+                                   from data: Data, blockSize bs: Int) async throws {
+        let before = await controller.associationGeneration
+        let volatile = await controller.volatileWriteCachePresent != .some(false)
+        try await writeChunks(plan, from: data, blockSize: bs, fua: false)
+        if volatile { try await flush() }
+        guard await controller.associationGeneration == before else {
+            try await writeChunks(plan, from: data, blockSize: bs, fua: true)
+            return
+        }
+    }
+
+    private func writeChunks(_ plan: [(lba: UInt64, bytes: Range<Data.Index>)],
+                             from data: Data, blockSize bs: Int, fua: Bool) async throws {
         if plan.count == 1 {
-            try await writeChunk(lba: plan[0].lba, payload: Data(data[plan[0].bytes]), blockSize: bs)
+            try await writeChunk(lba: plan[0].lba, payload: Data(data[plan[0].bytes]), blockSize: bs, fua: fua)
             return
         }
 
@@ -140,7 +171,7 @@ public actor NVMeBlockDevice: BlockDeviceBackend {
                 let chunk = plan[next]
                 next += 1
                 group.addTask { [self] in
-                    try await writeChunk(lba: chunk.lba, payload: Data(data[chunk.bytes]), blockSize: bs)
+                    try await writeChunk(lba: chunk.lba, payload: Data(data[chunk.bytes]), blockSize: bs, fua: fua)
                 }
             }
             while next < min(Self.maxChunksInFlight, plan.count) { addNext() }
@@ -153,10 +184,10 @@ public actor NVMeBlockDevice: BlockDeviceBackend {
     /// Commands one request may have outstanding; the same bound as iSCSI.
     public static let maxChunksInFlight = 8
 
-    private func writeChunk(lba: UInt64, payload: Data, blockSize bs: Int) async throws {
+    private func writeChunk(lba: UInt64, payload: Data, blockSize bs: Int, fua: Bool) async throws {
         _ = try await controller.execute(
             NVMeCommands.write(commandID: 0, nsid: nsid, slba: lba, blocks: UInt32(payload.count / bs),
-                               blockSize: bs, fua: writeThrough, inCapsule: false),
+                               blockSize: bs, fua: fua, inCapsule: false),
             data: payload)
     }
 

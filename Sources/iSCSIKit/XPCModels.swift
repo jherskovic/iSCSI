@@ -175,14 +175,20 @@ public enum WorkloadProfile: String, Sendable {
 ///
 /// FSKit never delivers a barrier (see the header of iSCSIFSExtension.swift),
 /// so the initiator cannot know when the filesystem above the disk image
-/// wanted a flush. `.writeThrough` closes that hole per-write with FUA and is
-/// the only mode that preserves APFS's ordering assumptions; the other two
-/// trade that away and are only genuinely safe when the target's cache is
-/// non-volatile. Derived from `TargetRecord.flushIntervalSeconds` rather than
+/// wanted a flush. `.writeThrough` closes that hole per-write with FUA, and
+/// `.flushPerRequest` per request with one flush; those two preserve APFS's
+/// ordering assumptions. The other two trade that away and are only genuinely
+/// safe when the target's cache is non-volatile. Derived from `TargetRecord.flushIntervalSeconds` rather than
 /// stored, so the persisted format stays a plain optional integer.
 public enum FlushPolicy: Sendable, Equatable {
     /// Every WRITE carries FUA. The default.
     case writeThrough
+    /// A request larger than one command is written without FUA and
+    /// acknowledged only after a SYNCHRONIZE CACHE (NVMe Flush) completes;
+    /// one-command requests keep FUA. As durable at acknowledgement as
+    /// `.writeThrough`. Opt-in, and not yet reachable from a stored record.
+    /// See `WriteDurability.flushPerRequest`.
+    case flushPerRequest
     /// No FUA; SYNCHRONIZE CACHE every `seconds`, and always on detach.
     /// Bounds staleness after a power cut, but not corruption: between
     /// flushes the target destages in arbitrary order.
@@ -190,6 +196,15 @@ public enum FlushPolicy: Sendable, Equatable {
     /// No FUA and no periodic flush; the user has declared the target's cache
     /// non-volatile. Still flushes on detach.
     case never
+
+    /// Every acknowledged write is on stable media, so nothing is left for a
+    /// periodic or detach flush to commit.
+    public var durableAtAcknowledgement: Bool {
+        switch self {
+        case .writeThrough, .flushPerRequest: return true
+        case .interval, .never: return false
+        }
+    }
 
     public init(intervalSeconds: Int?) {
         switch intervalSeconds {

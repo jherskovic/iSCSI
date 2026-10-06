@@ -103,7 +103,12 @@ public actor DaemonCore {
         // volatile target cache can lose an acknowledged write APFS believes
         // was barriered. FUA trades throughput for crash consistency; it is a
         // no-op when the target's cache is already disabled.
-        let writeThrough = durability == .writeThrough
+        let writes: WriteDurability
+        switch durability {
+        case .writeThrough: writes = .forceUnitAccess
+        case .flushPerRequest: writes = .flushPerRequest
+        case .interval, .never: writes = .cached
+        }
 
         // The one place the protocol is decided: an NQN attaches over
         // NVMe/TCP, anything else is iSCSI.
@@ -112,11 +117,11 @@ public actor DaemonCore {
         let device: any BlockDeviceBackend
         if IQN.isNQN(targetIQN) {
             (session, device) = try await attachNVMe(host: host, port: port, subsystemNQN: targetIQN,
-                                                     nsid: lun, chap: chap, writeThrough: writeThrough,
+                                                     nsid: lun, chap: chap, durability: writes,
                                                      binding: binding, path: path)
         } else {
             (session, device) = try await attachISCSI(host: host, port: port, targetIQN: targetIQN,
-                                                      lun: lun, chap: chap, writeThrough: writeThrough,
+                                                      lun: lun, chap: chap, durability: writes,
                                                       binding: binding, path: path)
         }
         _ = try await device.readCapacity() // fail fast if the LUN is bad
@@ -134,6 +139,7 @@ public actor DaemonCore {
         let policyLabel: String
         switch durability {
         case .writeThrough: policyLabel = "write-through (FUA)"
+        case .flushPerRequest: policyLabel = "flush per request (FUA on single-command writes)"
         case .interval(let seconds): policyLabel = "flush every \(seconds)s"
         case .never: policyLabel = "no periodic flush (cache declared non-volatile)"
         }
@@ -178,7 +184,7 @@ public actor DaemonCore {
 
     private func attachISCSI(
         host: String, port: UInt16, targetIQN: String, lun: UInt64,
-        chap: CHAP.Credentials?, writeThrough: Bool,
+        chap: CHAP.Credentials?, durability: WriteDurability,
         binding: InterfaceBinding?, path: ConnectedPathBox
     ) async throws -> (any FabricSession, any BlockDeviceBackend) {
         var config = LoginConfig(
@@ -198,13 +204,13 @@ public actor DaemonCore {
             path.record(try await factory(host, port, binding))
         }
         try await session.activate()
-        let device = ISCSIBlockDevice(session: session, lun: lun, writeThrough: writeThrough)
+        let device = ISCSIBlockDevice(session: session, lun: lun, durability: durability)
         return (ISCSIFabricSession(session: session), device)
     }
 
     private func attachNVMe(
         host: String, port: UInt16, subsystemNQN: String, nsid: UInt64,
-        chap: CHAP.Credentials?, writeThrough: Bool,
+        chap: CHAP.Credentials?, durability: WriteDurability,
         binding: InterfaceBinding?, path: ConnectedPathBox
     ) async throws -> (any FabricSession, any BlockDeviceBackend) {
         // NSIDs are 32-bit; a larger value is a bad record, not a wire
@@ -225,7 +231,7 @@ public actor DaemonCore {
             path.record(try await factory(host, port, binding))
         }
         try await controller.activate()
-        let device = NVMeBlockDevice(controller: controller, nsid: namespace, writeThrough: writeThrough)
+        let device = NVMeBlockDevice(controller: controller, nsid: namespace, durability: durability)
         return (NVMeFabricSession(controller: controller), device)
     }
 
@@ -253,10 +259,11 @@ public actor DaemonCore {
     public func logout(_ handle: String) async throws {
         guard let entry = sessions.removeValue(forKey: handle) else { return }
         entry.flushTask?.cancel()
-        // Under FUA every acknowledged write is already durable. In either
-        // relaxed mode the target's cache may hold acknowledged writes, and
-        // this detach is the last chance to commit them.
-        if entry.flushPolicy != .writeThrough {
+        // Under FUA, or a flush per request, every acknowledged write is
+        // already durable. In either relaxed mode the target's cache may hold
+        // acknowledged writes, and this detach is the last chance to commit
+        // them.
+        if !entry.flushPolicy.durableAtAcknowledgement {
             do {
                 try await entry.device.flush()
             } catch {
@@ -308,7 +315,9 @@ public actor DaemonCore {
                 blockSize: blockSize,
                 blockCount: blockCount,
                 writeCacheEnabled: wce ?? nil,
-                writeThrough: entry.flushPolicy == .writeThrough,
+                // "Durable when acknowledged", which is what the Sessions
+                // pane's warning keys on. Its label still says FUA.
+                writeThrough: entry.flushPolicy.durableAtAcknowledgement,
                 recoveryCount: recoveries,
                 negotiated: negotiated,
                 interfaceName: path?.interfaceName,

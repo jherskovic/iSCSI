@@ -21,6 +21,26 @@ public protocol BlockDeviceBackend: Sendable {
     func writeCacheEnabled() async throws -> Bool?
 }
 
+/// What a block device does to make an acknowledged write durable. Backend A
+/// gets no barrier from FSKit, so anything but `.cached` must hold every
+/// acknowledged write on stable media by the time `write` returns.
+public enum WriteDurability: Sendable, Equatable {
+    /// No FUA and no flush: an acknowledged write may sit in a volatile
+    /// target cache. Durable only with whatever flush the caller arranges.
+    case cached
+    /// Every command carries FUA. The shipping default.
+    case forceUnitAccess
+    /// A request that fits in one command carries FUA. A larger one goes out
+    /// as commands without FUA, then one flush, and `write` returns only
+    /// once the flush has completed. If the session reconnected (or the
+    /// target reported a reset) anywhere between the first command and the
+    /// flush's completion, the target may have lost acknowledged cached data
+    /// and the flush proves nothing, so the whole request is written again
+    /// with FUA. The flush is skipped when the device says its cache is not
+    /// volatile (WCE=0, VWC=0). See docs/per-request-sync.md.
+    case flushPerRequest
+}
+
 public enum BlockDeviceError: Error, Equatable, Sendable {
     case notReady
     case misaligned(offset: UInt64, length: Int, blockSize: Int)
@@ -51,19 +71,40 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     /// anywhere tested. See docs/queue-depth.md.
     private let maxTransferBytes: Int
 
-    /// When true, every WRITE carries Force Unit Access. Backend A gets no
-    /// barrier signal from FSKit, so with a volatile target cache an
+    /// How an acknowledged write is made durable. Backend A gets no barrier
+    /// signal from FSKit, so with a volatile target cache an
     /// acknowledged-but-cached write breaks APFS's ordering guarantees;
-    /// write-through keeps each acknowledged write durable, at a throughput
-    /// cost.
-    private let writeThrough: Bool
+    /// `.forceUnitAccess` keeps each acknowledged write durable, at a
+    /// throughput cost, and `.flushPerRequest` does the same with one flush
+    /// per request instead of FUA per command.
+    private let durability: WriteDurability
+
+    /// UNIT ATTENTIONs absorbed so far. One can mean the target was reset —
+    /// and its volatile cache lost — without the connection dropping, so it
+    /// counts toward `epoch()` alongside the session's connection generation.
+    private var unitAttentions: UInt64 = 0
+
+    /// The caching page's answer and the epoch it was read in. A flush is
+    /// skipped only on a positive WCE=0 from the current epoch.
+    private var cacheAnswer: (epoch: UInt64, volatile: Bool)?
+
+    /// Latched when the target rejects SYNCHRONIZE CACHE(16) as an unknown
+    /// opcode. The 10-byte form with LBA 0 and zero blocks still covers the
+    /// whole LUN, however large: zero means "through the last block".
+    private var syncCache10Only = false
 
     public init(session: ISCSISession, lun: UInt64 = 0, maxTransferBytes: Int = 256 << 10,
                 writeThrough: Bool = false) {
+        self.init(session: session, lun: lun, maxTransferBytes: maxTransferBytes,
+                  durability: writeThrough ? .forceUnitAccess : .cached)
+    }
+
+    public init(session: ISCSISession, lun: UInt64 = 0, maxTransferBytes: Int = 256 << 10,
+                durability: WriteDurability) {
         self.session = session
         self.lun = lun
         self.maxTransferBytes = maxTransferBytes
-        self.writeThrough = writeThrough
+        self.durability = durability
     }
 
     /// Reads the caching mode page (0x08) and reports whether the target's
@@ -95,6 +136,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
             let result = try await session.execute(task)
             if result.isGood { return result }
             let sense = result.sense.flatMap(SenseData.init)
+            if sense?.key == 0x06 { unitAttentions &+= 1 }
             guard sense?.key == 0x06, attempt < retries else { return result }
             attempt += 1
         }
@@ -254,10 +296,43 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
             remaining -= blocks
         }
 
+        // One command gains nothing from a flush: FUA is the same round trip
+        // and leaves nothing behind in the cache.
+        if durability == .flushPerRequest, plan.count > 1 {
+            try await writeFlushingOnce(plan, from: data, blockSize: bs)
+        } else {
+            try await writeChunks(plan, from: data, blockSize: bs, fua: durability != .cached)
+        }
+    }
+
+    /// `.flushPerRequest` for a request that spans several commands.
+    ///
+    /// The epoch is read before the first command is issued and again after
+    /// the flush completes. Reading it first is what makes the cached WCE
+    /// answer safe to act on: a change between the two reads — a reconnect,
+    /// a reset, a MODE SELECT reported as UNIT ATTENTION — forces the FUA
+    /// replay, so a stale "not volatile" can cost a replay but never a write.
+    private func writeFlushingOnce(_ plan: [(lba: UInt64, bytes: Range<Data.Index>)],
+                                   from data: Data, blockSize bs: Int) async throws {
+        let before = await epoch()
+        let volatile = await cacheIsVolatile(epoch: before)
+        try await writeChunks(plan, from: data, blockSize: bs, fua: false)
+        if volatile { try await synchronizeCache() }
+        guard await epoch() == before else {
+            // Whatever the target acknowledged before the change may have
+            // been in a cache that is gone, and a flush on the new nexus says
+            // nothing about it. FUA makes each command its own proof.
+            try await writeChunks(plan, from: data, blockSize: bs, fua: true)
+            return
+        }
+    }
+
+    private func writeChunks(_ plan: [(lba: UInt64, bytes: Range<Data.Index>)],
+                             from data: Data, blockSize bs: Int, fua: Bool) async throws {
         // The common case should not pay for a one-member task group.
         if plan.count == 1 {
             try await writeChunk(lba: plan[0].lba,
-                                 payload: Data(data[plan[0].bytes]), blockSize: bs)
+                                 payload: Data(data[plan[0].bytes]), blockSize: bs, fua: fua)
             return
         }
 
@@ -272,7 +347,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
                 next += 1
                 group.addTask { [self] in
                     try await writeChunk(lba: chunk.lba,
-                                         payload: Data(data[chunk.bytes]), blockSize: bs)
+                                         payload: Data(data[chunk.bytes]), blockSize: bs, fua: fua)
                 }
             }
             while next < min(Self.maxChunksInFlight, plan.count) { addNext() }
@@ -282,6 +357,24 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
         }
     }
 
+    /// Changes whenever the target may have lost its volatile cache without
+    /// this device being told: a new connection (initial or recovered), or an
+    /// absorbed UNIT ATTENTION. Both counters only grow, so the sum changes
+    /// exactly when either does.
+    private func epoch() async -> UInt64 {
+        await session.connectionGeneration &+ unitAttentions
+    }
+
+    /// Whether a flush can matter, asked once per epoch: a MODE SENSE per
+    /// request would cost the round trip the flush policy exists to save.
+    /// No caching page, or no answer, counts as volatile.
+    private func cacheIsVolatile(epoch: UInt64) async -> Bool {
+        if let known = cacheAnswer, known.epoch == epoch { return known.volatile }
+        let volatile = (try? await writeCacheEnabled()) != .some(false)
+        cacheAnswer = (epoch, volatile)
+        return volatile
+    }
+
     /// Commands one request may have outstanding; caps a single request at
     /// this many chunk copies regardless of its size.
     static let maxChunksInFlight = 8
@@ -289,10 +382,10 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     /// One WRITE(16). On failure the group cancels its siblings, so which
     /// chunks reached the medium is indeterminate; `DaemonStore.write` drops
     /// the whole overlap from its cache on any error for that reason.
-    private func writeChunk(lba: UInt64, payload: Data, blockSize bs: Int) async throws {
+    private func writeChunk(lba: UInt64, payload: Data, blockSize bs: Int, fua: Bool) async throws {
         let result = try await executeAbsorbingUnitAttention(SCSITask(
             lun: lunAddress,
-            cdb: CDB.write16(lba: lba, blocks: UInt32(payload.count / bs), fua: writeThrough),
+            cdb: CDB.write16(lba: lba, blocks: UInt32(payload.count / bs), fua: fua),
             direction: .write(payload)
         ))
         guard result.isGood else {
@@ -302,7 +395,26 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     }
 
     public func flush() async throws {
-        let result = try await executeAbsorbingUnitAttention(SCSITask(lun: lunAddress, cdb: CDB.synchronizeCache16()))
+        try await synchronizeCache()
+    }
+
+    /// SYNCHRONIZE CACHE over the whole LUN, IMMED clear: GOOD status means
+    /// the cache is on stable media, not that the request was queued. Falls
+    /// back to the 10-byte form, once and for good, when the 16-byte opcode
+    /// is rejected as unknown.
+    private func synchronizeCache() async throws {
+        if !syncCache10Only {
+            let result = try await executeAbsorbingUnitAttention(
+                SCSITask(lun: lunAddress, cdb: CDB.synchronizeCache16()))
+            if result.isGood { return }
+            let sense = result.sense.flatMap(SenseData.init)
+            guard sense?.key == 0x05, sense?.asc == 0x20 else {
+                throw BlockDeviceError.scsiError(status: result.status, sense: sense)
+            }
+            syncCache10Only = true
+        }
+        let result = try await executeAbsorbingUnitAttention(
+            SCSITask(lun: lunAddress, cdb: CDB.synchronizeCache10()))
         guard result.isGood else {
             throw BlockDeviceError.scsiError(status: result.status, sense: result.sense.flatMap(SenseData.init))
         }

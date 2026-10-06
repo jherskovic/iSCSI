@@ -151,11 +151,24 @@ public enum CDB {
         return cdb
     }
 
+    /// SYNCHRONIZE CACHE(16). Zero blocks means "from `lba` to the end of
+    /// the medium", so the defaults flush the whole LUN.
     public static func synchronizeCache16(lba: UInt64 = 0, blocks: UInt32 = 0) -> Data {
         var cdb = Data(count: 16)
         cdb.setU8(0x91, 0)
         cdb.setBE64(lba, 2)
         cdb.setBE32(blocks, 10)
+        return cdb
+    }
+
+    /// SYNCHRONIZE CACHE(10), for targets that reject the 16-byte form. The
+    /// 32-bit LBA field cannot address past 2^32 blocks, but LBA 0 with zero
+    /// blocks needs no address: it covers every block however large the LUN.
+    public static func synchronizeCache10(lba: UInt32 = 0, blocks: UInt16 = 0) -> Data {
+        var cdb = Data(count: 10)
+        cdb.setU8(0x35, 0)
+        cdb.setBE32(lba, 2)
+        cdb.setBE16(blocks, 7)
         return cdb
     }
 

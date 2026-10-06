@@ -298,6 +298,12 @@ struct WriteBench: AsyncParsableCommand {
     @Flag(help: "Send every write with FUA (what the shipping daemon does).")
     var fua = false
 
+    @Flag(help: ArgumentHelp(
+        "Write each multi-command request without FUA, then SYNCHRONIZE CACHE.", discussion: """
+        The opt-in `flushPerRequest` policy: a request is not complete until         its flush is, so it is as durable when acknowledged as --fua. A         request that fits one command still carries FUA. Compare against         --fua at the same --chunk and --max-transfer.
+        """))
+    var flushPerRequest = false
+
     @Option(help: ArgumentHelp(
         "Cap on a single SCSI command.", discussion: """
         The write counterpart of read-bench's flag of the same name, and read \
@@ -311,6 +317,9 @@ struct WriteBench: AsyncParsableCommand {
 
     func run() async throws {
         #if canImport(Network)
+        guard !(fua && flushPerRequest) else {
+            throw ValidationError("--fua and --flush-per-request are alternatives")
+        }
         let transport = try await options.openTransport()
         var config = LoginConfig(
             initiatorName: options.initiator,
@@ -323,8 +332,8 @@ struct WriteBench: AsyncParsableCommand {
         let session = ISCSISession(login: config) { try await transport }
         let login = try await session.activate()
         let device = ISCSIBlockDevice(
-            session: session, lun: lun,
-            maxTransferBytes: maxTransfer ?? chunk, writeThrough: fua
+            session: session, lun: lun, maxTransferBytes: maxTransfer ?? chunk,
+            durability: flushPerRequest ? .flushPerRequest : fua ? .forceUnitAccess : .cached
         )
         let (blockSize, blockCount) = try await device.readCapacity()
         let capacity = UInt64(blockSize) * blockCount
@@ -333,7 +342,8 @@ struct WriteBench: AsyncParsableCommand {
         // so print them: comparing two runs without them is comparing nothing.
         print("capacity \(capacity / 1_048_576) MiB, blockSize \(blockSize), "
               + "chunk \(chunk), maxTransfer \(maxTransfer ?? chunk), "
-              + "commands/request \(max(1, chunk / (maxTransfer ?? chunk))), fua \(fua)")
+              + "commands/request \(max(1, chunk / (maxTransfer ?? chunk))), fua \(fua), "
+              + "flushPerRequest \(flushPerRequest)")
         print("negotiated: FirstBurst=\(params.firstBurstLength) MaxBurst=\(params.maxBurstLength) "
             + "ImmediateData=\(params.immediateData) InitialR2T=\(params.initialR2T) "
             + "HeaderDigest=\(params.headerDigest) DataDigest=\(params.dataDigest)")

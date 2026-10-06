@@ -324,16 +324,27 @@ struct NVMeWriteBench: AsyncParsableCommand {
     @Flag(help: "Send every write with FUA (what the shipping daemon does by default).")
     var fua = false
 
+    @Flag(help: ArgumentHelp(
+        "Write each multi-command request without FUA, then Flush.", discussion: """
+        The opt-in `flushPerRequest` policy: a request is not complete until         its Flush is, so it is as durable when acknowledged as --fua. A         request that fits one command still carries FUA. Compare against         --fua at the same --chunk, --max-transfer and --queue-depth.
+        """))
+    var flushPerRequest = false
+
     func run() async throws {
         guard queueDepth >= 1 else { throw ValidationError("--queue-depth must be at least 1") }
+        guard !(fua && flushPerRequest) else {
+            throw ValidationError("--fua and --flush-per-request are alternatives")
+        }
         let controller = try options.controller(subsystem: subsystem)
         try await controller.activate()
-        let device = NVMeBlockDevice(controller: controller, nsid: nsid,
-                                     maxTransferBytes: maxTransfer, writeThrough: fua)
+        let device = NVMeBlockDevice(
+            controller: controller, nsid: nsid, maxTransferBytes: maxTransfer,
+            durability: flushPerRequest ? .flushPerRequest : fua ? .forceUnitAccess : .cached)
         let (blockSize, blockCount) = try await device.readCapacity()
         let capacity = UInt64(blockSize) * blockCount
         print("capacity \(capacity / 1_048_576) MiB, blockSize \(blockSize), "
-              + "chunk \(chunk), maxTransfer \(maxTransfer), queueDepth \(queueDepth), fua \(fua)")
+              + "chunk \(chunk), maxTransfer \(maxTransfer), queueDepth \(queueDepth), fua \(fua), "
+              + "flushPerRequest \(flushPerRequest)")
 
         var offset = UInt64(offsetMB) * 1_048_576
         offset -= offset % UInt64(blockSize)

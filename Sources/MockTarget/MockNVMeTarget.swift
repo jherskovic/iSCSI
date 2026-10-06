@@ -42,6 +42,9 @@ public struct MockNVMeConfig: Sendable {
     public var faults = MockTargetFaults()
     /// NVMe/TCP-specific misbehaviour.
     public var hostility = MockNVMeHostility()
+    /// Identify Controller's VWC bit. The RAMDisk caches regardless, as with
+    /// `MockTargetConfig.writeCacheEnabled`.
+    public var volatileWriteCache = true
 
     public init() {}
 }
@@ -508,7 +511,7 @@ actor MockNVMeQueue {
         d.setLE16(config.maxOutstandingCommands == 0 ? config.maxQueueEntries
                   : config.maxOutstandingCommands, 514)      // MAXCMD
         d.setLE32(1, 516)                                    // NN
-        d.setU8(1, 525)                                      // VWC present
+        d.setU8(config.volatileWriteCache ? 1 : 0, 525)      // VWC
         d.setLE32(0x0010_0005, 536)                          // SGLS
         d.setSub(Data(config.subsystemNQN.utf8.prefix(255)), 768)
         d.setLE32(UInt32((config.inCapsuleDataBytes + SQE.size) / 16), 1792)   // IOCCSZ
@@ -577,6 +580,19 @@ actor MockNVMeQueue {
         }
         switch sqe.opcode {
         case NVMeOpcode.NVM.flush:
+            if faults.loseCacheAtSynchronizeCache != nil {
+                // Either report means a dropped association here: NVMe/TCP
+                // has no in-band reset report, and a controller reset ends
+                // the association.
+                faultBox.mutate { $0.loseCacheAtSynchronizeCache = nil }
+                await disk.crash()
+                await transport.close()
+                throw TransportError.closed
+            }
+            if faults.failSynchronizeCache {
+                try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x06))   // internal error
+                return
+            }
             await disk.flush()
             try await respond(cid: cid)
         case NVMeOpcode.NVM.read:

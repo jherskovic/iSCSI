@@ -47,8 +47,29 @@ public struct MockTargetFaults: Sendable {
     public var freezeWindow = false
     /// Split text responses into C-bit continuations of this size.
     public var splitTextResponsesAt: Int?
+    /// Answer SYNCHRONIZE CACHE with CHECK CONDITION, HARDWARE ERROR /
+    /// INTERNAL TARGET FAILURE: a flush that did not happen.
+    public var failSynchronizeCache = false
+    /// Reject SYNCHRONIZE CACHE(16) as an unknown opcode (ILLEGAL REQUEST /
+    /// INVALID COMMAND OPERATION CODE), the way a target that only knows the
+    /// 10-byte form does. The 10-byte form still works.
+    public var rejectSynchronizeCache16 = false
+    /// Lose the volatile cache when the next SYNCHRONIZE CACHE (NVMe Flush)
+    /// arrives, as if the target had reset just before it, and report that
+    /// the way the value says. Fires once: it clears itself from the box.
+    public var loseCacheAtSynchronizeCache: CacheLossReport?
 
     public init() {}
+}
+
+/// How a target tells the initiator it lost its cache.
+public enum CacheLossReport: Sendable {
+    /// The connection drops, unanswered; the initiator must reconnect.
+    case dropConnection
+    /// The connection survives and the command gets UNIT ATTENTION, POWER
+    /// ON, RESET, OR BUS DEVICE RESET OCCURRED — the SCSI signal for a reset
+    /// that did not take the transport with it.
+    case unitAttention
 }
 
 public struct MockTargetConfig: Sendable {
@@ -75,6 +96,10 @@ public struct MockTargetConfig: Sendable {
     /// Targets advertised by SendTargets.
     public var discoveryTargets: [(name: String, addresses: [String])] = []
     public var faults = MockTargetFaults()
+    /// The caching page's WCE bit. The RAMDisk caches regardless: a target
+    /// that reports WCE=0 and caches anyway is the lying target no flush
+    /// policy can help, so tests about WCE=0 assert on the wire, not on loss.
+    public var writeCacheEnabled = true
 
     public init() {}
 }
@@ -606,6 +631,26 @@ public actor MockTarget {
                 try await progressWrite(itt: command.initiatorTaskTag)
             }
         case 0x35, 0x91: // SYNCHRONIZE CACHE (10) / (16)
+            if opcode == 0x91 && faults.rejectSynchronizeCache16 {
+                try await sendCheckCondition(itt: command.initiatorTaskTag, key: 0x05, asc: 0x20, ascq: 0x00)
+                return
+            }
+            if let report = faults.loseCacheAtSynchronizeCache {
+                faultBox.mutate { $0.loseCacheAtSynchronizeCache = nil }
+                await disk.crash()
+                switch report {
+                case .dropConnection:
+                    await transport.close()
+                    throw TransportError.closed
+                case .unitAttention:
+                    try await sendCheckCondition(itt: command.initiatorTaskTag, key: 0x06, asc: 0x29, ascq: 0x00)
+                    return
+                }
+            }
+            if faults.failSynchronizeCache {
+                try await sendCheckCondition(itt: command.initiatorTaskTag, key: 0x04, asc: 0x44, ascq: 0x00)
+                return
+            }
             await disk.flush()
             try await sendGoodResponse(itt: command.initiatorTaskTag)
         case 0x5A: // MODE SENSE (10)
@@ -625,7 +670,7 @@ public actor MockTarget {
         var page = Data(count: 20)
         page.setU8(0x08, 0) // page code
         page.setU8(18, 1) // page length (rest of the page)
-        page.setU8(0x04, 2) // WCE = 1
+        page.setU8(config.writeCacheEnabled ? 0x04 : 0x00, 2) // WCE
         return page
     }
 

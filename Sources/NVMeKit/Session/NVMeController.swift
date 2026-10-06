@@ -60,6 +60,9 @@ public actor NVMeController {
     private var recoveryFailed: SessionError?
     /// Diagnostics for tests and status reporting.
     public private(set) var recoveryCount = 0
+    /// Bumped by every association that comes up, the first one included —
+    /// the `ISCSISession.connectionGeneration` twin, for the same question.
+    public private(set) var associationGeneration: UInt64 = 0
     /// The last `logout()` saw CSTS.SHST report the shutdown complete.
     public private(set) var shutdownAcknowledged = false
     private var onEvent: (@Sendable (SessionEvent) -> Void)?
@@ -314,6 +317,7 @@ public actor NVMeController {
             }
             admin = adminQueue
             io = ioQueue
+            associationGeneration &+= 1
             startKeepalive(on: adminQueue)
             watchForClose(of: adminQueue)
             watchForClose(of: ioQueue)

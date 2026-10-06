@@ -75,6 +75,11 @@ public actor ISCSISession {
     private var lastTime2Wait: UInt32 = 0
     /// Diagnostics for tests and status reporting.
     public private(set) var recoveryCount = 0
+    /// Bumped by every login that produces a usable connection, the first
+    /// one included. Unlike `recoveryCount` it does not depend on which path
+    /// rebuilt the connection, which is what lets a block device use it to
+    /// ask "was everything since then on one I_T nexus?"
+    public private(set) var connectionGeneration: UInt64 = 0
 
     /// Called for each `SessionEvent`. Set by the daemon to route them into the
     /// unified log; nil everywhere else, so tests and the CLI pay nothing.
@@ -204,6 +209,7 @@ public actor ISCSISession {
         do {
             let result = try await conn.login()
             connection = conn
+            connectionGeneration &+= 1
             loginResult = result
             lastTime2Wait = result.parameters.defaultTime2Wait
             startKeepalive(for: conn)
