@@ -23,6 +23,11 @@ struct DiscoveryView: View {
     @State private var networkInterface: String?
     @State private var interfaceFallback = false
     @State private var found: [DiscoveredTargetInfo] = []
+    /// What produced `found`: the portal asked and the credentials offered.
+    /// Add and Use These Credentials bind to this, never to the fields as they
+    /// are now — those can have been edited since, and a row from one portal
+    /// must not be saved against another.
+    @State private var lastSearch: Search?
     @State private var isSearching = false
     @State private var searched = false
     @State private var failure: String?
@@ -113,9 +118,9 @@ struct DiscoveryView: View {
                         }
                     }
                     Spacer()
-                    switch offer(for: target) {
+                    switch offer(for: target, from: lastSearch) {
                     case .add:
-                        Button("Add") { add(target) }
+                        Button("Add") { if let lastSearch { add(target, from: lastSearch) } }
                     case .saved:
                         Text("Added").font(.caption).foregroundStyle(.secondary)
                     case .updateCredentials(let records):
@@ -125,7 +130,9 @@ struct DiscoveryView: View {
                         Text(records.allSatisfy { $0.chapUser == nil }
                              ? "Saved without CHAP" : "Saved with another CHAP user")
                             .font(.caption).foregroundStyle(.orange)
-                        Button("Use These Credentials") { useCredentials(on: records) }
+                        Button("Use These Credentials") {
+                            if let lastSearch { useCredentials(of: lastSearch, on: records) }
+                        }
                     }
                 }
                 .padding(.vertical, 2)
@@ -133,19 +140,31 @@ struct DiscoveryView: View {
         }
     }
 
-    private func offer(for target: DiscoveredTargetInfo) -> DiscoveryOffer {
-        DiscoveryOffer.for(target.targetIQN, saved: model.targets,
-                           chapUser: isNVMe ? "" : chapUser,
-                           chapSecret: isNVMe ? "" : chapSecret)
+    private struct Search {
+        var host: String
+        var port: UInt16
+        var isNVMe: Bool
+        /// Empty when none were offered; always empty for NVMe.
+        var chapUser: String
+        var chapSecret: String
+        var networkInterface: String?
+        var interfaceFallback: Bool
+    }
+
+    private func offer(for target: DiscoveredTargetInfo, from search: Search?) -> DiscoveryOffer {
+        guard let search else { return .saved }
+        return DiscoveryOffer.for(target.targetIQN, at: search.host, port: search.port,
+                                  saved: model.targets,
+                                  chapUser: search.chapUser, chapSecret: search.chapSecret)
     }
 
     /// The same save the editor makes: the user into the record, the secret
     /// through the daemon into the keychain.
-    private func useCredentials(on records: [TargetRecord]) {
+    private func useCredentials(of search: Search, on records: [TargetRecord]) {
         Task {
             for var record in records {
-                record.chapUser = chapUser
-                await model.save(record, secret: chapSecret)
+                record.chapUser = search.chapUser
+                await model.save(record, secret: search.chapSecret)
             }
         }
     }
@@ -155,6 +174,13 @@ struct DiscoveryView: View {
     private func search() {
         isSearching = true
         failure = nil
+        let asked = Search(host: host.trimmingCharacters(in: .whitespaces),
+                           port: UInt16(port) ?? defaultPort,
+                           isNVMe: isNVMe,
+                           chapUser: isNVMe ? "" : chapUser,
+                           chapSecret: isNVMe ? "" : chapSecret,
+                           networkInterface: networkInterface,
+                           interfaceFallback: interfaceFallback)
         Task {
             defer { isSearching = false; searched = true }
             do {
@@ -162,27 +188,25 @@ struct DiscoveryView: View {
                 // is worth suggesting again, one that was mistyped is not.
                 defer {
                     if !found.isEmpty {
-                        LastPortal.remember(host: host.trimmingCharacters(in: .whitespaces),
-                                            port: UInt16(port) ?? defaultPort)
+                        LastPortal.remember(host: asked.host, port: asked.port)
                     }
                 }
-                if isNVMe {
+                let interface = InterfaceBinding.named(asked.networkInterface,
+                                                       fallback: asked.interfaceFallback)
+                if asked.isNVMe {
                     found = try await DaemonConnection.discoverSubsystems(
-                        host: host.trimmingCharacters(in: .whitespaces),
-                        port: UInt16(port) ?? defaultPort,
-                        interface: InterfaceBinding.named(networkInterface,
-                                                          fallback: interfaceFallback))
+                        host: asked.host, port: asked.port, interface: interface)
                 } else {
                     found = try await DaemonConnection.discoverTargets(
-                        host: host.trimmingCharacters(in: .whitespaces),
-                        port: UInt16(port) ?? defaultPort,
-                        chapUser: chapUser.isEmpty ? nil : chapUser,
-                        chapSecret: chapSecret.isEmpty ? nil : chapSecret,
-                        interface: InterfaceBinding.named(networkInterface,
-                                                          fallback: interfaceFallback))
+                        host: asked.host, port: asked.port,
+                        chapUser: asked.chapUser.isEmpty ? nil : asked.chapUser,
+                        chapSecret: asked.chapSecret.isEmpty ? nil : asked.chapSecret,
+                        interface: interface)
                 }
+                lastSearch = asked
             } catch {
                 found = []
+                lastSearch = nil
                 let ns = error as NSError
                 // Inline rather than in an alert: the user is mid-task with the
                 // fields still in front of them, and the fix is usually one of
@@ -193,7 +217,7 @@ struct DiscoveryView: View {
         }
     }
 
-    private func add(_ target: DiscoveredTargetInfo) {
+    private func add(_ target: DiscoveredTargetInfo, from search: Search) {
         // Carry the discovery credentials and interface onto the target: a portal
         // that needed them to list its targets will need them to log in, and asking twice
         // for the same secret is the kind of thing that makes people give up.
@@ -201,14 +225,14 @@ struct DiscoveryView: View {
         let record = TargetRecord(
             id: UUID().uuidString,
             displayName: shortName(from: target.targetIQN),
-            host: host.trimmingCharacters(in: .whitespaces),
-            port: UInt16(port) ?? defaultPort,
+            host: search.host,
+            port: search.port,
             targetIQN: target.targetIQN,
-            lun: isNVMe ? 1 : 0,
-            chapUser: (isNVMe || chapUser.isEmpty) ? nil : chapUser,
-            networkInterface: networkInterface,
-            interfaceFallback: networkInterface == nil ? nil : interfaceFallback)
-        Task { await model.save(record, secret: (isNVMe || chapSecret.isEmpty) ? nil : chapSecret) }
+            lun: search.isNVMe ? 1 : 0,
+            chapUser: search.chapUser.isEmpty ? nil : search.chapUser,
+            networkInterface: search.networkInterface,
+            interfaceFallback: search.networkInterface == nil ? nil : search.interfaceFallback)
+        Task { await model.save(record, secret: search.chapSecret.isEmpty ? nil : search.chapSecret) }
     }
 
     /// IQNs and NQNs end in a human-chosen name after the last colon; that is
