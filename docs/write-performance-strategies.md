@@ -242,10 +242,11 @@ should be the user's decision, not a default.
 
 ---
 
-## Strategy 7 — One flush per request instead of FUA per command: PROTOTYPED
+## Strategy 7 — One flush per request instead of FUA per command: PROTOTYPED, NO GAIN HERE
 
-**Expected gain: modest (+11–13% reported on ZFS), large sequential writes
-only. Risk: none to durability by design, opt-in until power-cut tested.**
+**Measured gain on our NAS: none at the shape FSKit sends** (+2.6% ± 11%, nine
+paired rounds; the reporter saw +11–13% on their target). Large sequential
+writes only. Risk: none to durability by design; opt-in until power-cut tested.
 
 Write a multi-command request without FUA, then one SYNCHRONIZE CACHE, and
 acknowledge only after it completes, with a FUA replay if a reconnect or reset

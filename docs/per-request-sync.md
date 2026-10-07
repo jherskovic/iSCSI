@@ -8,12 +8,23 @@ maintainer's reply set the conditions: opt-in, the four pitfalls handled, and
 no default-on without a real power cut on at least one target.
 
 This page is what the `per-request-sync` branch built to answer "can we do
-that safely, and what does it cost to carry". **Short answer: yes, and not
-much. It fits in the two block devices, about 230 changed lines of
-production code (comments included) across both protocols. Two of the four pitfalls are handled by the existing
-structure with no new code. The gain is bounded by the FSKit request shape,
-and on ZFS by the per-byte ZIL cost, so it is a modest sequential-write win
-and nothing for small writes.**
+that safely, what does it cost to carry, and what does it buy". **Short
+answer: it can be done safely, it is cheap to carry, and on our target it
+buys nothing measurable.**
+
+- **Safe:** it fits in the two block devices, about 230 changed lines of
+  production code (comments included) across both protocols. Two of the four
+  pitfalls are handled by the existing structure with no new code.
+- **No gain on our NAS at the shape FSKit sends** (1 MiB requests as four
+  256 KiB commands, one request at a time). Nine paired rounds over NVMe/TCP
+  gave **+2.6% ± 11% (p = 0.67)**, inside the run-to-run noise. With 4 MiB
+  requests, 16 commands per flush, three rounds gave +10.6%, which is suggestive
+  and not significant.
+- **Recommendation:** keep it parked on the branch. Ship it only if a target
+  that someone actually uses shows a gain that holds up in paired runs. The
+  reporter's +11–13% was on iSCSI against TrueNAS 26 beta, and
+  `iscsictl write-bench --flush-per-request` now lets them check that the same
+  way.
 
 ## What was built
 
@@ -166,17 +177,60 @@ The lever is narrower than "batch the flushes":
   64 KiB to 16 MiB commands (`write-performance-strategies.md`), the signature
   of a ZIL commit per synced byte. A flush per request is still a ZIL commit of
   the same bytes. What it saves is N−1 commit round trips and device cache
-  flushes per request, which is about the +11–13% the reporter measured. The
-  reporter also saw fewer NAS flushes per GB, consistent with this.
+  flushes per request, and the reporter's +11–13% fits that. The reporter also
+  saw fewer NAS flushes per GB, consistent with this. Our target showed none of
+  it at the FSKit shape (below).
 - **A target with a cheap per-command FUA and a cheap flush gains little.** The
   mode pays off where each FUA is a separate expensive commit and a flush can
   coalesce several.
 
-### Measuring it on the NAS
+### Measured on our NAS (2026-10-06)
 
-Not yet run: it writes to the target, and the only NVMe/TCP scratch namespace
-is name-testing (`ssd-vms` and `seattle-vms` are live VM storage). From a VM on
-the storage subnet, against name-testing only:
+The rig: the 26.6 VM (herko@192.168.64.16: macOS 26.6.2, 2 vCPU, Xcode 26.6),
+on its 192.168.20.77 storage NIC. The target: TrueNAS SCALE 25.10 `nvmet`, the
+scratch namespace `name-testing` only (512 GiB, 512-byte LBA format). The tool:
+`iscsictl nvme write-bench` from this branch, release build. Each run wrote
+2 GiB from offset 0 at queue depth 1, with a 10 s pause between runs so ZFS
+could finish committing. One FUA warm-up run was discarded. Logs on the VM:
+`~/logs/per-request-sync/`.
+
+**Shape A, 1 MiB requests as four 256 KiB commands** (what FSKit sends). Nine
+rounds; rounds 4–9 alternate which mode runs first. MB/s:
+
+| round | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | mean | sd |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| FUA | 104.3 | 104.3 | 129.6 | 106.4 | 112.6 | 132.6 | 123.6 | 104.7 | 103.0 | **113.5** | 11.9 |
+| flush per request | 118.2 | 127.5 | 114.0 | 107.8 | 112.7 | 123.0 | 113.2 | 111.6 | 111.1 | **115.5** | 6.3 |
+| paired difference | +13% | +22% | −12% | +1% | 0% | −7% | −8% | +7% | +8% | **+2.6%** | 11% |
+
+An exact sign-flip test on the paired differences gives p = 0.67. **The first
+three rounds alone read as +13% on the median, which is how a three-run
+comparison misleads here.** FUA throughput is bimodal on this target, around
+104 or around 125–133 MB/s from one run to the next, and three runs cannot
+average that out. The no-FUA ceiling at the same shape ran 406 / 454 / 393 MB/s
+(rounds 1–3), so persistence costs this target about 3.7×, and the flush per
+request recovers none of that measurably.
+
+**Shape B, 4 MiB requests as sixteen 256 KiB commands** (eight in flight).
+Three rounds: FUA 178.3 / 190.1 / 187.5 (mean 185.3), flush per request
+222.7 / 197.2 / 194.9 (mean 204.9). That is +10.6%, carried mostly by the first
+round. Suggestive, not significant, and FSKit does not send this shape.
+
+**What the numbers say instead.** Going from 1 MiB to 4 MiB requests raised
+FUA throughput by 63% (113 → 185 MB/s), about six times the best the flush
+policy did. The lever on this target is how many commands are in flight,
+as the maintainer's reply on the issue said, and FSKit's one-request-at-a-time
+delivery caps that.
+
+The likely reason flush batching adds little here, a hypothesis not tested:
+ZFS already group-commits concurrent synchronous writes. Four FUA writes in
+flight reach the zvol as four `zil_commit` calls arriving together, which the
+ZIL can serve with one log write, the same coalescing the flush was meant to
+buy. The reporter's iSCSI path (SCST, TrueNAS 26 beta) may handle FUA
+differently, and that could explain their gain. **iSCSI was not measured here:
+there is no confirmed iSCSI scratch LUN on this NAS.**
+
+To repeat it, against name-testing only:
 
 ```sh
 swift build -c release --product iscsictl
@@ -187,18 +241,22 @@ for mode in --fua --flush-per-request; do
 done
 ```
 
-Depth 1 and 1 MiB is the FSKit shape: one request at a time, four commands
-each. Alternate the modes, three runs each, and discard the first run as a
-warm-up, as in `performance.md`. The iSCSI equivalent is `iscsictl write-bench
-… --chunk 1048576 --max-transfer 262144 --fua | --flush-per-request` against a
-scratch LUN.
+Alternate the order of the modes and run at least nine rounds. The iSCSI
+equivalent is `iscsictl write-bench … --chunk 1048576 --max-transfer 262144
+--fua | --flush-per-request` against a scratch LUN.
 
 Simulator numbers say nothing about this: the simulator's FUA is *cheaper* than
 its cache (`performance.md`). It was used for the wire counts only: 256 MiB as
 1 MiB requests gave 1024 uncached commands, 256 flushes, zero FUA and nothing
 dirty afterwards.
 
+**Build check:** the branch compiles under Xcode 26.6 / Swift 6.3.3, the CI
+toolchain, on that VM (release build of `iscsictl`).
+
 ## What shipping would still need
+
+Only worth doing if a target someone uses shows a gain that holds up in paired
+runs. Ours does not, at the shape FSKit sends.
 
 1. **Persistence.** A new *optional* `TargetRecord` key, e.g.
    `flushPerRequest: Bool?`, read in `ISCSIXPCService.login` only when
@@ -217,7 +275,8 @@ dirty afterwards.
 3. **A real power cut** on at least one target, the maintainer's condition for
    anything beyond opt-in. Mocked recovery proves the logic, not the target.
 4. **A measurement through FSKit** on a VM, from an RC built by the dry-run
-   workflow, to confirm that the raw-bench gain survives the stack.
+   workflow, to confirm that a raw-bench gain, once one exists, survives the
+   stack.
 
 ## Files
 

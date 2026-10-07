@@ -167,10 +167,12 @@ one target, currently a tired one.
 2026-10-06, from GitHub issue #2): a request larger than one command goes out
 without FUA and is acknowledged only after one SYNCHRONIZE CACHE / Flush, with
 a FUA replay if the session reconnected or saw a UNIT ATTENTION in between. It
-is as durable at acknowledgement as FUA, but only large requests change, and on
-ZFS the expected gain is the reporter's +11–13%. Small writes keep FUA, so it
-does nothing for this item's worst case. Unmeasured on our NAS, unreachable from
-a stored record, and gated on a real power cut before anything but opt-in. See
+is as durable at acknowledgement as FUA, but only large requests change. Small
+writes keep FUA, so it does nothing for this item's worst case. **Measured on our
+NAS at the shape FSKit sends** (NVMe/TCP, 1 MiB requests, depth 1, nine paired
+rounds): **+2.6% ± 11%, p = 0.67, no measurable gain.** The reporter saw
++11–13% on iSCSI against TrueNAS 26 beta. Parked: unreachable from a stored
+record, and gated on a real power cut before anything but opt-in. See
 `docs/per-request-sync.md`.
 
 ## 6. `unregister()` finishing is not launchd finishing
