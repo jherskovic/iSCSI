@@ -113,10 +113,19 @@ struct DiscoveryView: View {
                         }
                     }
                     Spacer()
-                    if isAlreadyConfigured(target) {
-                        Text("Added").font(.caption).foregroundStyle(.secondary)
-                    } else {
+                    switch offer(for: target) {
+                    case .add:
                         Button("Add") { add(target) }
+                    case .saved:
+                        Text("Added").font(.caption).foregroundStyle(.secondary)
+                    case .updateCredentials(let records):
+                        // Without this the credentials that just listed the
+                        // target were dropped, and the next attach went out
+                        // with no CHAP and was refused.
+                        Text(records.allSatisfy { $0.chapUser == nil }
+                             ? "Saved without CHAP" : "Saved with another CHAP user")
+                            .font(.caption).foregroundStyle(.orange)
+                        Button("Use These Credentials") { useCredentials(on: records) }
                     }
                 }
                 .padding(.vertical, 2)
@@ -124,8 +133,21 @@ struct DiscoveryView: View {
         }
     }
 
-    private func isAlreadyConfigured(_ target: DiscoveredTargetInfo) -> Bool {
-        model.targets.contains { $0.targetIQN == target.targetIQN }
+    private func offer(for target: DiscoveredTargetInfo) -> DiscoveryOffer {
+        DiscoveryOffer.for(target.targetIQN, saved: model.targets,
+                           chapUser: isNVMe ? "" : chapUser,
+                           chapSecret: isNVMe ? "" : chapSecret)
+    }
+
+    /// The same save the editor makes: the user into the record, the secret
+    /// through the daemon into the keychain.
+    private func useCredentials(on records: [TargetRecord]) {
+        Task {
+            for var record in records {
+                record.chapUser = chapUser
+                await model.save(record, secret: chapSecret)
+            }
+        }
     }
 
     private var defaultPort: UInt16 { isNVMe ? 4420 : 3260 }
