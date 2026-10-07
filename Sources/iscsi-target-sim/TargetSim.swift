@@ -72,6 +72,12 @@ struct TargetSim: AsyncParsableCommand {
     @Option(help: "CHAP secret the initiator must present.")
     var chapSecret: String?
 
+    @Option(help: ArgumentHelp(
+        "Answer every login with a temporary redirect to this TargetAddress.",
+        discussion: "The way an EqualLogic group address hands each login to a member "
+            + "port. Run a second simulator at the address, e.g. 127.0.0.1:3271,1."))
+    var redirectTo: String?
+
     mutating func run() async throws {
         let capacityBlocks = capacityMib * 1024 * 1024 / UInt64(blockSize)
         guard capacityBlocks > 0 else {
@@ -94,7 +100,12 @@ struct TargetSim: AsyncParsableCommand {
             )
         }
 
-        let faultBox = FaultBox()
+        // Seeded here, not on the config: the target reads its faults from this
+        // box (the control channel changes them live), never from config.faults.
+        var initialFaults = MockTargetFaults()
+        initialFaults.redirectTo = nvme ? nil : redirectTo
+        initialFaults.redirectIsTemporary = true
+        let faultBox = FaultBox(initialFaults)
         let port = self.port ?? (nvme ? 4420 : 3260)
         let server: MockTargetServer
         if nvme {
@@ -130,6 +141,7 @@ struct TargetSim: AsyncParsableCommand {
             note("write cache: volatile, \(cacheMib) MiB, commits on FUA and Flush only")
         } else {
             note("serving \(targetName) on port \(bound)")
+            if let redirectTo { note("redirecting every login to \(redirectTo)") }
             note("lun: \(capacityBlocks) x \(blockSize) bytes (\(capacityMib) MiB), backing=\(backingLabel)")
             note("negotiation: MRDSL=\(mrdsl) FirstBurst=\(firstBurst) MaxBurst=\(maxBurst) digest=\(digest)")
             note("write cache: volatile, \(cacheMib) MiB, commits on FUA and SYNCHRONIZE CACHE only")

@@ -48,7 +48,11 @@ struct ISCSIErrorTests {
         let error = ISCSIError.nsError(
             from: NegotiationError.loginFailed(statusClass: 0x02, statusDetail: 0x01))
         #expect(error.code == ISCSIError.Code.authenticationFailed.rawValue)
-        #expect(error.localizedDescription.lowercased().contains("unauthorised"))
+        #expect(error.localizedDescription.contains("authenticate"))
+        #expect(error.localizedDescription.contains("0x02/0x01"))
+        // "Unauthorised" is 0x02/0x02's word; using it here made the two
+        // refusals read the same.
+        #expect(!error.localizedDescription.lowercased().contains("unauthori"))
     }
 
     @Test("other login refusals keep their status bytes visible")
@@ -111,6 +115,17 @@ struct ISCSIErrorTests {
                                                   chapUser: nil))
         #expect(!(error.localizedRecoverySuggestion ?? "").contains("iqn."))
         #expect(!error.localizedDescription.contains("iqn."))
+    }
+
+    /// Errors outside the mapped families still carry their own wording;
+    /// dropping the recovery suggestion leaves the user a diagnosis with no
+    /// fix attached.
+    @Test("an unmapped error keeps its own recovery suggestion")
+    func unmappedLocalizedErrorKeepsRecovery() {
+        let source = CHAP.CredentialError.secretTooShort(label: "CHAP secret", length: 8)
+        let error = ISCSIError.nsError(from: source)
+        #expect(error.localizedDescription == source.errorDescription)
+        #expect(error.localizedRecoverySuggestion == source.recoverySuggestion)
     }
 
     @Test("a task timeout is distinguishable from a lost connection")

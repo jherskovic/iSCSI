@@ -77,9 +77,14 @@ The app builds against the macOS 26 SDK. Its one macOS 27 API,
 ```sh
 swift run iscsi-target-sim --port 3260 --capacity-mib 1024 &
 swift run iscsictl discover 127.0.0.1
-swift run iscsictl verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --write  # DESTRUCTIVE
+swift run iscsictl verify 127.0.0.1 --target iqn.2026-08.me.herko.sim:lun0 --write  # DESTRUCTIVE
 printf 'crash\n' | nc 127.0.0.1 3262      # target power loss with a dirty cache
 scripts/fuzz.sh 60                        # ASan fuzz of both PDU decoders
+
+# An EqualLogic-style group address: 3270 redirects every login to 3271.
+swift run iscsi-target-sim --port 3271 --control-port 0 &
+swift run iscsi-target-sim --port 3270 --control-port 0 --redirect-to 127.0.0.1:3271,1 &
+swift run iscsictl verify 127.0.0.1 --port 3270 --target iqn.2026-08.me.herko.sim:lun0 --debug
 
 swift run iscsi-target-sim --nvme --capacity-mib 1024 &        # NVMe/TCP on 4420
 swift run iscsictl nvme discover 127.0.0.1

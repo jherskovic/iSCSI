@@ -114,8 +114,49 @@ struct GlobalOptions: ParsableArguments {
             + "Omit to let macOS routing choose."))
     var interface: String?
 
+    /// Connects to this portal, or to one a login redirect names, the same
+    /// way: same interface pin, same tracing.
+    var dialer: PortalDialer {
+        PortalDialer(host: host, port: port, interface: interface, debug: debug)
+    }
+
     func openTransport() async throws -> any ConnectionTransport {
+        try await dialer.open(nil)
+    }
+
+    /// Log a bare connection in, following redirects the way the daemon does —
+    /// an EqualLogic group address redirects every login to a member port.
+    func login(_ config: LoginConfig) async throws -> (ISCSIConnection, LoginResult) {
+        let dialer = self.dialer
+        let outcome = try await RedirectingLogin.login(config) { try await dialer.open($0) }
+        return (outcome.connection, outcome.result)
+    }
+
+    /// A session whose logins, recovery included, start at this portal and
+    /// follow redirects.
+    func session(_ config: LoginConfig) -> ISCSISession {
+        let dialer = self.dialer
+        return ISCSISession(login: config,
+                            transportFactory: { try await dialer.open(nil) },
+                            redirectTransportFactory: { try await dialer.open($0) })
+    }
+}
+
+/// Opens a TCP connection to the command line's portal (nil) or to a portal a
+/// redirect named. A value type so the session's factories can carry it.
+struct PortalDialer: Sendable {
+    let host: String
+    let port: UInt16
+    let interface: String?
+    let debug: Bool
+
+    func open(_ portal: TargetPortal?) async throws -> any ConnectionTransport {
         #if canImport(Network)
+        let host = portal?.host ?? self.host
+        let port = portal?.port ?? self.port
+        if portal != nil {
+            FileHandle.standardError.write(Data("redirected to \(host):\(port)\n".utf8))
+        }
         let tcp = try await NetworkTransport.connect(
             host: host, port: port,
             binding: InterfaceBinding.named(interface, fallback: false))
@@ -189,7 +230,6 @@ struct Verify: AsyncParsableCommand {
 
     func run() async throws {
         #if canImport(Network)
-        let transport = try await options.openTransport()
         var config = LoginConfig(
             initiatorName: options.initiator,
             sessionType: .normal,
@@ -198,8 +238,7 @@ struct Verify: AsyncParsableCommand {
             trace: options.authTrace
         )
         config.desired.offerDigests = true
-        let connection = ISCSIConnection(transport: transport, login: config)
-        let result = try await connection.login()
+        let (connection, result) = try await options.login(config)
         print("Logged in. TSIH=\(result.tsih)")
         print("  HeaderDigest=\(result.parameters.headerDigest) DataDigest=\(result.parameters.dataDigest)")
         print("  InitialR2T=\(result.parameters.initialR2T) ImmediateData=\(result.parameters.immediateData)")
@@ -311,7 +350,6 @@ struct WriteBench: AsyncParsableCommand {
 
     func run() async throws {
         #if canImport(Network)
-        let transport = try await options.openTransport()
         var config = LoginConfig(
             initiatorName: options.initiator,
             sessionType: .normal,
@@ -320,7 +358,7 @@ struct WriteBench: AsyncParsableCommand {
             trace: options.authTrace
         )
         config.desired.offerDigests = true
-        let session = ISCSISession(login: config) { try await transport }
+        let session = options.session(config)
         let login = try await session.activate()
         let device = ISCSIBlockDevice(
             session: session, lun: lun,
@@ -407,7 +445,6 @@ struct ReadBench: AsyncParsableCommand {
         guard queueDepth >= 1 else {
             throw ValidationError("--queue-depth must be at least 1")
         }
-        let transport = try await options.openTransport()
         var config = LoginConfig(
             initiatorName: options.initiator,
             sessionType: .normal,
@@ -416,7 +453,7 @@ struct ReadBench: AsyncParsableCommand {
             trace: options.authTrace
         )
         config.desired.offerDigests = true
-        let session = ISCSISession(login: config) { try await transport }
+        let session = options.session(config)
         try await session.activate()
         let device = ISCSIBlockDevice(session: session, lun: lun, maxTransferBytes: maxTransfer)
         let (blockSize, blockCount) = try await device.readCapacity()
@@ -507,7 +544,6 @@ struct Wipe: AsyncParsableCommand {
 
     func run() async throws {
         #if canImport(Network)
-        let transport = try await options.openTransport()
         let config = LoginConfig(
             initiatorName: options.initiator,
             sessionType: .normal,
@@ -515,8 +551,7 @@ struct Wipe: AsyncParsableCommand {
             chap: try options.credentials(),
             trace: options.authTrace
         )
-        let connection = ISCSIConnection(transport: transport, login: config)
-        _ = try await connection.login()
+        let (connection, _) = try await options.login(config)
 
         let lunAddress = lun << 48
 

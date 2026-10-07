@@ -119,12 +119,14 @@ refusal (0x02/0x02) logged against 192.168.1.30; if that is the group address,
 the array checks access before it redirects. Inferred from that one log line,
 not observed.
 
-`ISCSISession` now follows up to four hops. A temporary redirect applies to that
-login only, so recovery asks the configured portal again; a permanent one is
-remembered for the rest of the session (§11.13.5), never written to the record.
-The daemon connects to the new address with the target's interface pin.
-`LoginRedirectTests` drives all of it against MockTarget, which redirects on the
-first request. Not known: whether EqualLogic redirects before or after the CHAP
+Logins now follow up to four hops, through `RedirectingLogin`, which both
+`ISCSISession` and iscsictl's bare-connection commands use. A temporary
+redirect applies to that login only, so recovery asks the configured portal
+again; a permanent one is remembered for the rest of the session (§11.13.5),
+never written to the record. The daemon connects to the new address with the
+target's interface pin. `LoginRedirectTests` drives all of it against
+MockTarget, and two `iscsi-target-sim`s (one with `--redirect-to`) drive
+iscsictl over real TCP; both redirect on the first request. Not known: whether EqualLogic redirects before or after the CHAP
 exchange (the state machine accepts a redirect at any stage), and what it does
 when a member port goes away under a session — it asks the initiator to log
 out and back in, which recovery should handle by returning to the group address.

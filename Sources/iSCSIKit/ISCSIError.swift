@@ -129,7 +129,8 @@ public enum ISCSIError {
                 // failure, worth naming over two hex bytes.
                 if statusClass == 0x02 && statusDetail == 0x01 {
                     return (.authenticationFailed,
-                            "The target refused the login as unauthorised.",
+                            "The target could not authenticate this initiator "
+                            + "(status 0x02/0x01).",
                             presented(identity)
                             + "Check the CHAP credentials, and whether this initiator's "
                             + "IQN is allowed to use this target.", nil)
@@ -260,7 +261,10 @@ public enum ISCSIError {
             }
 
         default:
-            return (.daemonInternal, error.localizedDescription, nil, nil)
+            // The daemon's own refusals (no saved target, no stored secret) and
+            // credential validation are worded to name the fix; keep it.
+            return (.daemonInternal, error.localizedDescription,
+                    (error as? LocalizedError)?.recoverySuggestion, nil)
         }
     }
 

@@ -125,7 +125,7 @@ struct LoginRedirectTests {
         let session = makeSession(fleet: fleet, log: log)
 
         await #expect(throws: ConnectionError.self) { try await session.activate() }
-        #expect(log.all.count == 1 + ISCSISession.maxRedirects)
+        #expect(log.all.count == 1 + RedirectingLogin.maxRedirects)
         await fleet.shutdown()
     }
 
@@ -160,6 +160,37 @@ struct LoginRedirectTests {
             #expect(address == Self.member)
         }
         #expect(log.all == ["home"])
+        await fleet.shutdown()
+    }
+
+    // MARK: Without a session
+
+    /// iscsictl's verify and wipe drive a bare connection; they follow
+    /// redirects through the same code the session does.
+    @Test("a bare login follows a temporary redirect and reports no move")
+    func bareLoginFollowsTemporaryRedirect() async throws {
+        let fleet = TargetFleet(configs: [Self.redirecting(temporary: true), MockTargetConfig()])
+        let log = ConnectLog()
+        let outcome = try await RedirectingLogin.login(standardLogin()) { portal in
+            log.add(portal.map { "\($0.host):\($0.port)" } ?? "home")
+            return await fleet.makeTransport()
+        }
+
+        #expect(log.all == ["home", "10.0.0.2:3261"])
+        #expect(outcome.movedPermanentlyTo == nil)
+        let ready = try await outcome.connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
+        #expect(ready.isGood)
+        await fleet.shutdown()
+    }
+
+    @Test("a bare login reports a permanent move")
+    func bareLoginReportsPermanentMove() async throws {
+        let fleet = TargetFleet(configs: [Self.redirecting(temporary: false), MockTargetConfig()])
+        let outcome = try await RedirectingLogin.login(standardLogin()) { _ in
+            await fleet.makeTransport()
+        }
+        #expect(outcome.movedPermanentlyTo
+                == TargetPortal(host: "10.0.0.2", port: 3261, portalGroupTag: 1))
         await fleet.shutdown()
     }
 

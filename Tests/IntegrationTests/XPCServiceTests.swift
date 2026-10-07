@@ -98,6 +98,22 @@ struct XPCServiceTests {
                 "the error should name the missing secret, got: \(error!)")
     }
 
+    /// The daemon's own refusals are worded to name the fix; the wording is
+    /// worth nothing if only the description survives the XPC crossing.
+    @Test("a missing secret reaches the app with its way out")
+    func missingSecretKeepsRecoverySuggestion() async throws {
+        let fake = FakeKeychain()
+        let previous = KeychainStore.backend
+        KeychainStore.backend = fake
+        defer { KeychainStore.backend = previous }
+
+        let (core, _harness, store, _) = try await makeCore { $0.chapUser = "someone" }
+        let service = ISCSIXPCService(core: core, targets: store)
+        let (_, error) = await loginResult(service)
+        let recovery = (error as NSError?)?.localizedRecoverySuggestion ?? ""
+        #expect(recovery.contains("enter its CHAP secret"), "got: \(recovery)")
+    }
+
     @Test("logging in to a target the daemon has no record of is refused")
     func unknownTargetIsRefused() async throws {
         let (core, _harness, store, _) = try await makeCore()

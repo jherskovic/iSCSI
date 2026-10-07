@@ -57,11 +57,6 @@ public actor ISCSISession {
     /// followed and surface as `ConnectionError.redirected`.
     public typealias RedirectTransportFactory = @Sendable (TargetPortal) async throws -> any ConnectionTransport
 
-    /// Redirects followed in one login before giving up. One is all a real
-    /// target uses (group address to member port); the bound is for a target
-    /// that sends us in a circle.
-    static let maxRedirects = 4
-
     private let makeTransport: TransportFactory
     private let makeRedirectTransport: RedirectTransportFactory?
     /// Where logins start when a permanent redirect moved the target (§11.13.5);
@@ -215,38 +210,22 @@ public actor ISCSISession {
 
     @discardableResult
     private func establish() async throws -> LoginResult {
-        var portal = movedTo
-        var hops = 0
-        while true {
-            let transport: any ConnectionTransport
-            if let portal, let makeRedirectTransport {
-                transport = try await makeRedirectTransport(portal)
-            } else {
-                transport = try await makeTransport()
-            }
-            let conn = ISCSIConnection(transport: transport, login: loginConfig)
-            do {
-                let result = try await conn.login()
-                connection = conn
-                loginResult = result
-                lastTime2Wait = result.parameters.defaultTime2Wait
-                startKeepalive(for: conn)
-                watchForClose(of: conn)
-                return result
-            } catch let ConnectionError.redirected(address, permanent) {
-                // Status class 1 names where to log in instead. Followed only
-                // when the caller can reach an arbitrary portal, and only to an
-                // address we can read: a guessed port connects to the wrong
-                // service and the error that comes back blames the network.
-                guard makeRedirectTransport != nil, hops < Self.maxRedirects,
-                      let next = TargetPortal(targetAddress: address) else {
-                    throw ConnectionError.redirected(address: address, permanent: permanent)
-                }
-                hops += 1
-                if permanent { movedTo = next }
-                portal = next
-            }
+        let home = makeTransport
+        let redirect = makeRedirectTransport
+        let outcome = try await RedirectingLogin.login(
+            loginConfig, startingAt: movedTo, followRedirects: redirect != nil
+        ) { portal in
+            if let portal, let redirect { return try await redirect(portal) }
+            return try await home()
         }
+        if let moved = outcome.movedPermanentlyTo { movedTo = moved }
+        let conn = outcome.connection
+        connection = conn
+        loginResult = outcome.result
+        lastTime2Wait = outcome.result.parameters.defaultTime2Wait
+        startKeepalive(for: conn)
+        watchForClose(of: conn)
+        return outcome.result
     }
 
     /// Tear the connection down without re-logging in. The next call to
