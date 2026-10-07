@@ -119,6 +119,51 @@ struct AuthTraceTests {
         #expect(trace.contains("awaiting CHAP result"))
     }
 
+    /// Refused on the first request with AuthMethod=None offered: nothing past
+    /// the security stage was ever negotiated, and saying otherwise sends the
+    /// reader to the operational keys instead of the target's access list.
+    @Test func firstRequestRefusalWithoutCredentialsNamesTheRightStage() async throws {
+        var targetConfig = MockTargetConfig()
+        targetConfig.faults.rejectLoginStatus = (class: 2, detail: 2)
+
+        let sink = Sink()
+        let harness = TargetHarness.start(config: targetConfig)
+        defer { harness.serveTask.cancel() }
+        let connection = ISCSIConnection(
+            transport: harness.transport,
+            login: standardLogin(tune: { $0.trace = sink.emit })
+        )
+        await #expect(throws: ConnectionError.self) { _ = try await connection.login() }
+
+        let trace = sink.joined
+        #expect(trace.contains("offering AuthMethod=None"))
+        #expect(trace.contains("awaiting AuthMethod"))
+        #expect(!trace.contains("negotiating operational parameters"))
+        #expect(trace.contains("authorization failure"))
+    }
+
+    /// The daemon's own log is the only record that a login went somewhere
+    /// other than the portal the user typed.
+    @Test func redirectIsNarrated() async throws {
+        var targetConfig = MockTargetConfig()
+        targetConfig.faults.redirectTo = "10.0.0.2:3261,1"
+        targetConfig.faults.redirectIsTemporary = true
+
+        let sink = Sink()
+        let harness = TargetHarness.start(config: targetConfig)
+        defer { harness.serveTask.cancel() }
+        let connection = ISCSIConnection(
+            transport: harness.transport,
+            login: standardLogin(tune: { $0.trace = sink.emit })
+        )
+        await #expect(throws: ConnectionError.self) { _ = try await connection.login() }
+
+        let trace = sink.joined
+        #expect(trace.contains("redirected"))
+        #expect(trace.contains("10.0.0.2:3261,1"))
+        #expect(trace.contains("temporarily"))
+    }
+
     // MARK: - What must never appear
 
     /// Runs a full mutual login and asserts the sink never saw key material.

@@ -8,6 +8,10 @@ public struct MockTargetFaults: Sendable {
     public var rejectLoginStatus: (class: UInt8, detail: UInt8)?
     /// Answer login with a redirect (status class 1) to this address.
     public var redirectTo: String?
+    /// Send that redirect as "moved temporarily" (0x0101), the way an
+    /// EqualLogic group address hands every login to a member port, rather
+    /// than "moved permanently" (0x0102).
+    public var redirectIsTemporary = false
     /// Hard-drop the connection after N PDUs sent (post-login).
     public var dropAfterSentPDUs: Int?
     /// Drop mid-read after N Data-In PDUs of a burst.
@@ -251,7 +255,8 @@ public actor MockTarget {
                 reply.append("TargetAddress", address)
                 try await sendLoginResponse(
                     to: request, text: reply,
-                    transit: false, statusClass: 1, statusDetail: 2
+                    transit: false, statusClass: 1,
+                    statusDetail: faults.redirectIsTemporary ? 1 : 2
                 )
                 throw TransportError.closed
             }

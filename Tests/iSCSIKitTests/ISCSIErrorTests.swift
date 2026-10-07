@@ -60,6 +60,59 @@ struct ISCSIErrorTests {
         #expect(error.localizedDescription.contains("0x02"))
     }
 
+    /// 0x02/0x02 means the target found the target name and refused *us*;
+    /// sending the user to re-check the name (that is 0x02/0x03) wastes the
+    /// one look they take at the alert. An EqualLogic access-control miss
+    /// arrives as exactly this.
+    @Test("login status 0x02/0x02 points at the access list, not the target name")
+    func authorizationFailurePointsAtAccessList() {
+        let error = ISCSIError.nsError(
+            from: NegotiationError.loginFailed(statusClass: 0x02, statusDetail: 0x02))
+        #expect(error.code == ISCSIError.Code.loginRejected.rawValue)
+        #expect(error.localizedDescription.contains("0x02/0x02"))
+        let recovery = error.localizedRecoverySuggestion ?? ""
+        #expect(!recovery.contains("target name"))
+        #expect(recovery.contains("initiator name"))
+        #expect(recovery.contains("address"))
+        #expect(recovery.contains("CHAP"))
+    }
+
+    /// The identity a target judged is the one fact its own log names and
+    /// ours did not: a reporter comparing the two needs both sides.
+    @Test("an authorization refusal names the IQN sent and that CHAP was not offered")
+    func authorizationFailureNamesIdentityWithoutCHAP() {
+        let error = ISCSIError.nsError(
+            from: ConnectionError.loginFailed(.loginFailed(statusClass: 0x02, statusDetail: 0x02)),
+            presentedAs: ISCSIError.LoginIdentity(initiatorName: "iqn.2026-08.me.herko:mac",
+                                                  chapUser: nil))
+        let recovery = error.localizedRecoverySuggestion ?? ""
+        #expect(recovery.contains("iqn.2026-08.me.herko:mac"))
+        #expect(recovery.contains("without CHAP"))
+    }
+
+    @Test("an authentication refusal names the CHAP user offered")
+    func authenticationFailureNamesCHAPUser() {
+        let error = ISCSIError.nsError(
+            from: NegotiationError.loginFailed(statusClass: 0x02, statusDetail: 0x01),
+            presentedAs: ISCSIError.LoginIdentity(initiatorName: "iqn.2026-08.me.herko:mac",
+                                                  chapUser: "herko"))
+        #expect(error.code == ISCSIError.Code.authenticationFailed.rawValue)
+        let recovery = error.localizedRecoverySuggestion ?? ""
+        #expect(recovery.contains("iqn.2026-08.me.herko:mac"))
+        #expect(recovery.contains("“herko”"))
+    }
+
+    /// Who we logged in as says nothing about an unreachable portal.
+    @Test("the identity stays out of errors it does not explain")
+    func identityOnlyOnLoginRefusals() {
+        let error = ISCSIError.nsError(
+            from: TransportError.connectFailed("Connection refused"),
+            presentedAs: ISCSIError.LoginIdentity(initiatorName: "iqn.2026-08.me.herko:mac",
+                                                  chapUser: nil))
+        #expect(!(error.localizedRecoverySuggestion ?? "").contains("iqn."))
+        #expect(!error.localizedDescription.contains("iqn."))
+    }
+
     @Test("a task timeout is distinguishable from a lost connection")
     func timeoutIsNotDisconnection() {
         let timeout = ISCSIError.nsError(from: SessionError.taskTimedOut)

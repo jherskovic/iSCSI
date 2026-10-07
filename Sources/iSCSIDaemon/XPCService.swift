@@ -120,10 +120,12 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     ) {
         let box = SendableBox(reply)
         Task {
+            var presented: ISCSIError.LoginIdentity?
             do {
                 let (record, chap) = try await self.credentials(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value)
+                presented = self.identity(targetIQN: targetIQN, chap: chap)
                 let handle = try await core.login(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value, chap: chap,
@@ -136,9 +138,18 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 box.value(handle, nil)
             } catch {
                 box.value(nil, ISCSIError.nsError(from: error,
-                                                  context: "Connecting to \(targetIQN)"))
+                                                  context: "Connecting to \(targetIQN)",
+                                                  presentedAs: presented))
             }
         }
+    }
+
+    /// Who a login presents itself as, for the alert when the target refuses
+    /// it: the target's own log names this, and the user is comparing the two.
+    /// nil for NVMe, whose refusals already name the host NQN.
+    private func identity(targetIQN: String, chap: CHAP.Credentials?) -> ISCSIError.LoginIdentity? {
+        guard !IQN.isNQN(targetIQN) else { return nil }
+        return ISCSIError.LoginIdentity(initiatorName: core.initiatorName, chapUser: chap?.name)
     }
 
     /// The client's XPC connection dropped (crash, kill, or a clean close
@@ -439,6 +450,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                                reply: @escaping (Data?, Error?) -> Void) {
         let box = SendableBox(reply)
         Task {
+            var presented: ISCSIError.LoginIdentity?
             do {
                 // Same credential resolution as login, deliberately: this is
                 // the UI's "are these credentials right?" probe, and resolving
@@ -447,6 +459,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 let (record, chap) = try await self.credentials(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value)
+                presented = self.identity(targetIQN: targetIQN, chap: chap)
                 // No flush policy: a probe lives milliseconds and stays
                 // write-through rather than spinning up a flush timer.
                 let handle = try await core.login(
@@ -462,7 +475,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 box.value(try JSONEncoder().encode(info), nil)
             } catch {
                 box.value(nil, ISCSIError.nsError(from: error,
-                                                  context: "Connecting to \(targetIQN)"))
+                                                  context: "Connecting to \(targetIQN)",
+                                                  presentedAs: presented))
             }
         }
     }

@@ -109,6 +109,29 @@ not permit it, and that sentence is gone.
 
 ---
 
+## 3c. Login redirects are followed, but never against a target that sends one
+
+An EqualLogic group answers every normal login on its group address with
+0x0101 "moved temporarily" and a member port's `TargetAddress`. Until
+2026-10-07 the session surfaced that as an error, so no EqualLogic volume could
+attach at all. The first report from an EqualLogic user was an access-control
+refusal (0x02/0x02) logged against 192.168.1.30; if that is the group address,
+the array checks access before it redirects. Inferred from that one log line,
+not observed.
+
+`ISCSISession` now follows up to four hops. A temporary redirect applies to that
+login only, so recovery asks the configured portal again; a permanent one is
+remembered for the rest of the session (§11.13.5), never written to the record.
+The daemon connects to the new address with the target's interface pin.
+`LoginRedirectTests` drives all of it against MockTarget, which redirects on the
+first request. Not known: whether EqualLogic redirects before or after the CHAP
+exchange (the state machine accepts a redirect at any stage), and what it does
+when a member port goes away under a session — it asks the initiator to log
+out and back in, which recovery should handle by returning to the group address.
+
+**How to test.** An EqualLogic (or any target that redirects) with CHAP on.
+The `auth:` log category records each redirect with its address.
+
 ## 4. The command-size cliff
 
 With several commands outstanding, 1 MiB commands collapse and 256 KiB commands

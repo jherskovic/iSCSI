@@ -58,10 +58,22 @@ public enum ISCSIError {
     /// cases where the mapping below is not specific enough to be useful.
     public static let underlyingKey = "me.herko.iSCSIInitiator.Underlying"
 
+    /// Who a login presented itself as — what a target's access list judges.
+    public struct LoginIdentity: Sendable, Equatable {
+        public var initiatorName: String
+        public var chapUser: String?
+
+        public init(initiatorName: String, chapUser: String?) {
+            self.initiatorName = initiatorName
+            self.chapUser = chapUser
+        }
+    }
+
     /// Convert anything the engine throws into an NSError the other side of XPC
     /// can act on.
-    public static func nsError(from error: Error, context: String? = nil) -> NSError {
-        let (code, description, recovery, sense) = classify(error)
+    public static func nsError(from error: Error, context: String? = nil,
+                               presentedAs identity: LoginIdentity? = nil) -> NSError {
+        let (code, description, recovery, sense) = classify(error, identity)
 
         var info: [String: Any] = [
             NSLocalizedDescriptionKey: context.map { "\($0): \(description)" } ?? description,
@@ -75,7 +87,7 @@ public enum ISCSIError {
 
     // swiftlint:disable:next cyclomatic_complexity
     private static func classify(
-        _ error: Error
+        _ error: Error, _ identity: LoginIdentity? = nil
     ) -> (Code, String, String?, String?) {
         switch error {
         case let e as ConnectionError:
@@ -91,7 +103,7 @@ public enum ISCSIError {
                         "This usually indicates a bug — on either side. "
                         + "The details are worth reporting.", nil)
             case .loginFailed(let negotiation):
-                return classify(negotiation)
+                return classify(negotiation, identity)
             case .redirected(let address, let permanent):
                 return (.redirected,
                         "The target redirected to \(address)"
@@ -118,8 +130,21 @@ public enum ISCSIError {
                 if statusClass == 0x02 && statusDetail == 0x01 {
                     return (.authenticationFailed,
                             "The target refused the login as unauthorised.",
-                            "Check the CHAP credentials, and whether this initiator's "
+                            presented(identity)
+                            + "Check the CHAP credentials, and whether this initiator's "
                             + "IQN is allowed to use this target.", nil)
+                }
+                // Authorization, not a wrong name (that is 0x02/0x03): the
+                // target was found and refused who we are. EqualLogic's
+                // access-control miss is this.
+                if statusClass == 0x02 && statusDetail == 0x02 {
+                    return (.loginRejected,
+                            "The target does not allow this initiator to use it "
+                            + "(status 0x02/0x02).",
+                            presented(identity)
+                            + "On the storage device, check the target's access list: "
+                            + "allowed initiator names, allowed addresses, and CHAP accounts. "
+                            + "Every condition in an entry has to match.", nil)
                 }
                 return (.loginRejected,
                         String(format: "The target refused the login "
@@ -237,6 +262,14 @@ public enum ISCSIError {
         default:
             return (.daemonInternal, error.localizedDescription, nil, nil)
         }
+    }
+
+    /// The sentence that says what the target judged, or nothing when the
+    /// caller does not know.
+    private static func presented(_ identity: LoginIdentity?) -> String {
+        guard let identity else { return "" }
+        let chap = identity.chapUser.map { "with CHAP user “\($0)”" } ?? "without CHAP"
+        return "This Mac logged in as \(identity.initiatorName), \(chap). "
     }
 
     private static func hex(_ sense: SenseData) -> String {

@@ -192,6 +192,11 @@ public struct LoginStateMachine: Sendable {
     }
 
     private var stageName: String {
+        // The None path moves to .operational as it sends its first request,
+        // so without this a refusal of that request read as an operational
+        // failure. Nothing has been answered yet: it is the AuthMethod offer,
+        // and with it the initiator name, that the target turned down.
+        guard seenFirstResponse else { return "awaiting AuthMethod" }
         switch stage {
         case .awaitingAuthMethod:    return "awaiting AuthMethod"
         case .awaitingChapChallenge: return "awaiting CHAP challenge"
@@ -251,7 +256,10 @@ public struct LoginStateMachine: Sendable {
                 throw NegotiationError.protocolViolation("redirect without TargetAddress")
             }
             stage = .done
-            return .redirect(address: address, permanent: response.statusDetail == 2)
+            let permanent = response.statusDetail == 2
+            note("target redirected the login \(permanent ? "permanently" : "temporarily") "
+                 + "to \(address)")
+            return .redirect(address: address, permanent: permanent)
         }
         // A success response must be an answer to the request we sent: it
         // echoes our ISID and ITT, operates at protocol version 0x00

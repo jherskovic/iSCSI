@@ -53,8 +53,22 @@ public struct SessionPolicy: Sendable {
 /// (ERL0: drop everything, re-login, resubmit), and runs NOP keepalive.
 public actor ISCSISession {
     public typealias TransportFactory = @Sendable () async throws -> any ConnectionTransport
+    /// How to reach a portal a login redirect names. nil: redirects are not
+    /// followed and surface as `ConnectionError.redirected`.
+    public typealias RedirectTransportFactory = @Sendable (TargetPortal) async throws -> any ConnectionTransport
+
+    /// Redirects followed in one login before giving up. One is all a real
+    /// target uses (group address to member port); the bound is for a target
+    /// that sends us in a circle.
+    static let maxRedirects = 4
 
     private let makeTransport: TransportFactory
+    private let makeRedirectTransport: RedirectTransportFactory?
+    /// Where logins start when a permanent redirect moved the target (§11.13.5);
+    /// nil is the configured portal. A temporary redirect never lands here:
+    /// EqualLogic picks the member port per login, so the next login must ask
+    /// the group address again.
+    private var movedTo: TargetPortal?
     private var loginConfig: LoginConfig
     private let policy: SessionPolicy
 
@@ -87,11 +101,13 @@ public actor ISCSISession {
     public init(
         login: LoginConfig,
         policy: SessionPolicy = SessionPolicy(),
-        transportFactory: @escaping TransportFactory
+        transportFactory: @escaping TransportFactory,
+        redirectTransportFactory: RedirectTransportFactory? = nil
     ) {
         self.loginConfig = login
         self.policy = policy
         self.makeTransport = transportFactory
+        self.makeRedirectTransport = redirectTransportFactory
     }
 
     // MARK: - Lifecycle
@@ -199,19 +215,37 @@ public actor ISCSISession {
 
     @discardableResult
     private func establish() async throws -> LoginResult {
-        let transport = try await makeTransport()
-        let conn = ISCSIConnection(transport: transport, login: loginConfig)
-        do {
-            let result = try await conn.login()
-            connection = conn
-            loginResult = result
-            lastTime2Wait = result.parameters.defaultTime2Wait
-            startKeepalive(for: conn)
-            watchForClose(of: conn)
-            return result
-        } catch let ConnectionError.redirected(address, _) {
-            // Follow one level of redirect immediately.
-            throw ConnectionError.redirected(address: address, permanent: false)
+        var portal = movedTo
+        var hops = 0
+        while true {
+            let transport: any ConnectionTransport
+            if let portal, let makeRedirectTransport {
+                transport = try await makeRedirectTransport(portal)
+            } else {
+                transport = try await makeTransport()
+            }
+            let conn = ISCSIConnection(transport: transport, login: loginConfig)
+            do {
+                let result = try await conn.login()
+                connection = conn
+                loginResult = result
+                lastTime2Wait = result.parameters.defaultTime2Wait
+                startKeepalive(for: conn)
+                watchForClose(of: conn)
+                return result
+            } catch let ConnectionError.redirected(address, permanent) {
+                // Status class 1 names where to log in instead. Followed only
+                // when the caller can reach an arbitrary portal, and only to an
+                // address we can read: a guessed port connects to the wrong
+                // service and the error that comes back blames the network.
+                guard makeRedirectTransport != nil, hops < Self.maxRedirects,
+                      let next = TargetPortal(targetAddress: address) else {
+                    throw ConnectionError.redirected(address: address, permanent: permanent)
+                }
+                hops += 1
+                if permanent { movedTo = next }
+                portal = next
+            }
         }
     }
 

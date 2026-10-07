@@ -41,6 +41,35 @@ struct InterfaceBindingXPCTests {
         #expect(log.all.allSatisfy { $0 == InterfaceBinding(name: "en18", fallback: true) })
     }
 
+    /// The daemon is the only side that knows which IQN went out and whether
+    /// CHAP went with it; the alert is where the user reads it.
+    @Test("a refused login tells the app which identity the target refused")
+    func refusedLoginNamesIdentity() async throws {
+        let harnesses = HarnessBox()
+        defer { harnesses.cancelAll() }
+        let core = DaemonCore(initiatorName: "iqn.test:initiator", policy: testPolicy(),
+                              hostIdentity: testHost) { _, _, _ in
+            let (initiatorSide, targetSide) = MemoryPipe.pair()
+            var config = MockTargetConfig()
+            config.faults.rejectLoginStatus = (class: 2, detail: 2)
+            let target = MockTarget(config: config, transport: targetSide)
+            harnesses.add(Task { await target.run() })
+            return initiatorSide
+        }
+        let record = TargetRecord(id: "t1", displayName: "NAS", host: "nas", port: 3260,
+                                  targetIQN: spyIQN, lun: 0)
+        let service = ISCSIXPCService(core: core, targets: try await makeStore([record]))
+        let (handle, error) = await withCheckedContinuation { c in
+            service.login(host: "nas", port: 3260, targetIQN: spyIQN, lun: 0) {
+                c.resume(returning: ($0, $1))
+            }
+        }
+        #expect(handle == nil)
+        let recovery = (error as NSError?)?.localizedRecoverySuggestion ?? ""
+        #expect(recovery.contains("iqn.test:initiator"))
+        #expect(recovery.contains("without CHAP"))
+    }
+
     @Test("the connection test pins exactly as login does")
     func testConnectionUsesRecordBinding() async throws {
         let (core, log, harnesses) = makeSpyCore()

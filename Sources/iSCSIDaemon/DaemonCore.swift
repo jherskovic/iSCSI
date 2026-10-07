@@ -194,9 +194,13 @@ public actor DaemonCore {
         config.requiresAuthentication = chap != nil
         config.desired.offerDigests = true
         let factory = transportFactory
-        let session = ISCSISession(login: config, policy: policy) {
+        let session = ISCSISession(login: config, policy: policy, transportFactory: {
             path.record(try await factory(host, port, binding))
-        }
+        }, redirectTransportFactory: { portal in
+            // Same pin as the first connect: a redirect followed over whatever
+            // interface macOS chose would quietly undo it.
+            path.record(try await factory(portal.host, portal.port, binding))
+        })
         try await session.activate()
         let device = ISCSIBlockDevice(session: session, lun: lun, writeThrough: writeThrough)
         return (ISCSIFabricSession(session: session), device)
