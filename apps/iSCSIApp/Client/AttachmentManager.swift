@@ -145,8 +145,8 @@ final class AttachmentManager: ObservableObject {
         // `-t iSCSI` is the FSKit module's short name, not a protocol; the
         // scheme only names the protocol for anyone reading the mount table,
         // and the daemon decides from the target name.
-        let scheme = IQN.isNQN(target.targetIQN) ? "nvme" : "iscsi"
-        let url = "\(scheme)://\(portal)/\(target.targetIQN)/\(target.lun)"
+        let url = try MountResourceURL.make(host: target.host, port: target.port,
+                                            target: target.targetIQN, lun: target.lun).absoluteString
         let targetID = target.id
 
         try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
