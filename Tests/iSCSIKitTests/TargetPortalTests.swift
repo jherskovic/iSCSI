@@ -48,3 +48,25 @@ struct TargetPortalTests {
         #expect(TargetPortal(targetAddress: address) == nil)
     }
 }
+
+/// The Address field, as typed, against the host string a record must hold:
+/// the daemon looks targets up by it and Network.framework connects to it, and
+/// neither accepts the brackets a URL habit puts around an IPv6 address.
+@Suite("Typed target addresses")
+struct TypedHostTests {
+
+    @Test("surrounding whitespace and an IPv6 literal's brackets are dropped",
+          arguments: [(" nas.local ", "nas.local"),
+                      ("192.168.20.1", "192.168.20.1"),
+                      ("[fdbd:dc02:d:274::34]", "fdbd:dc02:d:274::34"),
+                      (" [fe80::1%en0] ", "fe80::1%en0")])
+    func normalized(typed: String, host: String) {
+        #expect(TargetPortal.host(typed: typed) == host)
+    }
+
+    /// Left for attach to refuse with a message that says where the port goes.
+    @Test("a bracketed address with a port glued on is left alone")
+    func gluedPort() {
+        #expect(TargetPortal.host(typed: "[fdbd::34]:3261") == "[fdbd::34]:3261")
+    }
+}

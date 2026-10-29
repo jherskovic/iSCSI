@@ -3,6 +3,7 @@
 #
 #   sudo scripts/iscsi-attach.sh <portal> <target-iqn> [lun]
 #   sudo scripts/iscsi-attach.sh 192.168.0.101 iqn.me.herko...:my-target 0
+#   sudo scripts/iscsi-attach.sh '[fdbd::34]:3261' iqn.me.herko...:my-target 0
 #
 # Three layers get set up:
 #   1. the FSKit volume that serves the LUN as lun0.img
@@ -25,6 +26,17 @@ PORTAL="${1:?usage: iscsi-attach.sh <portal> <target-iqn> [lun]}"
 TARGET="${2:?usage: iscsi-attach.sh <portal> <target-iqn> [lun]}"
 LUN="${3:-0}"
 
+# An IPv6 portal is bracketed, as in a URL: [fe80::1%en0] or [fdbd::34]:3261.
+# The tag hashes it without the brackets, as the app does (MountpointTag); the
+# URL keeps them and escapes the zone separator. iscsi-detach.sh derives the
+# tag the same way — change both or neither.
+case "$PORTAL" in
+    \[*\]*) V6="${PORTAL#\[}"; V6="${V6%%\]*}"
+            TAG_PORTAL="$V6${PORTAL#*\]}"
+            URL_PORTAL="[${V6//%/%25}]${PORTAL#*\]}" ;;
+    *)      TAG_PORTAL="$PORTAL"; URL_PORTAL="$PORTAL" ;;
+esac
+
 # Run as root (mount -F needs it), but hide the mount in the *invoking* user's
 # Caches, not root's.
 REAL_USER="${SUDO_USER:-$(whoami)}"
@@ -33,7 +45,7 @@ REAL_HOME=$(eval echo "~$REAL_USER")
 # One directory per target+LUN so several LUNs can be attached at once. The
 # name is a hash: an IQN contains characters that are awkward in a path, and
 # the directory is never meant to be read by a human anyway.
-TAG=$(printf '%s|%s|%s' "$PORTAL" "$TARGET" "$LUN" | shasum -a 256 | cut -c1-16)
+TAG=$(printf '%s|%s|%s' "$TAG_PORTAL" "$TARGET" "$LUN" | shasum -a 256 | cut -c1-16)
 HIDDEN="$REAL_HOME/Library/Caches/me.herko.iSCSIInitiator/$TAG"
 
 # Created under sudo, so hand both levels back to the user whose Caches this
@@ -46,7 +58,7 @@ if /sbin/mount | grep -qF " $HIDDEN "; then
     echo "already attached at $HIDDEN"
 else
     echo "== serving LUN as a file (hidden at $HIDDEN)"
-    if ! mount -F -t iSCSI "iscsi://$PORTAL/$TARGET/$LUN" "$HIDDEN"; then
+    if ! mount -F -t iSCSI "iscsi://$URL_PORTAL/$TARGET/$LUN" "$HIDDEN"; then
         echo "FAILED to mount the FSKit volume." >&2
         echo "  - is iscsid running?  sudo launchctl print system/me.herko.iSCSIInitiator.daemon" >&2
         echo "  - is the module enabled? see docs/backend-a-fskit-notes.md" >&2

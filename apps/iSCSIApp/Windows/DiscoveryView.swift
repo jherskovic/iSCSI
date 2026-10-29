@@ -174,7 +174,7 @@ struct DiscoveryView: View {
     private func search() {
         isSearching = true
         failure = nil
-        let asked = Search(host: host.trimmingCharacters(in: .whitespaces),
+        let asked = Search(host: TargetPortal.host(typed: host),
                            port: UInt16(port) ?? defaultPort,
                            isNVMe: isNVMe,
                            chapUser: isNVMe ? "" : chapUser,

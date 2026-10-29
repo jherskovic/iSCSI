@@ -24,8 +24,9 @@ public enum MountpointTag {
         return String(digest.map { String(format: "%02x", $0) }.joined().prefix(16))
     }
 
-    /// Legacy portal spelling for the tag; use MountResourceURL for URLs.
-    /// The default port is omitted: pre-existing tags hashed a bare host.
+    /// How a portal is spelled in the tag. The default port is omitted:
+    /// pre-existing tags hashed a bare host. Not a URL authority — an IPv6 host
+    /// stays unbracketed here; `MountResourceURL` builds the URL.
     public static func portal(host: String, port: UInt16) -> String {
         port == 3260 ? host : "\(host):\(port)"
     }

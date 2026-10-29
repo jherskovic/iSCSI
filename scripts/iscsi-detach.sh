@@ -13,9 +13,17 @@ PORTAL="${1:?usage: iscsi-detach.sh <portal> <target-iqn> [lun]}"
 TARGET="${2:?usage: iscsi-detach.sh <portal> <target-iqn> [lun]}"
 LUN="${3:-0}"
 
+# The same tag iscsi-attach.sh derives: an IPv6 portal ([fdbd::34]:3261) is
+# hashed without its brackets.
+case "$PORTAL" in
+    \[*\]*) V6="${PORTAL#\[}"; V6="${V6%%\]*}"
+            TAG_PORTAL="$V6${PORTAL#*\]}" ;;
+    *)      TAG_PORTAL="$PORTAL" ;;
+esac
+
 REAL_USER="${SUDO_USER:-$(whoami)}"
 REAL_HOME=$(eval echo "~$REAL_USER")
-TAG=$(printf '%s|%s|%s' "$PORTAL" "$TARGET" "$LUN" | shasum -a 256 | cut -c1-16)
+TAG=$(printf '%s|%s|%s' "$TAG_PORTAL" "$TARGET" "$LUN" | shasum -a 256 | cut -c1-16)
 HIDDEN="$REAL_HOME/Library/Caches/me.herko.iSCSIInitiator/$TAG"
 
 IMG="$HIDDEN/lun0.img"

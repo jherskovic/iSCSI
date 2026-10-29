@@ -58,4 +58,18 @@ public struct TargetPortal: Sendable, Equatable {
         }
         self.init(host: String(host), port: port, portalGroupTag: tag)
     }
+
+    /// An Address field's text in the spelling a record must hold: trimmed,
+    /// and without the brackets a URL habit puts around an IPv6 literal. The
+    /// daemon looks targets up by this string and `NWEndpoint.Host` resolves a
+    /// bracketed one as a DNS name. No host name contains a bracket, so the
+    /// pair is dropped unexamined; a port glued on after it is left for attach
+    /// to refuse with a message that says where the port goes.
+    public static func host(typed: String) -> String {
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 2, trimmed.hasPrefix("["), trimmed.hasSuffix("]") else {
+            return trimmed
+        }
+        return String(trimmed.dropFirst().dropLast())
+    }
 }

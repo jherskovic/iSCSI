@@ -548,7 +548,7 @@ struct TargetEditor: View {
 
     private var isValid: Bool {
         !displayName.trimmingCharacters(in: .whitespaces).isEmpty
-            && !host.trimmingCharacters(in: .whitespaces).isEmpty
+            && !TargetPortal.host(typed: host).isEmpty
             && !targetIQN.trimmingCharacters(in: .whitespaces).isEmpty
             && UInt16(port) != nil && UInt64(lun) != nil
             && !nvmeIncomplete
@@ -565,7 +565,7 @@ struct TargetEditor: View {
         let record = TargetRecord(
             id: existing?.id ?? UUID().uuidString,
             displayName: displayName.trimmingCharacters(in: .whitespaces),
-            host: host.trimmingCharacters(in: .whitespaces),
+            host: TargetPortal.host(typed: host),
             port: UInt16(port) ?? (isNVMe ? 4420 : 3260),
             targetIQN: targetIQN.trimmingCharacters(in: .whitespaces),
             lun: UInt64(lun) ?? (isNVMe ? 1 : 0),

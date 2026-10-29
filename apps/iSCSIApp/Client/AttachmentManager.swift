@@ -9,7 +9,7 @@
 //
 //  Two layers, and the order matters in both directions:
 //
-//      iscsi://portal/target/lun  --mount -F-->  ~/Library/Caches/.../<tag>/lun0.img
+//      iscsi://host[:port]/target/lun  --mount -F-->  ~/Library/Caches/.../<tag>/lun0.img
 //      lun0.img  --hdiutil attach-->  /dev/diskN  --DiskArbitration-->  /Volumes/…
 //
 
@@ -34,6 +34,7 @@ struct Attachment: Identifiable, Equatable, Sendable {
 }
 
 enum AttachmentError: LocalizedError {
+    case invalidAddress(String)
     case fskitMountFailed(String, duplicates: [String])
     case noImageServed(String)
     case imageAttachFailed(String)
@@ -41,6 +42,8 @@ enum AttachmentError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .invalidAddress(let host):
+            return "“\(host)” is not an address the target can be reached at."
         case .fskitMountFailed(let detail, let duplicates):
             if duplicates.isEmpty {
                 return "Could not serve the LUN as a file: \(detail)"
@@ -60,6 +63,9 @@ enum AttachmentError: LocalizedError {
 
     var recoverySuggestion: String? {
         switch self {
+        case .invalidAddress:
+            return "Edit the target: enter a host name, an IPv4 address or an IPv6 "
+                 + "address, without brackets, and put the port in the Port field."
         case .fskitMountFailed(_, let duplicates):
             if duplicates.isEmpty {
                 return "Check that the background service is running and the filesystem "
@@ -145,8 +151,9 @@ final class AttachmentManager: ObservableObject {
         // `-t iSCSI` is the FSKit module's short name, not a protocol; the
         // scheme only names the protocol for anyone reading the mount table,
         // and the daemon decides from the target name.
-        let url = try MountResourceURL.make(host: target.host, port: target.port,
-                                            target: target.targetIQN, lun: target.lun).absoluteString
+        guard let url = MountResourceURL.make(host: target.host, port: target.port,
+                                              target: target.targetIQN, lun: target.lun)?.absoluteString
+        else { throw AttachmentError.invalidAddress(target.host) }
         let targetID = target.id
 
         try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)

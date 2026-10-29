@@ -11,6 +11,9 @@
 //    nvme://host[:port]/<nqn>/<nsid>         -> the same, over NVMe/TCP; the
 //                                               daemon decides from the name
 //
+//  An IPv6 host is bracketed, as any URL authority requires:
+//    iscsi://[fe80::1%25en0]:3261/<iqn>/<lun>   (MountResourceURL builds these)
+//
 //  ⚠️ There is NO barrier signal: `synchronize` is never called
 //  (docs/backend-a-fskit-notes.md). The only durability hook is `closeItem`
 //  with no retained modes, so the store flushes there and the target should
@@ -177,6 +180,8 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         fsLog.log("connecting to iscsid: host=\(host, privacy: .public) target=\(target, privacy: .public) lun=\(lun)")
         // `url.user` is deliberately ignored: a mount URL must not name which
         // stored secret root spends. The daemon decides from its own record.
+        // `host` is already the record's spelling: `url.host` drops an IPv6
+        // literal's brackets and decodes the `%25` before a zone.
         return try DaemonStore(host: host, port: url.port ?? 3260,
                                target: target, lun: lun)
     }
