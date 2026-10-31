@@ -64,6 +64,14 @@ embed destination) by Swift's per-process-randomized `Dictionary` iteration,
 so an unmodified `project.yml` can regenerate into a spuriously different
 `.pbxproj` — and CI, which does set the env var, uses it as its baseline.
 
+**Regenerate from a checkout directory named `iSCSI`.** xcodegen names the
+`..` folder reference after the checkout's basename, so a clone called
+`iSCSI2` regenerates with an `iSCSI` → `iSCSI2` group rename that CI (whose
+checkout is `iSCSI`) will flag as drift. A symlink does not help; xcodegen
+resolves it. When the clone has another name, regenerate in a throwaway local
+clone named `iSCSI` and copy the `.pbxproj` back — the diff should then be
+exactly the lines you meant to change.
+
 Two schemes. **iSCSI Initiator** is what ships (app + FSKit extension +
 `iscsid` inside the bundle). **iSCSIDext-dev** builds the parked DriverKit
 extension alone, for a SIP-off machine.
