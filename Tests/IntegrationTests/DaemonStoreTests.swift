@@ -124,6 +124,10 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
                          reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func testConnection(host: String, port: NSNumber, targetIQN: String, lun: NSNumber,
                         reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
+    func listUnits(host: String, port: NSNumber, targetIQN: String,
+                   chapUser: String?, chapSecret: String?,
+                   interfaceName: String?, interfaceFallback: Bool,
+                   reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
 }
 
 @Suite("Volume data path")

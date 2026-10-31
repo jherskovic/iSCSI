@@ -66,6 +66,14 @@ struct NVMeDaemonCoreTests {
         #expect(await core.sessionHandles().isEmpty)
     }
 
+    @Test func listUnitsOverNVMeNamesTheNamespacesWithTheirGeometry() async throws {
+        let disk = RAMDisk(blockSize: 4096, capacityBlocks: 4096)
+        let (core, _, cleanup) = makeDualDaemon(nvmeDisk: disk)
+        defer { cleanup() }
+        let units = try await core.listUnits(host: "nas", port: 4420, targetIQN: nqn)
+        #expect(units == [LUNInfo(lun: 1, blockSize: 4096, blockCount: 4096)])
+    }
+
     @Test func iscsiAndNVMeSessionsCoexistInOneRegistry() async throws {
         let (core, _, cleanup) = makeDualDaemon()
         defer { cleanup() }

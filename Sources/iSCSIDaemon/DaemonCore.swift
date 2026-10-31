@@ -87,6 +87,63 @@ public actor DaemonCore {
         return try await NVMeDiscovery.getLogPage(transport: transport, host: hostIdentity)
     }
 
+    /// Everything behind a target, with its geometry: a session the daemon
+    /// opens, asks (REPORT LUNS, or the active namespace list), probes each
+    /// unit's capacity on, and closes. For the target sheet's LUN picker —
+    /// the one place a user can learn that a Synology maps its first LUN at
+    /// 1 before attaching 0 and meeting LIO's 32 KiB placeholder (GitHub #3).
+    /// Geometry is best effort per unit: one that refuses READ CAPACITY is
+    /// still listed, without a size. Probing stops at `maxUnitsProbed` so a
+    /// target with hundreds of LUNs does not hold the sheet.
+    public func listUnits(host: String, port: UInt16, targetIQN: String,
+                          chap: CHAP.Credentials? = nil,
+                          binding: InterfaceBinding? = nil) async throws -> [LUNInfo] {
+        let path = ConnectedPathBox(label: targetIQN)
+        // The unit named here only shapes a device that is discarded; the
+        // list and the probes run on the session.
+        let session: any FabricSession
+        if IQN.isNQN(targetIQN) {
+            (session, _) = try await attachNVMe(host: host, port: port, subsystemNQN: targetIQN,
+                                                nsid: 1, chap: chap, writeThrough: true,
+                                                binding: binding, path: path)
+        } else {
+            (session, _) = try await attachISCSI(host: host, port: port, targetIQN: targetIQN,
+                                                 lun: 0, chap: chap, writeThrough: true,
+                                                 binding: binding, path: path)
+        }
+        do {
+            var units = try await session.listUnits()
+            for index in units.indices.prefix(Self.maxUnitsProbed) {
+                guard let device = Self.device(for: units[index].lun, on: session),
+                      let geometry = try? await device.readCapacity() else { continue }
+                units[index].blockSize = geometry.blockSize
+                units[index].blockCount = geometry.blockCount
+            }
+            try? await session.logout()
+            return units
+        } catch {
+            try? await session.logout()
+            throw error
+        }
+    }
+
+    static let maxUnitsProbed = 64
+
+    /// A block device over an existing session for one more unit — what
+    /// `listUnits` reads each capacity through.
+    private static func device(for unit: UInt64, on session: any FabricSession)
+        -> (any BlockDeviceBackend)? {
+        switch session {
+        case let iscsi as ISCSIFabricSession:
+            return ISCSIBlockDevice(session: iscsi.session, lun: unit, writeThrough: true)
+        case let nvme as NVMeFabricSession:
+            guard let nsid = UInt32(exactly: unit) else { return nil }
+            return NVMeBlockDevice(controller: nvme.controller, nsid: nsid, writeThrough: true)
+        default:
+            return nil
+        }
+    }
+
     public func login(
         host: String,
         port: UInt16,

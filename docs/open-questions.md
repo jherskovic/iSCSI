@@ -676,8 +676,11 @@ reporter's data was never at risk — only the diagnosis was.
 
 Since then `DaemonCore.login` runs REPORT LUNS and refuses a LUN the target
 does not list, naming the ones it does (`DaemonUnitError`,
-`loginRefusesLUNTheTargetDoesNotReport`). Newer kernels also mark the
-placeholder "not connected" in INQUIRY; DSM 7's does not.
+`loginRefusesLUNTheTargetDoesNotReport`), and the target sheet has a Find
+button that asks the target what it has (`listUnits`, a session the daemon
+opens and closes itself) and fills the field when there is one answer. Newer
+kernels also mark the placeholder "not connected" in INQUIRY; DSM 7's does
+not.
 
 **What this does not catch:** a target with *no* LUN mapped for this
 initiator. LIO's REPORT LUNS then lists LUN 0 — the placeholder itself — and

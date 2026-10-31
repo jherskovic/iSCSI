@@ -97,6 +97,21 @@ struct DaemonCoreTests {
         }
     }
 
+    @Test func listUnitsNamesEveryLUNWithItsGeometry() async throws {
+        var config = MockTargetConfig()
+        config.luns = [1, 300]
+        let disk = RAMDisk(blockSize: 512, capacityBlocks: 4096)
+        let (core, cleanup) = makeDaemon(disk: disk, config: config)
+        defer { cleanup() }
+
+        let units = try await core.listUnits(host: "nas", port: 3260,
+                                             targetIQN: "iqn.2026-08.test.example:disk0")
+        #expect(units == [LUNInfo(lun: 1, blockSize: 512, blockCount: 4096),
+                          LUNInfo(lun: 300, blockSize: 512, blockCount: 4096)])
+        // The listing's session is never registered: nothing to log out.
+        #expect(await core.sessionHandles().isEmpty)
+    }
+
     @Test func loginToleratesAnEmptyLUNList() async throws {
         // A target that answers REPORT LUNS with nothing gets the old
         // behaviour: READ CAPACITY decides.

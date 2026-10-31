@@ -246,6 +246,14 @@ struct TargetEditor: View {
     @State private var localCacheGB: Int?
     /// Mirrors `TargetRecord.autoAttach`.
     @State private var autoAttach: Bool
+    /// The target's own answer to "which LUN?", from Find: REPORT LUNS (or
+    /// the namespace list) with sizes. nil until asked. A Synology maps its
+    /// first LUN at 1, and typing the default 0 there attaches a 32 KiB
+    /// placeholder — the picker exists so the number comes from the target.
+    @State private var foundUnits: [LUNInfo]?
+    @State private var findingUnits = false
+    @State private var findNote: String?
+    @State private var findFailed = false
 
     init(model: AppModel, target: TargetRecord?) {
         self.model = model
@@ -310,7 +318,33 @@ struct TargetEditor: View {
                     TextField(isNVMe ? "Subsystem NQN" : "Target", text: $targetIQN,
                               prompt: Text(isNVMe ? "nqn.2011-06.com.truenas:uuid:…:disk0"
                                                   : "iqn.2026-08.com.example:disk0"))
-                    TextField(isNVMe ? "Namespace ID" : "LUN", text: $lun)
+                    HStack {
+                        TextField(isNVMe ? "Namespace ID" : "LUN", text: $lun)
+                        if let foundUnits, !foundUnits.isEmpty {
+                            Menu("Choose") {
+                                ForEach(foundUnits, id: \.lun) { unit in
+                                    Button(unitTitle(unit)) { lun = String(unit.lun) }
+                                }
+                            }
+                            .fixedSize()
+                        }
+                        Button("Find") { findUnits() }
+                            .disabled(findingUnits || !canFindUnits)
+                            .help(credentialIncomplete
+                                  ? "Enter the CHAP secret first."
+                                  : "Ask the target which \(isNVMe ? "namespaces" : "LUNs") it has.")
+                    }
+                    if findingUnits {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Asking the target…")
+                        }
+                        .font(.caption).foregroundStyle(.secondary)
+                    } else if let findNote {
+                        Text(findNote)
+                            .font(.caption)
+                            .foregroundStyle(findFailed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    }
                 }
 
                 Section {
@@ -553,6 +587,71 @@ struct TargetEditor: View {
             && UInt16(port) != nil && UInt64(lun) != nil
             && !nvmeIncomplete
             && !secretTooShort && !credentialIncomplete && !mutualHalfConfigured
+    }
+
+    /// Enough to open a session: the portal fields, a name, and no CHAP user
+    /// waiting on a secret. Saving is not required — like Discover, this runs
+    /// before the record exists.
+    private var canFindUnits: Bool {
+        !TargetPortal.host(typed: host).isEmpty
+            && UInt16(port) != nil
+            && !targetIQN.trimmingCharacters(in: .whitespaces).isEmpty
+            && targetIQN.trimmingCharacters(in: .whitespaces) != "nqn."
+            && !credentialIncomplete && !secretTooShort
+    }
+
+    private func unitTitle(_ unit: LUNInfo) -> String {
+        let number = "\(isNVMe ? "Namespace" : "LUN") \(unit.lun)"
+        guard let bytes = unit.byteCount else { return number }
+        return number + " — " + ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    /// Ask the target what it has. One answer fills the field outright; more
+    /// than one goes in the Choose menu, with a note when the typed number
+    /// is not among them. Errors land inline, like Discover's: the fields
+    /// to fix are right here.
+    private func findUnits() {
+        findingUnits = true
+        findNote = nil
+        findFailed = false
+        let asked = (host: TargetPortal.host(typed: host),
+                     port: UInt16(port) ?? (isNVMe ? 4420 : 3260),
+                     name: targetIQN.trimmingCharacters(in: .whitespaces),
+                     isNVMe: isNVMe)
+        let typedUser = chapUser.trimmingCharacters(in: .whitespaces)
+        let interface = InterfaceBinding.named(networkInterface, fallback: interfaceFallback)
+        Task {
+            defer { findingUnits = false }
+            do {
+                let units = try await DaemonConnection.listUnits(
+                    host: asked.host, port: asked.port, targetIQN: asked.name,
+                    chapUser: (asked.isNVMe || typedUser.isEmpty) ? nil : typedUser,
+                    chapSecret: (asked.isNVMe || chapSecret.isEmpty) ? nil : chapSecret,
+                    interface: interface)
+                foundUnits = units
+                let word = asked.isNVMe ? "namespace" : "LUN"
+                let numbers = units.map { String($0.lun) }.joined(separator: ", ")
+                if units.isEmpty {
+                    findFailed = true
+                    findNote = "The target reports no \(word)s."
+                } else if units.count == 1, let only = units.first {
+                    lun = String(only.lun)
+                    findNote = "The target has one \(word): \(unitTitle(only))."
+                } else if units.contains(where: { String($0.lun) == lun }) {
+                    findNote = "The target has \(word)s \(numbers)."
+                } else {
+                    findFailed = true
+                    findNote = "The target has \(word)s \(numbers); \(lun) is not one of them. "
+                             + "Choose one."
+                }
+            } catch {
+                foundUnits = nil
+                findFailed = true
+                let ns = error as NSError
+                findNote = [ns.localizedDescription, ns.localizedRecoverySuggestion]
+                    .compactMap { $0 }.joined(separator: " ")
+            }
+        }
     }
 
     private func save() {

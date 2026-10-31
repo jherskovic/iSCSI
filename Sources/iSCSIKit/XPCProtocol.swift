@@ -161,6 +161,20 @@ import Foundation
     func testConnection(host: String, port: NSNumber, targetIQN: String, lun: NSNumber,
                         reply: @escaping (Data?, Error?) -> Void)
 
+    /// The LUNs (or namespaces) behind a target, each with its size, from a
+    /// session the daemon opens and closes itself — the target sheet's LUN
+    /// picker. Credentials: a typed `chapUser`/`chapSecret` is used and
+    /// validated the way `discoverTargets` takes one, since this too runs
+    /// before anything is saved; otherwise a saved record for this name at
+    /// this portal (any LUN) lends its identity the way `login` resolves it;
+    /// otherwise the session is unauthenticated, discovery's exposure.
+    /// `interfaceName`/`interfaceFallback` as for `discoverTargets`. Reply:
+    /// JSON `[LUNInfo]`.
+    func listUnits(host: String, port: NSNumber, targetIQN: String,
+                   chapUser: String?, chapSecret: String?,
+                   interfaceName: String?, interfaceFallback: Bool,
+                   reply: @escaping (Data?, Error?) -> Void)
+
     /// Delete everything the daemon owns: targets file, its directory, every
     /// stored CHAP secret. Must run while the daemon still exists — the
     /// secrets live in *its* keychain context and are unreachable after

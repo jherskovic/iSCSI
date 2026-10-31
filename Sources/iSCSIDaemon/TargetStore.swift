@@ -74,6 +74,17 @@ public actor TargetStore {
         }
     }
 
+    /// The configured target for this name at this portal, whatever LUN its
+    /// record names. For listing a target's units — the step that tells the
+    /// user what the LUN should be, so it cannot be keyed on it.
+    public func record(host: String, port: UInt16, targetIQN: String) -> TargetRecord? {
+        all().first {
+            $0.host.caseInsensitiveCompare(host) == .orderedSame
+                && $0.port == port
+                && $0.targetIQN == targetIQN
+        }
+    }
+
     private func isSameTarget(_ a: TargetRecord, _ b: TargetRecord) -> Bool {
         a.host.caseInsensitiveCompare(b.host) == .orderedSame
             && a.port == b.port

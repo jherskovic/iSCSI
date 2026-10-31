@@ -168,6 +168,22 @@ extension DaemonConnection {
         }
     }
 
+    /// The LUNs (or namespaces) behind a target, with sizes, from a session
+    /// the daemon opens and closes itself. Credentials as for discovery:
+    /// typed ones when given, otherwise the saved record's.
+    static func listUnits(host: String, port: UInt16, targetIQN: String,
+                          chapUser: String?, chapSecret: String?,
+                          interface: InterfaceBinding? = nil) async throws -> [LUNInfo] {
+        try await decode([LUNInfo].self) { proxy, finish in
+            proxy.listUnits(host: host, port: NSNumber(value: port), targetIQN: targetIQN,
+                            chapUser: chapUser, chapSecret: chapSecret,
+                            interfaceName: interface?.name,
+                            interfaceFallback: interface?.fallback ?? false) { data, error in
+                finish(data, error)
+            }
+        }
+    }
+
     static func sessions() async throws -> [SessionInfo] {
         try await decode([SessionInfo].self) { proxy, finish in
             proxy.listSessionsDetailed { data, error in finish(data, error) }

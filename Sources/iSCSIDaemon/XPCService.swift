@@ -436,6 +436,50 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
+    public func listUnits(host: String, port: NSNumber, targetIQN: String,
+                          chapUser: String?, chapSecret: String?,
+                          interfaceName: String?, interfaceFallback: Bool,
+                          reply: @escaping (Data?, Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            var presented: ISCSIError.LoginIdentity?
+            do {
+                let chap = try await self.listingCredentials(
+                    host: host, port: port.uint16Value, targetIQN: targetIQN,
+                    chapUser: chapUser, chapSecret: chapSecret)
+                presented = self.identity(targetIQN: targetIQN, chap: chap)
+                let units = try await core.listUnits(
+                    host: host, port: port.uint16Value, targetIQN: targetIQN, chap: chap,
+                    binding: InterfaceBinding.named(interfaceName, fallback: interfaceFallback))
+                box.value(try JSONEncoder().encode(units), nil)
+            } catch {
+                box.value(nil, ISCSIError.nsError(from: error,
+                                                  context: "Listing the units of \(targetIQN)",
+                                                  presentedAs: presented))
+            }
+        }
+    }
+
+    /// Which CHAP identity a unit listing presents. A secret typed into the
+    /// sheet wins, validated as discovery validates one: the user is entering
+    /// or changing it, and the sheet runs before Save. Otherwise the saved
+    /// record for this name at this portal — whatever LUN it names, since the
+    /// LUN is what the listing is for — lends its identity exactly as `login`
+    /// resolves it, refusals included. No record and nothing typed is an
+    /// unauthenticated session, which is what discovery already does.
+    private func listingCredentials(host: String, port: UInt16, targetIQN: String,
+                                    chapUser: String?, chapSecret: String?)
+        async throws -> CHAP.Credentials? {
+        if let chapUser, !chapUser.isEmpty, let chapSecret, !chapSecret.isEmpty {
+            return try CHAP.Credentials.validated(name: chapUser, secret: chapSecret)
+        }
+        guard let record = await targets.record(host: host, port: port, targetIQN: targetIQN) else {
+            return nil
+        }
+        return try await credentials(host: host, port: port, targetIQN: targetIQN,
+                                     lun: record.lun).chap
+    }
+
     public func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void) {
         if let denied = checkOwned(session) { reply(nil, denied); return }
         let box = SendableBox(reply)

@@ -340,6 +340,46 @@ struct XPCServiceTests {
     // target record exists yet); it validates so a too-short secret fails
     // here, not as an unexplained portal "authentication failure".
 
+    // The LUN picker. A listing for a portal with no saved record runs
+    // unauthenticated, like discovery — the sheet runs before Save. A record
+    // that names a CHAP user it has no secret for refuses, like login: the
+    // listing must not quietly become the unauthenticated session a stranger
+    // could have opened.
+    @Test("listing the units of an unsaved target runs unauthenticated, like discovery")
+    func listUnitsWithoutARecord() async throws {
+        var config = MockTargetConfig()
+        config.luns = [1]
+        let (core, _harness, store, _) = try await makeCore(targetConfig: config)
+        let service = ISCSIXPCService(core: core, targets: store)
+        let (data, error) = await withCheckedContinuation { c in
+            service.listUnits(host: "elsewhere", port: 3260, targetIQN: Self.targetIQN,
+                              chapUser: nil, chapSecret: nil,
+                              interfaceName: nil, interfaceFallback: false) {
+                c.resume(returning: ($0, $1))
+            }
+        }
+        #expect(error == nil)
+        let units = try JSONDecoder().decode([LUNInfo].self, from: data ?? Data())
+        #expect(units.map(\.lun) == [1])
+        #expect(units.first?.blockCount != nil, "each unit carries its geometry")
+    }
+
+    @Test("listing units through a record whose CHAP secret is missing is refused")
+    func listUnitsRefusesAMissingSecret() async throws {
+        let (core, _harness, store, _) = try await makeCore { $0.chapUser = "someone" }
+        let service = ISCSIXPCService(core: core, targets: store)
+        let (data, error) = await withCheckedContinuation { c in
+            service.listUnits(host: "mock", port: 3260, targetIQN: Self.targetIQN,
+                              chapUser: nil, chapSecret: nil,
+                              interfaceName: nil, interfaceFallback: false) {
+                c.resume(returning: ($0, $1))
+            }
+        }
+        #expect(data == nil)
+        let description = error.map { ($0 as NSError).localizedDescription } ?? ""
+        #expect(description.contains("no CHAP secret"), Comment(rawValue: description))
+    }
+
     @Test("discovery refuses a secret shorter than the RFC floor before connecting")
     func discoveryValidatesSecretLength() async throws {
         let (core, _harness, store, _) = try await makeCore()
