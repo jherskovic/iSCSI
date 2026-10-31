@@ -119,7 +119,16 @@ public actor DaemonCore {
                                                       lun: lun, chap: chap, writeThrough: writeThrough,
                                                       binding: binding, path: path)
         }
-        _ = try await device.readCapacity() // fail fast if the LUN is bad
+        // Two checks before the session is anyone's: that the unit is one the
+        // target reports, and that its geometry parses. A session that fails
+        // either is logged out here — nothing else holds a handle to it.
+        do {
+            try await Self.confirmUnitReported(lun, by: session, isNVMe: IQN.isNQN(targetIQN))
+            _ = try await device.readCapacity() // fail fast if the LUN is bad
+        } catch {
+            try? await session.logout()
+            throw error
+        }
 
         // Log the cache policy once per session: WCE set without
         // write-through means durability depends on flushes we never receive.
@@ -327,6 +336,23 @@ public actor DaemonCore {
     public func reportLUNs(_ handle: String) async throws -> [LUNInfo] {
         guard let entry = sessions[handle] else { throw SessionError.notActive }
         return try await entry.session.listUnits()
+    }
+
+    /// Refuse a LUN the target does not list. READ CAPACITY alone cannot tell:
+    /// a Linux LIO target (Synology, TrueNAS) answers LUN 0 with a 32 KiB
+    /// placeholder ramdisk when nothing is mapped there, and that placeholder
+    /// has a perfectly valid geometry — GitHub #3 attached it as a 64-block
+    /// disk and offered to format it. The list is advisory where the target
+    /// cannot produce one: a failed or empty REPORT LUNS lets the geometry
+    /// check decide, as it always has.
+    static func confirmUnitReported(_ lun: UInt64, by session: any FabricSession,
+                                    isNVMe: Bool) async throws {
+        guard let units = try? await session.listUnits(), !units.isEmpty else { return }
+        let available = units.map(\.lun).sorted()
+        guard !available.contains(lun) else { return }
+        DaemonLog.session("refusing \(isNVMe ? "namespace" : "LUN") \(lun): the target reports "
+                          + available.map(String.init).joined(separator: ", "))
+        throw DaemonUnitError.notPresent(requested: lun, available: available, isNVMe: isNVMe)
     }
 
     /// Decode one 8-byte REPORT LUNS entry (SAM-2 first-level field):

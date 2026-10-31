@@ -62,6 +62,53 @@ struct DaemonCoreTests {
         cleanup()
     }
 
+    // GitHub #3: a Synology (LIO) target with its LUN mapped at 1 answers LUN
+    // 0 with a 32 KiB placeholder whose geometry is valid. REPORT LUNS is the
+    // check that catches it, and the refusal must name the LUN that exists.
+    @Test func loginRefusesLUNTheTargetDoesNotReport() async throws {
+        var config = MockTargetConfig()
+        config.luns = [1]
+        let (core, cleanup) = makeDaemon(config: config)
+        defer { cleanup() }
+
+        await #expect(throws: DaemonUnitError.notPresent(requested: 0, available: [1], isNVMe: false)) {
+            try await core.login(host: "nas", port: 3260,
+                                 targetIQN: "iqn.2026-08.test.example:disk0", lun: 0)
+        }
+        // A refused login leaves no session behind.
+        #expect(await core.sessionHandles().isEmpty)
+
+        let error = DaemonUnitError.notPresent(requested: 0, available: [1], isNVMe: false)
+        #expect(error.errorDescription == "The target has no LUN 0; it reports LUN 1.")
+        #expect(error.recoverySuggestion == "Edit the target and set its LUN to 1.")
+    }
+
+    @Test func loginAcceptsTheLUNTheTargetReports() async throws {
+        var config = MockTargetConfig()
+        config.luns = [1, 300] // one in each REPORT LUNS addressing form
+        let (core, cleanup) = makeDaemon(config: config)
+        defer { cleanup() }
+
+        for lun: UInt64 in [1, 300] {
+            let handle = try await core.login(host: "nas", port: 3260,
+                                              targetIQN: "iqn.2026-08.test.example:disk0", lun: lun)
+            #expect(try await core.reportLUNs(handle).map(\.lun) == [1, 300])
+            try await core.logout(handle)
+        }
+    }
+
+    @Test func loginToleratesAnEmptyLUNList() async throws {
+        // A target that answers REPORT LUNS with nothing gets the old
+        // behaviour: READ CAPACITY decides.
+        var config = MockTargetConfig()
+        config.luns = []
+        let (core, cleanup) = makeDaemon(config: config)
+        defer { cleanup() }
+        let handle = try await core.login(host: "nas", port: 3260,
+                                          targetIQN: "iqn.2026-08.test.example:disk0", lun: 0)
+        try await core.logout(handle)
+    }
+
     @Test func discoverThroughDaemon() async throws {
         var config = MockTargetConfig()
         config.discoveryTargets = [

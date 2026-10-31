@@ -78,6 +78,11 @@ public struct MockTargetConfig: Sendable {
     public var tsih: UInt16 = 0x0BAD
     /// Targets advertised by SendTargets.
     public var discoveryTargets: [(name: String, addresses: [String])] = []
+    /// What REPORT LUNS answers. Every LUN serves the same `RAMDisk`; the
+    /// list only decides which numbers the initiator is told exist. Empty
+    /// answers with a zero-length list, the way a target with nothing mapped
+    /// might.
+    public var luns: [UInt64] = [0]
     public var faults = MockTargetFaults()
 
     public init() {}
@@ -565,9 +570,21 @@ public actor MockTarget {
             data.setBE32(UInt32(disk.blockSize), 8)
             try await sendReadResult(for: command, data: data)
         case 0xA0: // REPORT LUNS
-            var data = Data(count: 16)
-            data.setBE32(8, 0) // one 8-byte LUN entry
-            try await sendReadResult(for: command, data: data)
+            // SAM-2 first-level addressing: peripheral (00b) for LUNs below
+            // 256, flat-space (01b) above — the same two forms the daemon's
+            // decoder accepts.
+            var data = Data(count: 8 + 8 * config.luns.count)
+            data.setBE32(UInt32(8 * config.luns.count), 0)
+            for (index, lun) in config.luns.enumerated() {
+                let offset = 8 + 8 * index
+                if lun < 256 {
+                    data.setU8(UInt8(lun), offset + 1)
+                } else {
+                    data.setBE16(UInt16(0x4000 | (lun & 0x3FFF)), offset)
+                }
+            }
+            let wanted = command.cdb.count >= 10 ? Int(command.cdb.beU32(6)) : data.count
+            try await sendReadResult(for: command, data: data.prefix(wanted))
         case 0x28, 0x88: // READ (10) / READ (16)
             let (lba, blocks) = parseReadWrite(command.cdb)
             guard let payload = await disk.read(lba: lba, blocks: blocks) else {

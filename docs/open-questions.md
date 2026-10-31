@@ -663,6 +663,30 @@ To fix, in its own branch: before asking for the restart, read the mount table
 FSKit volume of any account is mounted. Also warn in the consent prompt.
 Restarting the Mac remains the safe way.
 
+## 15. LIO's placeholder LUN 0, when nothing at all is mapped
+
+GitHub #3 (Synology DS423+, DSM 7.4.1, 2026-10): a 1 TB LUN attached as a
+**32768-byte** disk — 64 × 512, which the app then offered to format. That
+number is Linux LIO's "virtual LUN 0", an `rd_pages=8` ramdisk the target
+answers LUN 0 with whenever the initiator has no LUN mapped there. Synology
+numbers mapped LUNs from 1; TrueNAS maps the first extent at 0, which is why
+it never showed up here. The placeholder's READ CAPACITY is perfectly valid,
+so the geometry check passed it. It is write-protected in LIO, so the
+reporter's data was never at risk — only the diagnosis was.
+
+Since then `DaemonCore.login` runs REPORT LUNS and refuses a LUN the target
+does not list, naming the ones it does (`DaemonUnitError`,
+`loginRefusesLUNTheTargetDoesNotReport`). Newer kernels also mark the
+placeholder "not connected" in INQUIRY; DSM 7's does not.
+
+**What this does not catch:** a target with *no* LUN mapped for this
+initiator. LIO's REPORT LUNS then lists LUN 0 — the placeholder itself — and
+the login proceeds to a 32 KiB disk exactly as before. The honest next check
+is INQUIRY: the placeholder identifies as `LIO-ORG` / `RAMDISK-MCP` (or the
+`not connected` peripheral qualifier on kernels new enough to set it), while
+a Synology LUN identifies as `SYNOLOGY`. Unverified against a real Synology;
+the reporter's retest with LUN 1 is what will confirm the diagnosis above.
+
 ## A note on method
 
 Four things were got wrong during this work and three had the same cause:
