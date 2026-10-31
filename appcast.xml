@@ -5,6 +5,14 @@
     <description>Updates for iSCSI Initiator.</description>
     <language>en</language>
     <item>
+      <title>Version 0.8.1</title>
+      <pubDate>Sat, 31 Oct 2026 23:47:15 +0000</pubDate>
+      <sparkle:version>52</sparkle:version>
+      <sparkle:shortVersionString>0.8.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/jherskovic/iSCSI/releases/download/v0.8.1/iSCSI-Initiator-0.8.1.dmg" length="8790266" type="application/octet-stream" sparkle:edSignature="leE1i8uuJlhKuR4kFUaGiwUpMQR4iU5tyx+APiIYNTBMmu87FvIQU6pndy/ruH+pr435WyPLAjRVSk6lgMa5Ag==" />
+    </item>
+    <item>
       <title>Version 0.8.0</title>
       <pubDate>Sat, 24 Oct 2026 22:52:23 +0000</pubDate>
       <sparkle:version>51</sparkle:version>
