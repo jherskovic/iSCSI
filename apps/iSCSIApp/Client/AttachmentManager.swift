@@ -12,6 +12,9 @@
 //      iscsi://host[:port]/target/lun  --mount -F-->  ~/Library/Caches/.../<tag>/lun0.img
 //      lun0.img  --hdiutil attach-->  /dev/diskN  --DiskArbitration-->  /Volumes/…
 //
+//  Each volume is then remounted `noatime` (`NoATimeRemount`): on a LUN, an
+//  access-time update is a write to the target.
+//
 
 import AppKit
 import Foundation
@@ -195,7 +198,9 @@ final class AttachmentManager: ObservableObject {
             switch ImageAttachPlan.decide(fskitWasMounted: fskitWasMounted,
                                           existingDevice: Self.attachedDevice(forImage: imagePath)) {
             case .reuse(let existing):
-                return (existing, Self.mountPoints(ofDevice: existing))
+                let volumes = Self.mountPoints(ofDevice: existing)
+                Self.disableAccessTimes(on: volumes)
+                return (existing, volumes)
             case .replaceStale(let stale):
                 // Left by a logout that took the FSKit mount down but not the
                 // device; it serves nothing, so forcing it off loses nothing.
@@ -226,7 +231,9 @@ final class AttachmentManager: ObservableObject {
                 }
                 result = bare
             }
-            return Self.parseAttachPlist(result.stdout)
+            let attached = Self.parseAttachPlist(result.stdout)
+            Self.disableAccessTimes(on: attached.volumes)
+            return attached
         }.value
 
         // Recorded before anything else can go wrong: throwing after the
@@ -355,6 +362,29 @@ final class AttachmentManager: ObservableObject {
 
     nonisolated private static func isMounted(_ path: String) -> Bool {
         mountTable().contains { $0.on == path }
+    }
+
+    /// Remount each volume `noatime`, keeping its other options
+    /// (`NoATimeRemount` says why both halves matter). Best effort: a volume
+    /// that refuses keeps its access times and the attach still succeeds —
+    /// this saves metadata writes, it is not what makes the volume usable.
+    /// Runs on the attach's detached task, so a slow remount blocks nothing.
+    nonisolated private static func disableAccessTimes(on volumes: [String]) {
+        for path in volumes {
+            var info = statfs()
+            guard statfs(path, &info) == 0,
+                  let options = NoATimeRemount.options(forMountFlags: info.f_flags)
+            else { continue }
+            let result = try? run("/sbin/mount", ["-u", "-o", options, path])
+            if result?.status == 0 {
+                attachLog.log("remounted \(path, privacy: .public) with \(options, privacy: .public)")
+            } else {
+                attachLog.error("""
+                    could not remount \(path, privacy: .public) noatime: \
+                    \(result?.combined ?? "mount did not run", privacy: .public)
+                    """)
+            }
+        }
     }
 
     /// Every mount on this Mac, every user's. getmntinfo: no subprocess, no
