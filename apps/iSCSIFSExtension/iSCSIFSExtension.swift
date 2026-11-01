@@ -205,7 +205,11 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         }
         do {
             let store = try makeStore(for: resource, localPath: path)
-            let volume = ProtoVolume(store: store)
+            let asyncReads = Self.asksForAsyncReads(resource)
+            fsLog.log("reads: \(asyncReads ? "async (experiment)" : "blocking", privacy: .public)")
+            let cacheGrant = Self.asksForCacheGrant(resource)
+            fsLog.log("kernel data cache: \(cacheGrant.map { "\($0.rawValue) (experiment)" } ?? "FSKit default", privacy: .public)")
+            let volume = ProtoVolume(store: store, asyncReads: asyncReads, cacheGrant: cacheGrant)
             // `loadResource` transitions notReady -> ready; `.active` here
             // makes FSKit reject the load ("unexpected container state").
             // The no-error form matters: `.ready(status:)` with POSIX code 0
@@ -227,6 +231,38 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         fsLog.log("unloadResource")
         reply(nil)
     }
+
+    /// EXPERIMENT (issue #4, docs/open-questions.md item 17): `?reads=async`
+    /// on the mount URL. Nothing the app builds carries it; it exists so one
+    /// installed build can be measured both ways, by hand, with `mount -F`.
+    private static func asksForAsyncReads(_ resource: FSResource) -> Bool {
+        guard let generic = resource as? FSGenericURLResource,
+              let items = URLComponents(url: generic.url, resolvingAgainstBaseURL: false)?.queryItems
+        else { return false }
+        return items.contains { $0.name == "reads" && $0.value == "async" }
+    }
+
+    /// EXPERIMENT (issue #4): `?cache=writethrough|readcache|nocache` makes the
+    /// volume answer the kernel's cache-mode requests itself (macOS 27's
+    /// `FSVolume.DataCacheHandler`) instead of leaving caching to FSKit.
+    private static func asksForCacheGrant(_ resource: FSResource) -> CacheGrant? {
+        guard let generic = resource as? FSGenericURLResource,
+              let items = URLComponents(url: generic.url, resolvingAgainstBaseURL: false)?.queryItems,
+              let value = items.first(where: { $0.name == "cache" })?.value
+        else { return nil }
+        return CacheGrant(rawValue: value)
+    }
+}
+
+/// What the volume grants the kernel for `lun0.img` when the cache experiment
+/// is on. Kept free of macOS 27 types so `ProtoVolume` can store it on 26.
+enum CacheGrant: String {
+    /// Reads cached; every write reaches `write(contents:…)` before it returns.
+    case writeThrough = "writethrough"
+    /// Reads cached; writes bypass the cache.
+    case readCache = "readcache"
+    /// Nothing cached: what `hdiutil`'s CRawDiskImage path behaves like.
+    case noCache = "nocache"
 }
 
 // MARK: - Volume
@@ -238,9 +274,19 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
     private let store: LUNStore
     private let root: ProtoItem
     private let image: ProtoItem
+    /// EXPERIMENT: answer reads from `asyncReadQueue` instead of on FSKit's
+    /// calling thread. See `read(from:…)`.
+    private let asyncReads: Bool
+    /// EXPERIMENT: nil leaves kernel caching to FSKit (shipping behaviour).
+    let cacheGrant: CacheGrant?
 
-    init(store: LUNStore) {
+    private static let asyncReadQueue = DispatchQueue(
+        label: "me.herko.iSCSIInitiator.fsext.reads", qos: .userInitiated, attributes: .concurrent)
+
+    init(store: LUNStore, asyncReads: Bool = false, cacheGrant: CacheGrant? = nil) {
         self.store = store
+        self.asyncReads = asyncReads
+        self.cacheGrant = cacheGrant
         self.root = ProtoItem(name: "/", type: .directory, id: .rootDirectory, size: 0)
         self.image = ProtoItem(name: kImageName, type: .file, id: kImageItemID, size: store.byteCount)
         super.init(volumeID: FSVolume.Identifier(uuid: kVolumeUUID),
@@ -418,6 +464,26 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
               length: Int,
               into buffer: FSMutableFileDataBuffer,
               replyHandler reply: @escaping (Int, (any Error)?) -> Void) {
+        guard asyncReads else {
+            Self.serve(store, offset, length, buffer, reply)
+            return
+        }
+        // EXPERIMENT (issue #4): return to FSKit at once and answer from a
+        // concurrent queue. If FSKit waits for this method to return before
+        // it hands over the next read, blocking here is what made reads
+        // serial; if it waits for the reply, this changes nothing. Assumes
+        // FSKit keeps `buffer` valid until `reply` — the reply handler is the
+        // only completion signal it has, but that is not documented, so the
+        // experiment is checked against a reference copy of the data.
+        let work = AsyncRead(store: store, buffer: buffer, reply: reply)
+        Self.asyncReadQueue.async {
+            Self.serve(work.store, offset, length, work.buffer, work.reply)
+        }
+    }
+
+    private static func serve(_ store: LUNStore, _ offset: off_t, _ length: Int,
+                              _ buffer: FSMutableFileDataBuffer,
+                              _ reply: @escaping (Int, (any Error)?) -> Void) {
         do {
             let n = try buffer.withUnsafeMutableBytes { raw -> Int in
                 try store.read(into: raw, at: UInt64(offset), length: min(length, raw.count))
@@ -477,5 +543,107 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
     func readSymbolicLink(_ item: FSItem,
                           replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void) {
         reply(nil, fs_errorForPOSIXError(EINVAL))
+    }
+}
+
+/// One read handed from FSKit's thread to `asyncReadQueue` (EXPERIMENT).
+/// FSKit's buffer and reply handler are not `Sendable`; they are used on
+/// exactly one thread after the hand-off, and FSKit's own calling convention
+/// already moves them between threads.
+private struct AsyncRead: @unchecked Sendable {
+    let store: LUNStore
+    let buffer: FSMutableFileDataBuffer
+    let reply: (Int, (any Error)?) -> Void
+}
+
+// MARK: - Kernel data cache (EXPERIMENT, macOS 27)
+
+/// Issue #4: with `diskutil image attach`, DiskImages reads `lun0.img`
+/// through the kernel's page cache and reads concurrently — but its writes
+/// waited there 10–30 s before reaching this extension, so a plain `fsync`
+/// stopped meaning "on the NAS" (docs/open-questions.md item 17). The page
+/// cache in question is this volume's own, and macOS 27 lets the volume say
+/// how the kernel may cache each item. Granting `.writeThrough` for
+/// `lun0.img` asks for cached reads with every write delivered here before it
+/// returns.
+///
+/// Active only when the mount URL carries `?cache=…`: FSKit reads
+/// `isDataCacheInhibited` once, after `loadResource`, and while it is true
+/// keeps routing open and close through `FSVolume.OpenCloseOperations`
+/// exactly as before.
+@available(macOS 27.0, *)
+extension ProtoVolume: FSVolume.DataCacheHandler {
+
+    var isDataCacheInhibited: Bool { cacheGrant == nil }
+
+    func open(_ item: FSItem, modes: FSVolume.OpenModes, cacheMode: FSVolume.DataCacheMode,
+              context: FSContext,
+              replyHandler reply: @escaping (FSOpenItemResult?, (any Error)?) -> Void) {
+        let granted = coherency(for: item, cacheMode)
+        fsLog.log("""
+            OPEN (data cache) item=\(item === self.image ? "lun0.img" : "dir", privacy: .public) \
+            modes=\(modes.rawValue) requested=\(Self.describe(cacheMode), privacy: .public) \
+            granted=\(Self.describe(granted), privacy: .public)
+            """)
+        reply(FSOpenItemResult(grantedCoherency: granted), nil)
+    }
+
+    /// The protocol's close comes once, after the kernel has finished with
+    /// the item's cache — the same "last chance" `closeItem` flushed on.
+    func close(_ item: FSItem, context: FSContext, replyHandler reply: @escaping () -> Void) {
+        fsLog.log("CLOSE (data cache) — \(self.store.summary, privacy: .public)")
+        try? store.flush()
+        reply()
+    }
+
+    func upgrade(_ item: FSItem, cacheMode: FSVolume.DataCacheMode, context: FSContext,
+                 replyHandler reply: @escaping (FSUpgradeItemResult?, (any Error)?) -> Void) {
+        let granted = coherency(for: item, cacheMode)
+        fsLog.log("""
+            UPGRADE (data cache) requested=\(Self.describe(cacheMode), privacy: .public) \
+            granted=\(Self.describe(granted), privacy: .public)
+            """)
+        reply(FSUpgradeItemResult(grantedCoherency: granted), nil)
+    }
+
+    /// The strongest coherency the experiment allows that the requested mode
+    /// permits (the header's mode-to-coherency table). Only `lun0.img` is
+    /// ever cached.
+    private func coherency(for item: FSItem,
+                           _ mode: FSVolume.DataCacheMode) -> FSVolume.KernelCacheCoherencyType {
+        guard item === image, let want = cacheGrant else { return .noCache }
+        switch mode {
+        case .none:
+            return .noCache
+        case .readWithCache:
+            return want == .noCache ? .noCache : .readCache
+        case .readWriteWithCache:
+            switch want {
+            case .noCache: return .noCache
+            case .readCache: return .readCache
+            case .writeThrough: return .writeThrough
+            }
+        @unknown default:
+            return .noCache
+        }
+    }
+
+    private static func describe(_ mode: FSVolume.DataCacheMode) -> String {
+        switch mode {
+        case .none: return "none"
+        case .readWithCache: return "readWithCache"
+        case .readWriteWithCache: return "readWriteWithCache"
+        @unknown default: return "unknown(\(mode.rawValue))"
+        }
+    }
+
+    private static func describe(_ type: FSVolume.KernelCacheCoherencyType) -> String {
+        switch type {
+        case .noCache: return "noCache"
+        case .readCache: return "readCache"
+        case .writeThrough: return "writeThrough"
+        case .writeBack: return "writeBack"
+        @unknown default: return "unknown(\(type.rawValue))"
+        }
     }
 }

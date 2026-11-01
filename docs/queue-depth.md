@@ -105,6 +105,15 @@ The extension does not cause the serialisation: `DaemonStore.read` takes no
 lock, and its `ioLock` is held only by `write`, for read-modify-write. Requests
 arrive one at a time from above.
 
+> **Retracted in part, 2026-10-31.** This read used one sequential reader,
+> which never has two reads outstanding, so it could not tell. With eight
+> concurrent readers on `lun0.img`, FSKit still handed over one read at a time,
+> and it was the extension: `read(from:…)` blocks until the daemon answers,
+> and FSKit waits for the method to return. Replying asynchronously, FSKit
+> handed over eight at once (651 → 9,820 IOPS). Through `hdiutil`, DiskImages
+> still reads `lun0.img` one request at a time, so the conclusion below holds
+> for the shipping path. `docs/open-questions.md` item 17 has the table.
+
 Which makes readahead the fix. FSKit hands down one sequential read at a time
 and waits for each, so the only way to get commands in flight is for the
 extension to ask for data before it is asked for it.
@@ -535,3 +544,133 @@ within one morning. Every table above that reports MB/s or blocks/600s is one
 run per setting, which measures the array as much as the setting. The waste
 ratios and hit rates reproduced across both days and the 2.4x swing; those are
 the numbers the design rests on.
+
+## Read-around is chosen, not fixed (issue #4)
+
+Issue #4 measured the fixed 256 KiB read-around from the other side. An
+NVMe/TCP volume on 2.5 GbE, fio 4 KiB random reads with `direct=1`:
+
+| job | result | disk-image bytes | `iscsid` in | wire / volume |
+|---|---|---:|---:|---:|
+| 4 KiB randread QD1 | 320 IOPS, 3.11 ms | 30.0 MB | 1,858 MB | 62x |
+| 4 KiB randread QD16 | 355 IOPS, 45 ms | 31.0 MB | 1,918 MB | 62x |
+| 128 KiB seqread QD1 | 265 MB/s | 5,308 MB | 5,546 MB | 1.04x |
+
+The 62x is arithmetic, not speculation: every miss fetched the whole 256 KiB
+chunk around a 4 KiB request, which is 64x, and a 32 MiB cache over a 1 GiB fio
+file hits a few percent. Speculation never opened; random reads never cover the
+256 KiB gate. The same mechanism explains the reporter's write numbers: a 4 KiB
+aligned write on a 512-byte LUN is exact and never reads, but APFS's own 53.7 MB
+of reads during that job came back as 1,048 MB. And it explains most of the
+IOPS ceiling: at 2.5 GbE, 256 KiB is about a millisecond on the wire before the
+target has read it, paid for every 4 KiB answer.
+
+Turning read-around off was not an option. It is what got the VM guest to its
+desktop (54% hits against 6.7%, above), and a boot is locality without streams.
+So the unit now follows the workload, from one 4 KiB sector to the whole chunk:
+
+- **Entries can hold part of a chunk.** One contiguous range per chunk; pieces
+  that overlap or touch merge, a disjoint piece replaces the older one. Only
+  whole chunks reach the disk tier's spill, which keys slots by chunk and serves
+  them from the chunk's first byte. Speculation still issues whole chunks, and
+  completes a chunk a miss left partial.
+- **`ReadAroundController` decides, from a ghost.** It keeps the chunks a
+  whole-chunk cache of this size would hold, with, per candidate unit, which
+  parts that unit would have fetched by now. Every read (except those
+  speculation served) is played against every unit at once. A simulated miss
+  costs one round trip plus its window's bytes, at 128 KiB per round trip
+  (`roundTripBytes`). Once per second of activity, the cheapest unit over the
+  last three seconds is adopted if it beats the current one by 10%.
+- **Why a ghost and not the live hit rate.** Judged by its own hits, a small
+  unit sees long residencies (many small entries fit) and a large unit short
+  ones. Each would make the other look better, and the loop would swing. The
+  ghost's estimate for a unit does not depend on which unit is live, so there
+  is nothing to swing on. It also means the unit can grow back from the floor:
+  at 4 KiB it still knows what 256 KiB would have cost.
+
+Worked through the cost model: one scattered read per chunk costs 1.03 round
+trips at 4 KiB and 3 at 256 KiB; a chunk read end to end costs 64 against 3;
+reads clustered inside 16 KiB settle on 16 KiB. Whole-chunk read-around pays
+once a resident chunk sees about three scattered reads.
+
+Unit tests cover the controller's decisions and the cache against a reference
+LUN under random reads, writes, failed writes, speculation and eviction, at
+every fixed unit and with the controller free to move.
+
+**Measured at the cache, not through a mount.** `iscsictl nvme cache-bench`
+drives the extension's cache, with `DaemonStore`'s geometry, over raw NVMe/TCP;
+FSKit, XPC and the disk image are not in the path. TrueNAS SCALE 25.10 `nvmet`
+on 10GBase-T, a 512 GiB namespace with 512-byte blocks and written data. Each
+mode read its own 1 GiB region; one 2 GiB sequential read warmed both first.
+2026-10-31:
+
+| job | fixed 256 KiB | adaptive |
+|---|---|---|
+| 4 KiB random, 1 thread, 40,000 reads | 536/s, mean 1.87 ms, p99 5.69 ms, 61.96x | 1,703/s, mean 0.59 ms, p99 2.10 ms, 1.77x |
+| 4 KiB random, 8 threads, 40,000 reads | 4,541/s, mean 1.76 ms, 61.95x | 13,029/s, mean 0.61 ms, 7.95x |
+| 4 KiB clustered, 8 per chunk, 20,000 reads | 7.74x | 7.74x, unit stayed 256 KiB |
+| 128 KiB sequential, 20,000 reads | 8,608/s, 1.01x | 8,685/s, 1.01x |
+
+- **The fixed unit reproduces issue #4's 62x** on a different link and
+  target. That supports the arithmetic above: the 62x is the chunk fetch, not
+  something particular to the reporter's setup.
+- **Adaptive switched to 4 KiB after one second of activity**: at read 523 on
+  one thread, at read 4,608 on eight. After the switch it ran at 0.96–0.98x,
+  about 1,750 reads/s on one thread and 17,000 on eight. The whole-run figures
+  include that first second at 62x, which is most of their bytes.
+- **Eight threads at the fixed unit were link-bound**: 10.15 GB in 8.8 s is
+  1.15 GB/s. Adaptive was not, so the extra threads bought it more.
+- **Clustered and sequential reads fetched identical bytes in both modes**, so
+  the controller left the workloads read-around exists for alone.
+- **The wire agrees.** vlan0's received bytes were the bench's fetched bytes
+  plus 4.6–4.7% for every pair of runs, which is framing and protocol
+  overhead.
+
+**Measured through a mounted volume: issue #4's fio jobs.** The same machine,
+NAS and namespace, through the shipping path: `mount -F`, `lun0.img`,
+`hdiutil` CRawDiskImage, then APFS. The jobs:
+
+- fio on 1 GiB files with `direct=1`, 20 s per job;
+- per job, the same counters the reporter used: disk-image bytes from the I/O
+  Registry `Statistics`, and `iscsid`'s bytes from `nettop`;
+- the baseline is the installed, notarized 0.8.0, which has the fixed unit;
+- the branch build was Developer ID–signed but **not notarized** (no notary
+  credentials on that Mac) and built against the macOS 27 SDK. Neither changes
+  how many bytes a read fetches.
+
+The runs were five minutes apart, each after one unmeasured sequential pass
+over the read file. 2026-10-31:
+
+| job | 0.8.0, fixed 256 KiB | branch, adaptive |
+|---|---|---|
+| 4 KiB randread QD1 (`psync`) | 382 IOPS, 2.61 ms, **61.9x** (1,938 MB in) | 606 IOPS, 1.65 ms, **1.56x** (77 MB) |
+| 4 KiB randread QD16 (`posixaio`) | 418 IOPS, 38.2 ms, 61.9x | 574 IOPS, 27.9 ms, 0.94x |
+| 4 KiB randread, 8 threads (`psync`) | 410 IOPS, 19.5 ms, 62.0x | 555 IOPS, 14.4 ms, 0.99x |
+| 128 KiB seqread QD1 | 544 MB/s, 1.01x | 653 MB/s, 1.01x |
+| 4 KiB randwrite QD1 | 67 IOPS; APFS's 22.0 MB of reads cost 372 MB | 106 IOPS; 34.9 MB of reads cost 70 MB |
+
+- **The amplification is gone through the mount too.** 0.8.0 reproduces the
+  reporter's 62x to the decimal. The QD1 run's 1.56x includes the reads before
+  the controller moved off the whole chunk. Judging by the excess bytes, that
+  was about 110 reads, under a second.
+- **IOPS rose by a third to a half, not threefold.** QD1 latency fell from
+  2.61 to 1.65 ms. On the raw path the same read took about 0.55 ms, so about
+  1.1 ms per read is spent above the cache: FSKit, XPC, DiskImages and APFS.
+- **Reads through the mount run one at a time.** QD16 and eight threads are
+  no faster than QD1, and latency grows with depth: 27.9 ms is about
+  16 × 1.74 ms, and 14.4 ms is about 8 × 1.8 ms. It is not the cache or
+  NVMe/TCP: on the raw path, eight threads got ten times the reads per second.
+  Removing the amplification made this the ceiling. `docs/open-questions.md`
+  item 17 found two serialisers: DiskImages, which reads `lun0.img` one
+  request at a time, and our blocking read handler in front of it.
+- **The sequential difference is not attributed.** Both runs fetched 1.01x.
+  The runs were minutes apart and the target's ARC state differed (the
+  baseline had just laid the files out), so +20% is not evidence either way.
+- **Writes: the wire carries twice what the disk image counts, in both
+  builds.** `iscsid` sent 44.2 MB for 22.0 MB of disk-image writes on 0.8.0,
+  and 70.2 MB for 34.9 MB on the branch. In the branch run, the extension's
+  own `writes=` counter (70.9 MB) matches the wire, not the disk image. The reporter's numbers show the same
+  ratio: 104 MB out for 50.3 MB written. It is not this change; it is unexplained.
+
+What this cannot answer (the VM boot, 2.5 GbE) is in
+`docs/open-questions.md` item 16.

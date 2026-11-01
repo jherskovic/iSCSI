@@ -2,10 +2,16 @@ import Foundation
 
 /// A read cache of fixed-size, offset-aligned chunks over a block device,
 /// with gated speculation — what stands between a VM guest and a round trip
-/// per read. A miss fetches the whole covering span in one round trip
-/// (read-around); requests match by range, not size, so a variable-size
-/// sequential stream still hits. Speculation is gated by `ReadaheadPolicy`
-/// and issues whole chunks.
+/// per read. A miss fetches the requested range widened to the current
+/// read-around unit in one round trip; requests match by range, not size, so
+/// a variable-size sequential stream still hits. Speculation is gated by
+/// `ReadaheadPolicy` and issues whole chunks.
+///
+/// Read-around: the unit is the whole chunk until `ReadAroundController`
+/// (given a `sectorBytes` finer than the chunk) measures that the workload
+/// does not use it, and then as little as one sector. A chunk's entry may
+/// therefore hold only a contiguous part of it; a read is a hit only where
+/// its entry covers it.
 ///
 /// Coherence: write-through. `willWrite` runs before the device write (ramp
 /// reset, generation bump, overlapping pending fetches dropped); `didWrite`
@@ -56,6 +62,9 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         /// override pins it; otherwise the controller's live figure, which is
         /// the only way to see what the loop is doing from a soak.
         public var currentCap = 0
+        /// What a miss fetches around its request right now. The whole chunk
+        /// unless `ReadAroundController` has chosen less.
+        public var readAroundUnit = 0
     }
 
     private final class Entry {
@@ -63,25 +72,34 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         let cond = NSCondition()
         /// Guarded by `cond`; `fill` is the only writer after init.
         private(set) var state: State
+        /// Where this entry's bytes begin, counted from its chunk's start.
+        /// Speculation always covers a whole chunk (0); a miss fetched at a
+        /// unit smaller than the chunk holds only part of one. Fixed for the
+        /// entry's life — growing the range means a new entry — so coverage
+        /// can be checked under the cache's lock without `cond`.
+        let lo: Int
         let length: Int
         let speculative: Bool
-        /// LRU tick and first-use flag, guarded by the cache's lock.
-        var lastTouch: UInt64
+        /// First-use flag, guarded by the cache's lock.
         var used = false
 
-        init(ready data: Data, lastTouch: UInt64) {
+        init(ready data: Data, lo: Int = 0) {
             state = .ready(data)
+            self.lo = lo
             length = data.count
             speculative = false
-            self.lastTouch = lastTouch
         }
 
-        init(pendingSpeculativeOf length: Int, lastTouch: UInt64) {
+        init(pendingSpeculativeOf length: Int) {
             state = .pending
+            lo = 0
             self.length = length
             speculative = true
-            self.lastTouch = lastTouch
         }
+
+        /// Whether `[from, to)`, counted from the chunk's start, lies within
+        /// this entry's bytes.
+        func covers(_ from: Int, _ to: Int) -> Bool { from >= lo && to <= lo + length }
 
         /// Called by the async completion — possibly long after this entry
         /// was replaced in the map, in which case it fills an orphan nobody
@@ -121,8 +139,12 @@ public final class PrefetchChunkCache: @unchecked Sendable {
 
     private let lock = NSLock()
     private var map: [UInt64: Entry] = [:]
+    /// Recency over `map`'s keys, for eviction. Every key in `map` is in it.
+    private var order = LRUOrder<UInt64>()
+    /// Sum of every entry's `length`, pending ones included — kept rather
+    /// than summed, because a cache of sector-sized entries holds thousands.
+    private var residentBytes = 0
     private var policy: ReadaheadPolicy
-    private var tick: UInt64 = 0
     private var statsStore = Stats()
     /// Bumped by every `noteWrite`. A miss snapshots it before its fetch and
     /// declines to cache the result if it changed — bytes fetched while a
@@ -139,15 +161,30 @@ public final class PrefetchChunkCache: @unchecked Sendable {
     /// Steers `policy.adaptiveCap` from settled speculation outcomes. nil when
     /// the target pinned its depth with a `workloadProfile` override.
     private var depthController: ReadaheadDepthController?
-    /// `DispatchTime` rather than `Date`: monotonic, so a clock adjustment
-    /// cannot make a gap negative or enormous. It also does not advance while
-    /// the machine is asleep, which suits a window that is supposed to measure
-    /// activity — a sleeping volume is the idlest kind there is.
-    private var lastReadNanos: UInt64 = 0
+    /// Chooses the miss path's fetch unit. nil when the chunk is the only
+    /// unit there is (no `sectorBytes` finer than it).
+    private var readAround: ReadAroundController?
+    /// Uptime in nanoseconds. `DispatchTime` rather than `Date` by default:
+    /// monotonic, so a clock adjustment cannot make a gap negative or
+    /// enormous. It also does not advance while the machine is asleep, which
+    /// suits a window that is supposed to measure activity — a sleeping
+    /// volume is the idlest kind there is. Injectable so tests can run a
+    /// second of activity without waiting one.
+    private let clock: @Sendable () -> UInt64
+    private var lastReadNanos: UInt64?
 
+    /// - Parameters:
+    ///   - sectorBytes: the finest read-around unit. A power-of-two fraction
+    ///     of the chunk, at most 64 to a chunk and a multiple of the device
+    ///     block; anything else, or nil, keeps whole-chunk read-around.
+    ///   - readAroundStartBytes: the unit to start at; nil is the whole chunk.
+    ///   - onEvict: receives only whole chunks, never a partial entry.
     public init(chunkBytes: Int, capacity: UInt64, maxCachedBytes: Int,
                 policy: ReadaheadPolicy, timeout: TimeInterval,
                 adaptiveDepth: Bool = false,
+                sectorBytes: Int? = nil,
+                readAroundStartBytes: Int? = nil,
+                clock: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
                 fetchSync: @escaping (UInt64, Int) throws -> Data,
                 fetchAsync: @escaping (UInt64, Int, @escaping (Data?) -> Void) -> Void,
                 onEvict: ((UInt64, Data) -> Void)? = nil) {
@@ -157,6 +194,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         self.maxCachedBytes = maxCachedBytes
         self.policy = policy
         self.timeout = timeout
+        self.clock = clock
         self.fetchSync = fetchSync
         self.fetchAsync = fetchAsync
         self.onEvict = onEvict
@@ -166,26 +204,41 @@ public final class PrefetchChunkCache: @unchecked Sendable {
             self.policy.adaptiveCap = c.cap
             self.depthController = c
         }
+        if let sectorBytes,
+           var c = ReadAroundController(sectorBytes: sectorBytes, chunkBytes: chunkBytes,
+                                        ghostChunks: max(1, maxCachedBytes / chunkBytes)) {
+            if let readAroundStartBytes { c.start(atUnitBytes: readAroundStartBytes) }
+            self.readAround = c
+        }
         statsStore.currentCap = self.policy.chunkCap
+        statsStore.readAroundUnit = readAround?.unitBytes ?? chunkBytes
     }
 
-    /// Called under `lock` at the top of every read: the controller's clock is
+    /// Called under `lock` at the top of every read: the controllers' clock is
     /// the read stream itself, so an idle volume schedules nothing and is
     /// steered by nothing. This is why there is no timer anywhere here.
     private func noteReadLocked() {
-        guard depthController != nil else { return }
-        let now = DispatchTime.now().uptimeNanoseconds
-        let gap = lastReadNanos == 0 ? 0 : now &- lastReadNanos
+        guard depthController != nil || readAround != nil else { return }
+        let now = clock()
+        let gap = lastReadNanos.map { now &- $0 } ?? 0
         lastReadNanos = now
-        if depthController!.advance(sinceLastReadNanos: gap) {
+        if depthController != nil, depthController!.advance(sinceLastReadNanos: gap) {
             policy.adaptiveCap = depthController!.cap
             statsStore.currentCap = policy.chunkCap
         }
+        if readAround != nil, readAround!.advance(sinceLastReadNanos: gap) {
+            statsStore.readAroundUnit = readAround!.unitBytes
+        }
+    }
+
+    /// The length of the chunk at `key`: the chunk size, or less for the last.
+    private func fullLength(_ key: UInt64) -> Int {
+        Int(min(UInt64(chunkBytes), capacity - key))
     }
 
     /// Serve `[offset, offset+length)`, from cache when the covering chunks
-    /// are cached or already on their way, and by fetching the whole covering
-    /// span in one call when they are not.
+    /// hold those bytes or are already on their way, and by one fetch of the
+    /// request widened to the read-around unit when they do not.
     public func read(offset: UInt64, length: Int) throws -> Data {
         guard length > 0, offset < capacity else { return Data() }
         let chunk = UInt64(chunkBytes)
@@ -194,33 +247,48 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         let spanStart = (offset / chunk) * chunk
         let spanEnd = min(((end &+ chunk &- 1) / chunk) * chunk, capacity)
 
-        // Collect the covering chunks, if every one is at least on its way.
+        // Collect the covering entries, if each holds (or will hold) the part
+        // of the request that falls in its chunk.
         lock.lock()
         noteReadLocked()
-        var entries: [Entry] = []
+        var entries: [(key: UInt64, entry: Entry)] = []
         var allPresent = true
         var co = spanStart
         while co < spanEnd {
-            guard let e = map[co] else { allPresent = false; break }
-            entries.append(e)
+            guard let e = map[co],
+                  e.covers(Int(max(offset, co) - co), Int(min(end, co &+ chunk) - co)) else {
+                allPresent = false
+                break
+            }
+            entries.append((co, e))
             co += chunk
         }
+        var observed = false
         if allPresent {
-            tick += 1
-            for e in entries {
-                e.lastTouch = tick
-                if e.speculative, !e.used {
-                    e.used = true
-                    statsStore.speculatedUsed += 1
+            var speculated = false
+            for (key, e) in entries {
+                order.touch(key)
+                if e.speculative {
+                    speculated = true
+                    if !e.used {
+                        e.used = true
+                        statsStore.speculatedUsed += 1
+                    }
                 }
+            }
+            // Speculation answered this one, and would have whatever the
+            // read-around unit: it is not evidence about the miss path.
+            if !speculated {
+                readAround?.observe(offset: offset, length: count)
+                observed = true
             }
         }
         lock.unlock()
 
         if allPresent {
-            var collected: [Data] = []
+            var collected: [(start: UInt64, data: Data)] = []
             var anyFailed = false
-            for e in entries {
+            for (key, e) in entries {
                 e.cond.lock()
                 let deadline = Date().addingTimeInterval(timeout)
                 var timedOut = false
@@ -230,7 +298,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
                 let state = e.state
                 e.cond.unlock()
                 switch state {
-                case .ready(let data): collected.append(data)
+                case .ready(let data): collected.append((key &+ UInt64(e.lo), data))
                 case .failed: anyFailed = true
                 case .pending:
                     precondition(timedOut)
@@ -244,7 +312,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
             }
             if !anyFailed {
                 lock.lock(); statsStore.hits += 1; lock.unlock()
-                let out = Self.assemble(collected, skip: Int(offset - spanStart), count: count)
+                let out = Self.assemble(collected, offset: offset, count: count)
                 speculateAfter(offset: offset, length: count)
                 return out
             }
@@ -262,38 +330,79 @@ public final class PrefetchChunkCache: @unchecked Sendable {
             lock.unlock()
         }
 
-        // Miss: one synchronous fetch of the whole aligned span (read-around),
-        // cached chunk-wise so the next nearby read is a memory copy.
-        let spanLen = Int(spanEnd - spanStart)
+        // Miss: one synchronous fetch of the request widened to the
+        // read-around unit, kept chunk-wise so the next nearby read is a
+        // memory copy. The unit divides the chunk, so the window never
+        // reaches a chunk the request does not touch.
         lock.lock()
+        if !observed { readAround?.observe(offset: offset, length: count) }
+        let unit = UInt64(readAround?.unitBytes ?? chunkBytes)
+        let fetchStart = (offset / unit) * unit
+        let fetchEnd = min(((end &+ unit &- 1) / unit) * unit, capacity)
+        let fetchLen = Int(fetchEnd - fetchStart)
         statsStore.misses += 1
-        statsStore.readAroundBytes += UInt64(spanLen - count)
+        statsStore.readAroundBytes += UInt64(fetchLen - count)
         let generation = writeGeneration
         lock.unlock()
-        let data = try fetchSync(spanStart, spanLen)
-        guard data.count == spanLen else { throw CacheError.shortRead }
+        let data = try fetchSync(fetchStart, fetchLen)
+        guard data.count == fetchLen else { throw CacheError.shortRead }
 
         lock.lock()
         if writeGeneration == generation {
-            tick += 1
-            var index = 0
             co = spanStart
             while co < spanEnd {
-                let clen = Int(min(chunk, spanEnd - co))
-                // Overwrites any pending entry outright; its late reply then
-                // fills an orphan and is discarded, never resurrected into
-                // the map.
-                map[co] = Entry(ready: data.subdata(in: index ..< index + clen), lastTouch: tick)
+                let pieceStart = max(fetchStart, co)
+                let pieceEnd = min(fetchEnd, co &+ chunk)
+                let piece = data.subdata(in: Int(pieceStart - fetchStart) ..< Int(pieceEnd - fetchStart))
+                keepFetchedLocked(piece, chunk: co, at: Int(pieceStart - co))
                 co += chunk
-                index += clen
             }
             evictLocked()
         }
         lock.unlock()
 
         speculateAfter(offset: offset, length: count)
-        let skip = Int(offset - spanStart)
+        let skip = Int(offset - fetchStart)
         return data.subdata(in: skip ..< skip + count)
+    }
+
+    /// Keep freshly fetched bytes `piece`, which start `lo` bytes into the
+    /// chunk at `key`. A ready entry they overlap or touch is merged with
+    /// them into one, so read-around that grows a run keeps all of it. A
+    /// ready entry they are disjoint from is replaced: one contiguous range
+    /// per chunk is what keeps coverage a comparison, and the bytes just asked
+    /// for are the likelier to be asked for again. Disjoint pieces arise only
+    /// below the whole chunk, which the controller chooses only once it has
+    /// measured that a chunk's other bytes mostly go unread.
+    ///
+    /// A pending speculation is kept unless the piece is the whole chunk:
+    /// it will hold all of it, and it is already paid for.
+    ///
+    /// Both sides are current: `didWrite` patches ready entries, and the
+    /// caller keeps `piece` only if no write overlapped its fetch.
+    private func keepFetchedLocked(_ piece: Data, chunk key: UInt64, at lo: Int) {
+        var bytes = piece
+        var start = lo
+        if let old = map[key] {
+            switch old.snapshot {
+            case .pending:
+                // Replaced outright by a whole chunk, as always: its late
+                // reply fills an orphan, never resurrected into the map.
+                guard lo == 0, piece.count == fullLength(key) else { return }
+            case .ready(let oldBytes):
+                if old.lo <= lo + piece.count, lo <= old.lo + oldBytes.count {
+                    start = min(lo, old.lo)
+                    let end = max(lo + piece.count, old.lo + oldBytes.count)
+                    var merged = Data(count: end - start)
+                    merged.replaceSubrange((old.lo - start) ..< (old.lo - start + oldBytes.count), with: oldBytes)
+                    merged.replaceSubrange((lo - start) ..< (lo - start + piece.count), with: piece)
+                    bytes = merged
+                }
+            case .failed:
+                break
+            }
+        }
+        replaceLocked(key, with: Entry(ready: bytes, lo: start))
     }
 
     /// A write is about to be issued. Resets the speculation ramp (the
@@ -325,13 +434,14 @@ public final class PrefetchChunkCache: @unchecked Sendable {
             forEachOverlappingChunkLocked(offset: offset, length: data.count) { co, e in
                 switch e.snapshot {
                 case .ready(let old):
-                    let entryEnd = co &+ UInt64(old.count)
-                    let isectStart = max(offset, co)
+                    let entryStart = co &+ UInt64(e.lo)
+                    let entryEnd = entryStart &+ UInt64(old.count)
+                    let isectStart = max(offset, entryStart)
                     let isectEnd = min(end, entryEnd)
                     guard isectStart < isectEnd else { return }
                     var patched = old
                     patched.replaceSubrange(
-                        Int(isectStart - co) ..< Int(isectEnd - co),
+                        Int(isectStart - entryStart) ..< Int(isectEnd - entryStart),
                         with: data.subdata(in: Int(isectStart - offset) ..< Int(isectEnd - offset)))
                     e.replaceReady(patched)
                 case .pending, .failed:
@@ -385,11 +495,16 @@ public final class PrefetchChunkCache: @unchecked Sendable {
             var co = ((offset &+ UInt64(length) &+ chunk &- 1) / chunk) * chunk
             var considered = 0
             while considered < depth, co < capacity {
-                if map[co] == nil {
-                    let clen = Int(min(chunk, capacity - co))
-                    tick += 1
-                    let e = Entry(pendingSpeculativeOf: clen, lastTouch: tick)
-                    map[co] = e
+                let clen = fullLength(co)
+                // Absent, or left partly cached by a miss: either way a
+                // stream about to cross the chunk needs all of it.
+                let wanted = map[co].map { e -> Bool in
+                    if case .ready = e.snapshot { return !e.covers(0, clen) }
+                    return false
+                } ?? true
+                if wanted {
+                    let e = Entry(pendingSpeculativeOf: clen)
+                    replaceLocked(co, with: e)
                     toIssue.append((co, clen, e))
                     statsStore.chunksSpeculated += 1
                     statsStore.speculatedBytes += UInt64(clen)
@@ -415,6 +530,8 @@ public final class PrefetchChunkCache: @unchecked Sendable {
     @discardableResult
     private func removeLocked(_ key: UInt64) -> Entry? {
         guard let e = map.removeValue(forKey: key) else { return nil }
+        residentBytes -= e.length
+        order.remove(key)
         if e.speculative {
             if e.used {
                 statsStore.resolvedUsed += 1
@@ -425,6 +542,18 @@ public final class PrefetchChunkCache: @unchecked Sendable {
             }
         }
         return e
+    }
+
+    /// Put `entry` at `key`, displacing whatever was there without a verdict:
+    /// a miss's fetch or a new speculation supersedes it, and a late reply to
+    /// a displaced pending fetch fills an orphan nobody consults. The one
+    /// path into `map` besides `removeLocked`, so `order` and `residentBytes`
+    /// cannot drift from it.
+    private func replaceLocked(_ key: UInt64, with entry: Entry) {
+        if let old = map[key] { residentBytes -= old.length }
+        map[key] = entry
+        residentBytes += entry.length
+        order.touch(key)
     }
 
     /// Forget everything still pending — for the unanswered path, where the
@@ -439,38 +568,33 @@ public final class PrefetchChunkCache: @unchecked Sendable {
     /// chunk first. Pending chunks are never evicted: they represent traffic
     /// already bought, and a waiter may hold a reference.
     private func evictLocked() {
-        var total = map.values.reduce(0) { $0 + $1.length }
-        while total > maxCachedBytes {
-            var coldest: (key: UInt64, touch: UInt64)? = nil
-            for (key, e) in map {
-                guard case .ready = e.snapshot else { continue }
-                if coldest == nil || e.lastTouch < coldest!.touch {
-                    coldest = (key, e.lastTouch)
-                }
-            }
-            guard let victim = coldest, let removed = removeLocked(victim.key) else { break }
-            total -= removed.length
+        var candidate = order.oldest
+        while residentBytes > maxCachedBytes, let key = candidate {
+            candidate = order.newer(than: key)
+            guard let e = map[key], case .ready(let data) = e.snapshot else { continue }
+            removeLocked(key)
             // Only what a caller read moves down a tier: unread speculation
-            // was never wanted the first time.
-            if let onEvict, !removed.speculative || removed.used,
-               case .ready(let data) = removed.snapshot {
-                onEvict(victim.key, data)
+            // was never wanted the first time. And only whole chunks: the
+            // tier keys a slot by its chunk and serves it from the chunk's
+            // first byte, so part of one would be served as the wrong bytes.
+            if let onEvict, !e.speculative || e.used, e.lo == 0, data.count == fullLength(key) {
+                onEvict(key, data)
             }
         }
     }
 
-    /// Splice `[skip, skip+count)` out of consecutive chunk buffers.
-    private static func assemble(_ chunks: [Data], skip: Int, count: Int) -> Data {
+    /// Splice `[offset, offset+count)` out of entry buffers in ascending
+    /// order, each starting at absolute offset `start`. The caller checked
+    /// that together they cover the range.
+    private static func assemble(_ parts: [(start: UInt64, data: Data)],
+                                 offset: UInt64, count: Int) -> Data {
         var out = Data(capacity: count)
-        var toSkip = skip
-        var remaining = count
-        for data in chunks {
-            if toSkip >= data.count { toSkip -= data.count; continue }
-            let take = min(data.count - toSkip, remaining)
-            out.append(data.subdata(in: toSkip ..< toSkip + take))
-            toSkip = 0
-            remaining -= take
-            if remaining == 0 { break }
+        let end = offset &+ UInt64(count)
+        for (start, data) in parts {
+            let s = max(offset, start)
+            let e = min(end, start &+ UInt64(data.count))
+            guard s < e else { continue }
+            out.append(data.subdata(in: Int(s - start) ..< Int(e - start)))
         }
         return out
     }

@@ -32,6 +32,9 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     /// Runs at the start of every write, before it is applied or answered —
     /// for interleaving reads into a write that is on the wire.
     var onWrite: (() -> Void)?
+    /// Runs at the start of every read, before it is answered — for holding
+    /// reads inside the daemon to see how many can be there at once.
+    var onRead: (() -> Void)?
 
     init(byteCount: Int) { bytes = Data(count: byteCount) }
 
@@ -42,6 +45,7 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
 
     func read(session: String, offset: NSNumber, length: NSNumber,
               reply: @escaping (Data?, Error?) -> Void) {
+        onRead?()
         lock.lock()
         let start = offset.uint64Value
         let end = min(start + length.uint64Value, UInt64(bytes.count))
@@ -244,4 +248,74 @@ struct DaemonStoreTests {
         let (store, _daemon) = makeStore()
         #expect(try read(store, at: UInt64(Self.capacity), length: 4096).isEmpty)
     }
+
+    /// Issue #4 measured QD16 no faster than QD1 through a mount. This pins
+    /// that the store and the cache under it are not why: eight readers on
+    /// eight different chunks are all held inside the daemon until the eighth
+    /// arrives. A store that serialised them would let one in at a time, each
+    /// would give up waiting, and the peaks would read 1.
+    ///
+    /// Threads, not `concurrentPerform`: that runs as many iterations at once
+    /// as there are cores, and CI has three.
+    @Test func readsOnDifferentChunksAreInsideTheDaemonAtOnce() throws {
+        let (store, daemon) = makeStore()
+        let readers = 8
+        let gate = Rendezvous(parties: readers)
+        daemon.onRead = { gate.arriveAndWait(timeout: 5) }
+
+        let box = StoreBox(store)
+        let finished = DispatchGroup()
+        for i in 0 ..< readers {
+            finished.enter()
+            Thread {
+                var out = Data(count: 4096)
+                _ = try? out.withUnsafeMutableBytes { raw in
+                    // 256 KiB apart: one chunk each, so no reader can be
+                    // answered by another's fetch.
+                    try box.store.read(into: raw, at: UInt64(i) << 18, length: 4096)
+                }
+                finished.leave()
+            }.start()
+        }
+        #expect(finished.wait(timeout: .now() + 30) == .success)
+        #expect(!gate.timedOut, "a reader waited alone: the store let reads in one at a time")
+        #expect(store.readsInFlight.peak == readers)
+        #expect(store.fetchesInFlight.peak == readers)
+        #expect(store.readsInFlight.current == 0)
+        #expect(store.summary.contains("inflight=\(readers)/\(readers) "))
+    }
+}
+
+/// Holds every caller until `parties` have arrived, or until each one's
+/// timeout; records whether anyone gave up.
+private final class Rendezvous: @unchecked Sendable {
+    private let parties: Int
+    private let lock = NSLock()
+    private var arrived = 0
+    private var gaveUp = false
+    private let open = DispatchSemaphore(value: 0)
+
+    init(parties: Int) { self.parties = parties }
+
+    var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return gaveUp }
+
+    func arriveAndWait(timeout seconds: Double) {
+        lock.lock()
+        arrived += 1
+        let last = arrived == parties
+        lock.unlock()
+        if last {
+            for _ in 0 ..< parties { open.signal() }
+        }
+        if open.wait(timeout: .now() + seconds) == .timedOut {
+            lock.lock(); gaveUp = true; lock.unlock()
+        }
+    }
+}
+
+/// `DaemonStore` is not `Sendable`; the test hands it to its threads anyway,
+/// which is what FSKit does.
+private struct StoreBox: @unchecked Sendable {
+    let store: DaemonStore
+    init(_ store: DaemonStore) { self.store = store }
 }

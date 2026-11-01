@@ -690,6 +690,329 @@ is INQUIRY: the placeholder identifies as `LIO-ORG` / `RAMDISK-MCP` (or the
 a Synology LUN identifies as `SYNOLOGY`. Unverified against a real Synology;
 the reporter's retest with LUN 1 is what will confirm the diagnosis above.
 
+## 16. Read-around chosen per workload (unreleased): what is unverified
+
+`ReadAroundController` replaced the fixed 256 KiB miss fetch after issue #4
+(`docs/queue-depth.md`, "Read-around is chosen, not fixed"). Beyond in-memory
+LUNs, it has run against the NAS over 10 GbE twice, both on 2026-10-31:
+
+- **The cache alone**, through `iscsictl nvme cache-bench` over raw NVMe/TCP.
+  Random 4 KiB reads went from 62x to 0.97x after one second, and clustered
+  and sequential reads were unchanged.
+- **Issue #4's fio jobs through a mounted volume**, against the installed
+  0.8.0. The wire went from 62x to 0.94–1.56x on the random-read jobs (the
+  1.56x includes the reads before the switch), and QD1 went from 382 to 606
+  IOPS. Sequential reads were unchanged at 1.01x.
+
+Not yet run:
+
+- **Issue #4's matrix on 2.5 GbE**, the reporter's link, where each 256 KiB
+  fetch cost four times as long on the wire. Expect the same ratios and a
+  larger IOPS gain than on 10 GbE. Either way, IOPS stay bounded by the serial
+  delivery in item 17, which is now the ceiling.
+- **The VM boot, to check for a regression.** The run that justified
+  read-around (54–56% hits, `readAround` ~3 GB against 549 MB served). The unit
+  should stay at or near the whole chunk, and the boot should take no longer.
+  If it drops to a small unit and the boot slows, the 128 KiB `roundTripBytes`
+  is too low for that link, or the ghost undercounts that workload's reuse.
+- **`roundTripBytes` is chosen, not measured.** 128 KiB is about one round
+  trip on the reporter's link. On 10 GbE a round trip is worth nearer 1 MiB,
+  so there the controller errs towards less traffic over fewer round trips. If
+  that costs a 10 GbE user, measure the figure per mount: time `rawRead` calls
+  of different sizes and fit fixed cost against per-byte cost.
+- **The ghost leans towards large units.** It holds as many chunks as the real
+  cache holds whole chunks, which is exact for the whole-chunk unit. Smaller
+  units fit more entries, so some of their simulated misses would really have
+  been hits. That is deliberate (it favours the behaviour that was measured),
+  but it means the controller shrinks later than it could.
+- **Disjoint pieces replace each other.** One range per chunk keeps coverage a
+  comparison. A workload that keeps returning to two far-apart spots of one
+  chunk, at a unit below the chunk, refetches them alternately. The controller
+  should price that and pick the whole chunk; unmeasured.
+
+## 17. Whether anything above the extension can issue reads concurrently
+
+Issue #4 also measured QD16 at the same IOPS as QD1, with latency growing with
+depth (3.1 → 45 ms): strictly one read at a time. `docs/queue-depth.md`
+("Measured: the shipping path is serial") concluded that FSKit does not issue
+concurrent reads, but that was measured with **one sequential reader**, which
+never has two reads outstanding. It shows the path was serial for that caller,
+not that FSKit serialises concurrent callers.
+
+**Confirmed through a mount, 2026-10-31** (`docs/queue-depth.md`, issue #4's
+fio jobs). With the amplification gone, QD1 gave 606 IOPS, QD16 574 and eight
+`psync` threads 555. Latency grew with depth: 1.65 ms, then 27.9 ms (about
+16 × 1.74 ms), then 14.4 ms (about 8 × 1.8 ms). With read-around fixed,
+whatever serialises sets the ceiling: about 600 IOPS on 10 GbE.
+
+Ruled out by measurement: the cache and the NVMe/TCP path under it. Over raw
+NVMe/TCP, eight threads drove them to ten times the reads per second of one.
+Ruled out by reading the code: `LUNStore`, which holds no lock across a read
+(`ioLock` covers writes only).
+
+Not in that bench, but built not to serialise: `DaemonStore`, XPC and the
+daemon's service. Each call blocks only its own thread on a semaphore. The
+daemon answers each call from its own `Task`. `DaemonCore.read` suspends at
+its `await`, so the actor lets the next read in.
+`readsOnDifferentChunksAreInsideTheDaemonAtOnce` now pins `DaemonStore`'s
+part. It holds eight readers inside a fake daemon until the eighth arrives.
+
+**Answered, 2026-10-31: there are two serialisers, and our handler is the
+first.** The method:
+
+- one build with a hidden switch: `?reads=async` on the mount URL makes
+  `read(from:…)` return at once and reply from a concurrent queue;
+- `inflight=<store reads>/<daemon reads>` in the summary, the most of each
+  ever in flight at once;
+- fio 4 KiB randread, `psync`, QD1 and eight threads, on name-testing over
+  10 GbE, each layer in its own mount.
+
+| layer | handler | QD1 | 8 threads | inflight |
+|---|---|---|---|---|
+| `lun0.img` (FSKit only) | blocking | 543 IOPS | 651 IOPS, 12.3 ms | 1/1 |
+| `lun0.img` (FSKit only) | async | 531 IOPS | **9,820 IOPS, 0.81 ms** | **8/8** |
+| `/dev/rdiskN` (DiskImages + FSKit) | blocking | 611 IOPS | 561 IOPS, 14.2 ms | 1/1 |
+| `/dev/rdiskN` (DiskImages + FSKit) | async | 692 IOPS | 583 IOPS, 13.7 ms | **1/1** |
+| APFS file (all of it) | blocking | 624 IOPS | 570 IOPS, 14.0 ms | 1/1 |
+| APFS file (all of it) | async | 633 IOPS | 591 IOPS, 13.5 ms | 1/1 |
+
+- **FSKit waits for the handler to return, not for its reply.** With the
+  blocking handler it never handed over a second read. Replying
+  asynchronously, it handed over eight at once, and `lun0.img` went from 651
+  to 9,820 IOPS on eight threads. So the earlier finding that "FSKit does not
+  issue concurrent reads" was the handler.
+- **DiskImages is the second serialiser, and it alone sets the ceiling
+  through a mount.** With async replies, the raw device and APFS still never
+  had more than one read in flight. The `hdiutil` CRawDiskImage attach reads
+  its backing file one request at a time. Async replies change nothing users
+  see today: 591 against 570 IOPS is noise.
+- **Async replies returned correct data.** `FSMutableFileDataBuffer` stayed
+  valid until `reply` in every read checked: 117,338 random-size, unaligned
+  reads from eight threads through `lun0.img`, and 9,590 through APFS, byte
+  for byte against reference copies taken in blocking mode, no mismatches.
+  That is evidence, not Apple's documentation.
+- **Per-read cost is mostly not DiskImages or APFS.** QD1 is 1.6–1.9 ms at
+  every layer, `lun0.img` included, against about 0.55 ms on the raw NVMe/TCP
+  path. So FSKit, the extension, XPC and the daemon cost about 1.1–1.3 ms per
+  read. Under eight-way load the mean fell to 0.81 ms per read, so much of
+  that may be idle wake-up rather than work. Unmeasured.
+
+**A different attach path does read concurrently, 2026-10-31.**
+`diskutil image attach` (which `hdiutil` now says replaces `hdiutil attach`)
+was run on the same build, read-only, against the raw device. The reads were
+random 4 KiB over the first 256 GiB with no warm pass, which is cold for both
+this Mac's page cache and the NAS's ARC. One mount per job:
+
+| `diskutil image attach` | QD1 | 8 threads | inflight |
+|---|---|---|---|
+| blocking handler | 242 IOPS, 4.13 ms | 322 IOPS, 24.8 ms | 1/1 |
+| async handler | 358 IOPS, 2.79 ms | **2,071 IOPS, 3.86 ms** | **8/8** |
+
+- **Concurrency reaches the extension only with both changes:** this attach
+  path, and async replies. Either alone stays serial. The absolute numbers are
+  not comparable with the table above: that read a warm 1 GiB region, and this
+  one read cold blocks the NAS fetched from its pool.
+- **This attach reads `lun0.img` through the page cache.** A first run with a
+  sequential warm pass measured RAM, not the network: 75,000–190,000 IOPS at
+  0.013 ms, with only 1,061 reads reaching the extension. That cuts both ways.
+  Re-reads cost nothing, which for a compile rereading `.rlib` files may matter
+  more than IOPS. But the volume's data is held twice, once by APFS and once
+  under it.
+- **It reads whole 16 KiB pages,** arm64's page size. Each 4 KiB fio read
+  reached the extension as about 16 KiB (QD1: 3,650 reads, 62.9 MB), so random
+  4 KiB reads cost 4x on the wire before read-around adds anything. The
+  wire/asked ratios above (5.7–6.7x) also include each fresh mount's first
+  second at the whole-chunk unit.
+- **Writes: it is a disk with a ~30 s volatile cache in this Mac's RAM.**
+  This was checked against `iscsi-target-sim` (NVMe/TCP, file-backed, 512-byte
+  blocks, default write-through), whose backing file holds exactly what the
+  target has made durable. Each write or sync ran on the Mac, then the probe
+  read the backing file the instant the call returned. After that, the target
+  was frozen (`pause` new connections, then `crash` the live one) and a
+  snapshot of the file was mounted locally and fsck'd: a power cut at that
+  instant. Same installed 0.8.0, 2026-10-31:
+
+  | | `hdiutil` (shipping) | `diskutil image attach` |
+  |---|---|---|
+  | device cache flush (`DKIOCSYNCHRONIZECACHE`) | on target at return | on target at return |
+  | APFS `F_FULLFSYNC`, 6 files | 6/6 at return | 6/6 at return |
+  | APFS plain `fsync` | 1/6 at return; all within 0.1 s | 0/6 at return; one measured at **27.8 s** |
+  | raw write, no sync | within 0.05–0.1 s | **9.8 s**; another still absent at 15 s |
+  | snapshot after the freeze | every synced file intact, fsck OK | every synced file intact, fsck OK |
+
+  - **Flushes are honoured on both.** APFS stays crash-consistent, and
+    `F_FULLFSYNC` data is durable when the call returns.
+  - **Anything short of a full flush waits in RAM for tens of seconds.** That
+    includes plain `fsync`, which is what most applications call. Losing the
+    Mac (power, panic) or the volume (extension crash, network gone) in that
+    window loses data that on `hdiutil` would have reached the NAS within
+    0.1 s. Under macOS's contract this is allowed, since `fsync` never
+    promised durability. But it is the risk the write-through default exists
+    to keep small, and it is the per-target "flush every N s" relaxation's risk
+    class, made the default.
+  - **The shipping path is not strictly synchronous either.** `hdiutil`
+    acknowledges a raw write before the target has it, by about 50 ms, and
+    honours flushes. That is a correction to how write-through has been
+    described: FUA governs the target's cache, not DiskImages'.
+  - **Unverified: what happens to those dirty pages if the target goes away.**
+    A page-cache writeback that fails has no caller to tell, so the loss may
+    be silent where `hdiutil` would fail the next write. Untested.
+
+**The write window closes if the volume sets the kernel's cache policy
+itself, 2026-10-31.** The page cache that held those writes is this volume's
+own. On macOS 27, FSKit lets a volume adopt `FSVolume.DataCacheHandler`
+(`FSVolumeDataCacheHandler.h`, FSKit V3) and answer the kernel's request for
+each item it opens. The experiment build adopts it behind `?cache=writethrough|readcache|nocache`
+on the mount URL. While that is absent, `isDataCacheInhibited` keeps FSKit on
+`OpenCloseOperations` as before. The final-close flush moved into the
+protocol's `close`. The log shows FSKit asking `readWriteWithCache` for the
+read-write open of `lun0.img` and the volume granting `writeThrough`. The
+same durability check and window probe, against the simulator:
+
+| `?cache=writethrough` | `hdiutil` | `diskutil image attach` | `diskutil`, no grant |
+|---|---|---|---|
+| raw write, no sync | arrived after 0.06 s | **on target at return** | 9.8 s / >15 s |
+| APFS plain `fsync` | 0/6 at return | **6/6 at return** | 0/6, one at 27.8 s |
+| APFS `F_FULLFSYNC` | 6/6 | 6/6 | 6/6 |
+| snapshot after the freeze | synced files intact, fsck OK | synced files intact, fsck OK | synced files intact, fsck OK |
+
+With `writeThrough` granted, `diskutil image attach` writes more strictly
+than the shipping path. Every write reached the target before its call
+returned.
+
+Reads, on the cold 256 GiB region of name-testing, with async replies and a
+fresh random seed per job, the three grants interleaved twice:
+
+| `diskutil image attach` + async | QD1 | 8 threads | inflight | per read at the extension | wire ÷ fio, 8 threads |
+|---|---|---|---|---|---|
+| FSKit default | 311 / 313 IOPS | 2,221 / 2,290 IOPS | 8/8 | 16.5 KB | 5.8–6.0x |
+| `cache=writethrough` (reads get `readCache`) | 324 / 317 | 2,119 / 2,149 | 8/8 | 16.5 KB | 6.0–6.1x |
+| `cache=nocache` | 326 / 357 | 2,161 / 2,175 | 8/8 | **4.2 KB** | **3.8x** |
+
+- **Concurrency survives every grant.** Throughput is equal on cold data,
+  where the NAS's disks set the pace.
+- **`noCache` removes the 16 KiB page rounding:** the extension saw the 4 KiB
+  reads fio made. It also gives up the kernel's read cache, so re-reads cost a
+  round trip again. Its write durability was not measured; the header says
+  all I/O goes straight to storage.
+- **Most of the remaining 3.8x is ours.** It is each 15 s run's first second at
+  the whole chunk, plus a near-tie in `ReadAroundController`. Once the unit
+  landed on 8–16 KiB, 4 KiB was cheaper by only about 8%, inside the 10%
+  hysteresis, so it stayed. One scattered read per chunk costs 1.03 round
+  trips at 4 KiB and 1.125 at 16 KiB.
+- **A first, unfair run** reused fio's default seed (`randrepeat=1`). Each
+  later run then read blocks the NAS had cached during the one before, and
+  IOPS rose with run order (3,254 → 4,225 → 5,009). Discarded.
+
+**On macOS 26 the newer engine has the same write window, and nothing
+closes it, 2026-10-31.** Measured on 26.6.2 (SIP-on VM, the extension's
+local `proto` store, so the store's own file shows when bytes arrive).
+Extension unchanged: blocking handler and no cache grant, since
+`DataCacheHandler` is macOS 27 only.
+
+| | `hdiutil` | `diskutil image attach` |
+|---|---|---|
+| raw write, no sync | in the store after 0.06 s | after 2.35 s |
+| raw write + `fsync` | after 0.06 s | after 0.77 s |
+| raw write + `DKIOCSYNCHRONIZECACHE` | at return | at return |
+| same 64 MiB read twice: bytes the extension served | 135.7 MB | 86.1 MB |
+
+Repeated on 26.7.2 (25G332), same VM: `hdiutil` no-sync write at return,
+`fsync` 0.06 s, flush at return, 135.7 MB served; the newer engine 1.94 s,
+1.29 s, at return, 86.1 MB served. `setBlockSize:4096` still gave a 4096-byte
+device with the GPT visible.
+
+The newer engine page-caches `lun0.img` on 26 too. Flushes are honoured;
+anything short of one waits. These windows are single samples against a local
+store; on 27 the NAS-backed store measured 10–30 s. So "the newer engine
+everywhere" would weaken write durability on 26, with no FSKit way to stop it.
+Keep `hdiutil` on 26.
+
+**4Kn LUNs: `diskutil` cannot, but the framework under it can.**
+`diskutil image attach` has no block-size option, `--help-hidden` included.
+On a simulator namespace with 4096-byte blocks it produced a 512-byte device,
+although the volume reports `f_frsize` 4096. Dropping the CRawDiskImage key
+does not reach the newer engine either: plain `hdiutil attach` still shows the
+old DiskImages engine.
+
+But `diskutil` is a client of `DiskImages2.framework`, whose attach request
+has a block size. Listing the framework's Objective-C classes at runtime
+shows:
+
+- `DIAttachParams : DIBaseParams` (`initWithURL:error:`, `setAutoMount:`);
+- `DIBaseParams` has a writable `blockSize` and a read-only
+  `overrideBlockSize`;
+- `+[DiskImages2 attachWithParams:handle:error:]` returns a `DIDeviceHandle`
+  with the `BSDName`.
+
+A test tool calls them by name. It is ad-hoc signed, holds none of
+`diskutil`'s entitlements (`com.apple.diskimages.attach` among them), and runs
+as the user. 2026-10-31:
+
+| attach of a 4Kn LUN's `lun0.img` (simulator, 4096-byte blocks, GPT written at 4096) | device block size | partition map | APFS volume |
+|---|---|---|---|
+| `diskutil image attach` | 512 | protective MBR only (`0xEE`) | none |
+| `DiskImages2`, default | 512 | protective MBR only | none |
+| `DiskImages2`, `setBlockSize:4096` | **4096** | **GPT** | **visible** |
+
+- `setBlockSize:` sets `overrideBlockSize`; `blockSize` still reads 512.
+- `hdiutil info` reports these attaches with `diskutil`'s engine
+  (`read/write disk image`).
+- The device outlives the process that attached it.
+- **The same on macOS 26.6.2 (25G83)**, on a SIP-on test VM, with the tool
+  built for a 26.0 deployment target: 512 and the protective MBR by default,
+  4096 and the GPT with `setBlockSize:4096`. One difference: on 26
+  `blockSize` is a 32-bit `unsigned int` (`TI`), on 27.2 a 64-bit
+  `unsigned long long` (`TQ`). arm64 passes either in the same register, so a
+  64-bit call worked on both, but real code should read the method's type
+  encoding at runtime rather than assume one.
+
+So 4Kn LUNs can have the concurrent engine. The costs:
+
+- **This is private API.** It is fine in a Developer ID app; notarization does
+  not look for private API. But it can change in any macOS update. The app
+  would look the classes and selectors up at runtime and fall back to
+  `hdiutil -blocksize` when they are missing.
+- **Not yet measured on this attach:**
+  - reads in flight;
+  - the write-through grant, though that is the extension's half and the
+    engine is the same;
+  - `autoMount` YES.
+
+What would raise the ceiling, in order of reach:
+
+1. **Async replies plus the `DiskImages2` engine plus a `DataCacheHandler`
+   grant, on macOS 27.** It uses `diskutil image attach`, or for 4Kn LUNs the
+   framework's own attach with `setBlockSize:4096` (above). Measured
+   above: 8 reads in flight, about 7x the reads per second of one thread on
+   a cold region, and writes on the target before the call returns.
+   Choose `writeThrough` (keeps the read cache) or `noCache` (4 KiB reads).
+   Before it ships:
+   - It needs the macOS 27 SDK, against the 26-SDK policy. Shown harmless on
+     macOS 26.6.2 (2026-10-31, SIP-on VM, a 27-SDK Developer ID build with a
+     26.0 deployment target):
+     - `FSOpenItemResult` and `FSUpgradeItemResult` are weak imports;
+     - the extension loaded and mounted, and `hdiutil` + APFS read back 8 MiB
+       intact;
+     - with `?cache=writethrough`, FSKit 26 never called the handler and kept
+       `OpenCloseOperations`, final-close flush included.
+
+     On 26.6.2 the module needed the documented `enabledModules.plist` entry
+     and a `killall fskitd` first.
+   - Measure `noCache` writes.
+   - What a target loss does to writes in flight. They are synchronous now,
+     so they should fail loudly. Untested.
+   - A real host power cut on the VM with `crash-consistency.py`.
+   - Move the app's attach and detach to `diskutil image`.
+2. **Async replies alone, as the default.** They change nothing through
+   `hdiutil`, but they are necessary on every path. The cost is relying on
+   buffer lifetime Apple has not documented. 1,139,667 async reads have been
+   checked byte for byte with no mismatch. 126,928 were on the `hdiutil`
+   path. 1,012,739 were through `diskutil image attach`, but those were mostly
+   served from the page cache, so they prove less.
+3. **A Feedback report to Apple** on `hdiutil`'s CRawDiskImage reading its
+   backing file serially.
+
 ## A note on method
 
 Four things were got wrong during this work and three had the same cause:

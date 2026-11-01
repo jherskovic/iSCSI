@@ -201,6 +201,14 @@ public final class DaemonStore: LUNStore {
     /// accounting lives in `PrefetchChunkCache.Stats`.
     private(set) var lastRequestBytes = 0
 
+    /// Reads inside `read(into:at:length:)` at once — what the volume above
+    /// handed this store concurrently.
+    let readsInFlight = InFlightGauge()
+    /// Blocking daemon reads (misses and RMW edges) at once — what this store
+    /// put on the XPC connection concurrently. Speculation is not counted: it
+    /// is asynchronous and has its own depth controller.
+    let fetchesInFlight = InFlightGauge()
+
     /// Seconds to wait for any single daemon call.
     private static let timeout: TimeInterval = 30
 
@@ -221,7 +229,8 @@ public final class DaemonStore: LUNStore {
     }
 
     /// Speculative bytes allowed in flight once a stream earns that depth
-    /// (`ReadaheadPolicy`). FSKit issues one read at a time and waits, so
+    /// (`ReadaheadPolicy`). Through `hdiutil`, DiskImages reads `lun0.img` one
+    /// request at a time (measured 2026-10-31, open-questions item 17), so
     /// readahead is the only source of link depth. This only seeds the first
     /// second of a mount; `ReadaheadDepthController` steers it afterwards on
     /// measured waste. See docs/queue-depth.md.
@@ -238,9 +247,16 @@ public final class DaemonStore: LUNStore {
     /// between every pair of writes and wasted all of it.
     private static let readaheadMinStream = 256 * 1024
 
-    /// The cache's unit of fetch and residence: the single-command throughput
+    /// The cache's unit of residence, and of fetch until the read-around
+    /// controller measures that less would do: the single-command throughput
     /// sweet spot, and never smaller than a block (geometry allows up to 1 MiB).
     private static func chunkBytes(forBlockSize bs: Int) -> Int { max(256 << 10, bs) }
+
+    /// The finest read-around unit: 4 KiB, or the block when that is larger
+    /// — the least a miss can usefully fetch, and at most 64 to a chunk, so a
+    /// chunk's bitmaps are one word. A 4 KiB random read used to fetch the
+    /// whole 256 KiB chunk: 64x the traffic (issue #4).
+    private static func sectorBytes(forBlockSize bs: Int) -> Int { max(4096, bs) }
 
     /// Resident cache ceiling. 16 MiB churned — chunks evicted before their
     /// neighbours were read back; 32 MiB is the next measured step.
@@ -355,16 +371,21 @@ public final class DaemonStore: LUNStore {
         // Averaged: the last request alone misrepresents the run.
         let avgRequest = readCount > 0 ? Int(readBytes / UInt64(readCount)) : 0
         // `unused` = speculative chunks never touched; `readAround` = bytes
-        // fetched beyond what callers asked. hit% alone cannot indict the
-        // cache; these can.
+        // fetched beyond what callers asked; `unit` = what a miss fetches
+        // around its request now. hit% alone cannot indict the cache; these
+        // can. `inflight` = most reads ever inside this store at once / most
+        // blocking daemon reads at once (`InFlightGauge`).
+        // Built in statements: one long `+` chain is past what the type
+        // checker will solve in reasonable time.
         var line = "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B "
-             + "flushes=\(flushCount) avgReq=\(avgRequest)B lastReq=\(lastRequestBytes)B "
-             + "cache=\(rate)% (\(s.hits) hit, \(s.misses) miss, \(s.unanswered) unanswered) "
-             + "maxDepth=\(s.maxDepth) cap=\(s.currentCap) "
-             + "speculated=\(s.chunksSpeculated)/\(s.speculatedBytes)B "
-             + "unused=\(s.chunksSpeculated - s.speculatedUsed) "
-             + "settled=\(s.resolvedUsed)used/\(s.resolvedWasted)wasted "
-             + "readAround=\(s.readAroundBytes)B"
+        line += "flushes=\(flushCount) avgReq=\(avgRequest)B lastReq=\(lastRequestBytes)B "
+        line += "cache=\(rate)% (\(s.hits) hit, \(s.misses) miss, \(s.unanswered) unanswered) "
+        line += "maxDepth=\(s.maxDepth) cap=\(s.currentCap) unit=\(s.readAroundUnit)B "
+        line += "inflight=\(readsInFlight.peak)/\(fetchesInFlight.peak) "
+        line += "speculated=\(s.chunksSpeculated)/\(s.speculatedBytes)B "
+        line += "unused=\(s.chunksSpeculated - s.speculatedUsed) "
+        line += "settled=\(s.resolvedUsed)used/\(s.resolvedWasted)wasted "
+        line += "readAround=\(s.readAroundBytes)B"
         if let d {
             line += " disk=\(d.hits)/\(d.lookups) diskSaved=\(d.savedBytes)B"
                   + " spilled=\(d.spilled) diskCorrupt=\(d.corrupt)"
@@ -487,6 +508,7 @@ public final class DaemonStore: LUNStore {
                                     chunkBytes: chunk),
             timeout: Self.timeout,
             adaptiveDepth: !pinned,
+            sectorBytes: Self.sectorBytes(forBlockSize: Int(bs)),
             fetchSync: { [weak self] offset, length in
                 guard let self else { throw POSIXError(.EIO) }
                 if let data = self.diskTier?.lookup(offset: offset, length: length) { return data }
@@ -609,6 +631,8 @@ public final class DaemonStore: LUNStore {
     /// Reads exactly `[offset, offset+length)` where both are already
     /// block-aligned. Every aligned access funnels through here.
     private func rawRead(offset: UInt64, length: Int) throws -> Data {
+        fetchesInFlight.enter()
+        defer { fetchesInFlight.leave() }
         let proxy = try daemon()
         var data: Data?
         var err: Error?
@@ -635,6 +659,8 @@ public final class DaemonStore: LUNStore {
     }
 
     public func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int {
+        readsInFlight.enter()
+        defer { readsInFlight.leave() }
         guard let plan = aligner.plan(offset: offset, length: min(length, buffer.count)) else { return 0 }
 
         let data = try readAligned(offset: plan.alignedOffset, length: plan.alignedLength)
