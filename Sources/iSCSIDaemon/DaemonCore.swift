@@ -56,7 +56,7 @@ public actor DaemonCore {
     /// An operation at least this long is logged with how many others were in
     /// flight on its session when it started — whether it waited in a queue
     /// or the target was slow. A FreeBSD guest panicked when a disk command
-    /// took over 10 s on a DiskImages2 volume (docs/open-questions.md item 16).
+    /// took over 10 s on a DiskImages2 volume (docs/open-questions.md item 17).
     private let slowOperationThreshold: Duration
 
     public init(

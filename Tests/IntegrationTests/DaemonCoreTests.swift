@@ -88,7 +88,7 @@ struct DaemonCoreTests {
     /// The daemon counts each session's reads, writes and flushes in flight,
     /// and counts as slow any that take at least the threshold, so a stalled
     /// command can be told apart from one queued behind others
-    /// (docs/open-questions.md item 16). The mock target holds every reply
+    /// (docs/open-questions.md item 17). The mock target holds every reply
     /// for 60 ms; the threshold is 20 ms.
     @Test func slowOperationsAreCountedWithTheirConcurrency() async throws {
         var config = MockTargetConfig()

@@ -233,7 +233,7 @@ public final class DaemonStore: LUNStore {
     /// A write or flush at least this slow is logged with where its time went
     /// (waiting for `ioLock`, or in the daemon). A FreeBSD guest panicked when
     /// one of its disk commands took over 10 s on a DiskImages2 volume whose
-    /// writes averaged 120-140 ms (docs/open-questions.md item 16); this is how
+    /// writes averaged 120-140 ms (docs/open-questions.md item 17); this is how
     /// the next one says where the time went.
     private let slowIONanos: UInt64
     private(set) var slowWrites = 0

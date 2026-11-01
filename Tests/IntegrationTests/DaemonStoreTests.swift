@@ -251,7 +251,7 @@ struct DaemonStoreTests {
 
     /// A write at least as slow as the threshold is counted, and the longest
     /// is kept, so the summary says whether any write came near the 10 s a
-    /// guest's disk timeout allows (docs/open-questions.md item 16). Wide
+    /// guest's disk timeout allows (docs/open-questions.md item 17). Wide
     /// margins: a fake-daemon write takes microseconds, and CI runs this on a
     /// saturated three-core runner.
     /// A slow read is counted where it was slow. Here the daemon is: the
