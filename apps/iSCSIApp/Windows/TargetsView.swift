@@ -420,28 +420,24 @@ struct TargetEditor: View {
     }
 
     /// The protocol is the name's prefix and nothing else: `nqn.` is
-    /// NVMe/TCP. The picker is a view onto that fact, not a second field —
-    /// flipping it rewrites the prefix, and only touches the address, port
-    /// and unit number when they still hold what the other protocol was
-    /// given rather than something typed.
-    private var isNVMe: Bool { IQN.isNQN(targetIQN) }
+    /// NVMe/TCP. Only a new target's can be chosen, and its picker is a view
+    /// onto that fact, not a second field — flipping it rewrites the prefix.
+    /// An existing target's protocol is its record's, whatever is typed:
+    /// a name that would change it is refused (`protocolChanged`), not
+    /// followed.
+    private var isNVMe: Bool { existing?.isNVMe ?? IQN.isNQN(targetIQN) }
 
     /// The name this Mac presents for the protocol being edited.
     private var hostIdentity: String? { isNVMe ? hostNQN : initiatorName }
 
+    /// A new target's protocol choice. Its portal came from LastPortal, so it
+    /// moves to the other protocol's remembered one, as Discover's does, and
+    /// the unit number follows only while it is still the other default.
     private var protocolPicker: Binding<Bool> {
         Binding(get: { isNVMe }, set: { nvme in
             guard nvme != isNVMe else { return }
             let trimmed = targetIQN.trimmingCharacters(in: .whitespaces)
-            if existing == nil {
-                // A new target's portal came from LastPortal, so it moves to
-                // the other protocol's remembered one, as Discover's does.
-                LastPortal.switchProtocol(host: &host, port: &port, from: !nvme, to: nvme)
-            } else if port == String(LastPortal.defaultPort(nvme: !nvme)) {
-                // An existing target keeps its own address; only a port still
-                // on the other protocol's default follows the switch.
-                port = String(LastPortal.defaultPort(nvme: nvme))
-            }
+            LastPortal.switchProtocol(host: &host, port: &port, from: !nvme, to: nvme)
             if nvme {
                 targetIQN = trimmed.hasPrefix("iqn.") || trimmed.isEmpty ? "nqn." : trimmed
                 if lun == "0" { lun = "1" }
@@ -456,17 +452,34 @@ struct TargetEditor: View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
                 Section {
-                    Picker("Protocol", selection: protocolPicker) {
-                        Text("iSCSI").tag(false)
-                        Text("NVMe/TCP").tag(true)
+                    if existing == nil {
+                        Picker("Protocol", selection: protocolPicker) {
+                            Text("iSCSI").tag(false)
+                            Text("NVMe/TCP").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                    } else {
+                        // Shown, not offered: the other protocol is a new
+                        // target, added from its own list.
+                        LabeledContent("Protocol") {
+                            Text(isNVMe ? "NVMe/TCP" : "iSCSI").bold()
+                        }
                     }
-                    .pickerStyle(.segmented)
                     TextField("Name", text: $displayName, prompt: Text("Photos archive"))
                     TextField("Address", text: $host, prompt: Text("nas.local"))
                     TextField("Port", text: $port)
                     TextField(isNVMe ? "Subsystem NQN" : "Target", text: $targetIQN,
                               prompt: Text(isNVMe ? "nqn.2011-06.com.truenas:uuid:…:disk0"
                                                   : "iqn.2026-08.com.example:disk0"))
+                    if protocolChanged {
+                        Text(isNVMe
+                             ? "An NVMe/TCP subsystem name starts with “nqn.”. "
+                               + "For an iSCSI target, add one under iSCSI."
+                             : "That is an NVMe/TCP subsystem name. "
+                               + "Add it under NVMe/TCP instead.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                     HStack {
                         TextField(isNVMe ? "Namespace ID" : "LUN", text: $lun)
                         if let foundUnits, !foundUnits.isEmpty {
@@ -729,12 +742,21 @@ struct TargetEditor: View {
         return targetIQN.trimmingCharacters(in: .whitespaces) == "nqn." || UInt64(lun) == 0
     }
 
+    /// An existing target's name retyped into the other protocol's: an NQN
+    /// on an iSCSI target, or anything else on an NVMe/TCP one. The name is
+    /// the only thing that says which protocol a record is, so saving this
+    /// would switch protocols by the route the picker no longer offers.
+    private var protocolChanged: Bool {
+        guard let existing else { return false }
+        return IQN.isNQN(targetIQN.trimmingCharacters(in: .whitespaces)) != existing.isNVMe
+    }
+
     private var isValid: Bool {
         !displayName.trimmingCharacters(in: .whitespaces).isEmpty
             && !TargetPortal.host(typed: host).isEmpty
             && !targetIQN.trimmingCharacters(in: .whitespaces).isEmpty
             && UInt16(port) != nil && UInt64(lun) != nil
-            && !nvmeIncomplete
+            && !nvmeIncomplete && !protocolChanged
             && !secretTooShort && !credentialIncomplete && !mutualHalfConfigured
     }
 
@@ -746,6 +768,7 @@ struct TargetEditor: View {
             && UInt16(port) != nil
             && !targetIQN.trimmingCharacters(in: .whitespaces).isEmpty
             && targetIQN.trimmingCharacters(in: .whitespaces) != "nqn."
+            && !protocolChanged
             && !credentialIncomplete && !secretTooShort
     }
 
