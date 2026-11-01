@@ -259,11 +259,12 @@ struct TargetEditor: View {
         self.model = model
         self.existing = target
         _displayName = State(initialValue: target?.displayName ?? "")
-        // A new target starts at the last address used; an existing one always
+        // A new target starts at the last iSCSI address used (an empty name is
+        // iSCSI until the picker says otherwise); an existing one always
         // shows its own. Pre-filling an edit sheet with someone else's address
         // would be a data-loss bug wearing a convenience costume.
-        _host = State(initialValue: target?.host ?? LastPortal.suggestedHost)
-        _port = State(initialValue: String(target?.port ?? LastPortal.port))
+        _host = State(initialValue: target?.host ?? LastPortal.suggestedHost(nvme: false))
+        _port = State(initialValue: String(target?.port ?? LastPortal.port(nvme: false)))
         _targetIQN = State(initialValue: target?.targetIQN ?? "")
         _lun = State(initialValue: String(target?.lun ?? 0))
         _chapUser = State(initialValue: target?.chapUser ?? "")
@@ -280,8 +281,9 @@ struct TargetEditor: View {
 
     /// The protocol is the name's prefix and nothing else: `nqn.` is
     /// NVMe/TCP. The picker is a view onto that fact, not a second field —
-    /// flipping it rewrites the prefix, and only touches the port and unit
-    /// number when they still hold the other protocol's defaults.
+    /// flipping it rewrites the prefix, and only touches the address, port
+    /// and unit number when they still hold what the other protocol was
+    /// given rather than something typed.
     private var isNVMe: Bool { IQN.isNQN(targetIQN) }
 
     /// The name this Mac presents for the protocol being edited.
@@ -291,13 +293,20 @@ struct TargetEditor: View {
         Binding(get: { isNVMe }, set: { nvme in
             guard nvme != isNVMe else { return }
             let trimmed = targetIQN.trimmingCharacters(in: .whitespaces)
+            if existing == nil {
+                // A new target's portal came from LastPortal, so it moves to
+                // the other protocol's remembered one, as Discover's does.
+                LastPortal.switchProtocol(host: &host, port: &port, from: !nvme, to: nvme)
+            } else if port == String(LastPortal.defaultPort(nvme: !nvme)) {
+                // An existing target keeps its own address; only a port still
+                // on the other protocol's default follows the switch.
+                port = String(LastPortal.defaultPort(nvme: nvme))
+            }
             if nvme {
                 targetIQN = trimmed.hasPrefix("iqn.") || trimmed.isEmpty ? "nqn." : trimmed
-                if port == "3260" { port = "4420" }
                 if lun == "0" { lun = "1" }
             } else {
                 targetIQN = trimmed == "nqn." ? "" : trimmed
-                if port == "4420" { port = "3260" }
                 if lun == "1" { lun = "0" }
             }
         })
@@ -615,7 +624,7 @@ struct TargetEditor: View {
         findNote = nil
         findFailed = false
         let asked = (host: TargetPortal.host(typed: host),
-                     port: UInt16(port) ?? (isNVMe ? 4420 : 3260),
+                     port: UInt16(port) ?? LastPortal.defaultPort(nvme: isNVMe),
                      name: targetIQN.trimmingCharacters(in: .whitespaces),
                      isNVMe: isNVMe)
         let typedUser = chapUser.trimmingCharacters(in: .whitespaces)
@@ -665,7 +674,7 @@ struct TargetEditor: View {
             id: existing?.id ?? UUID().uuidString,
             displayName: displayName.trimmingCharacters(in: .whitespaces),
             host: TargetPortal.host(typed: host),
-            port: UInt16(port) ?? (isNVMe ? 4420 : 3260),
+            port: UInt16(port) ?? LastPortal.defaultPort(nvme: isNVMe),
             targetIQN: targetIQN.trimmingCharacters(in: .whitespaces),
             lun: UInt64(lun) ?? (isNVMe ? 1 : 0),
             chapUser: (isNVMe || chapUser.isEmpty) ? nil : chapUser,
@@ -679,7 +688,7 @@ struct TargetEditor: View {
             interfaceFallback: networkInterface == nil ? nil : interfaceFallback,
             localCacheGB: localCacheGB)
 
-        LastPortal.remember(host: record.host, port: record.port)
+        LastPortal.remember(host: record.host, port: record.port, nvme: isNVMe)
         Task {
             await model.save(record,
                              secret: (isNVMe || chapSecret.isEmpty) ? nil : chapSecret,

@@ -13,8 +13,9 @@ import iSCSIKit
 struct DiscoveryView: View {
     @ObservedObject var model: AppModel
 
-    @State private var host = LastPortal.suggestedHost
-    @State private var port = String(LastPortal.port)
+    // Discover opens on iSCSI, so it opens on iSCSI's remembered portal.
+    @State private var host = LastPortal.suggestedHost(nvme: false)
+    @State private var port = String(LastPortal.port(nvme: false))
     /// Which discovery to run. Not stored anywhere: a target's protocol is
     /// its name's prefix, and Discover only decides which portal to ask.
     @State private var isNVMe = false
@@ -69,10 +70,8 @@ struct DiscoveryView: View {
             }
             .formStyle(.grouped)
             .frame(maxHeight: 400)
-            .onChange(of: isNVMe) { _, nvme in
-                // Swap the port only when it still holds the other protocol's
-                // default; a port the user typed is theirs.
-                if port == String(nvme ? 3260 : 4420) { port = String(nvme ? 4420 : 3260) }
+            .onChange(of: isNVMe) { wasNVMe, nvme in
+                LastPortal.switchProtocol(host: &host, port: &port, from: wasNVMe, to: nvme)
             }
 
             HStack {
@@ -169,13 +168,11 @@ struct DiscoveryView: View {
         }
     }
 
-    private var defaultPort: UInt16 { isNVMe ? 4420 : 3260 }
-
     private func search() {
         isSearching = true
         failure = nil
         let asked = Search(host: TargetPortal.host(typed: host),
-                           port: UInt16(port) ?? defaultPort,
+                           port: UInt16(port) ?? LastPortal.defaultPort(nvme: isNVMe),
                            isNVMe: isNVMe,
                            chapUser: isNVMe ? "" : chapUser,
                            chapSecret: isNVMe ? "" : chapSecret,
@@ -188,7 +185,8 @@ struct DiscoveryView: View {
                 // is worth suggesting again, one that was mistyped is not.
                 defer {
                     if !found.isEmpty {
-                        LastPortal.remember(host: asked.host, port: asked.port)
+                        LastPortal.remember(host: asked.host, port: asked.port,
+                                            nvme: asked.isNVMe)
                     }
                 }
                 let interface = InterfaceBinding.named(asked.networkInterface,
