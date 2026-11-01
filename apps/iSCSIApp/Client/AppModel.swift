@@ -74,9 +74,32 @@ final class AppModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+
+        // Views read setup through this model (`isReady`, the sidebar's
+        // spinner and "!"), and observe only this model. Without passing its
+        // changes on, they redrew when something here happened to change too.
+        setup.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
     @Published private(set) var targets: [TargetRecord] = []
+    /// Target reads under way: a whole `refresh`, its setup pass included —
+    /// at launch that pass is most of the wait — or a read after setup
+    /// turned ready. Counted, because they overlap.
+    @Published private var targetReadsInFlight = 0
+    var isLoadingTargets: Bool { targetReadsInFlight > 0 }
+    /// The list has been read at least once since launch. Until then an
+    /// empty `targets` means "not read yet", not "no targets".
+    @Published private(set) var hasReadTargets = false
+
+    /// Nothing to show on Targets *yet*: the list has not been read, and a
+    /// read — or the setup check before it — is under way or has not started.
+    /// The screen shows progress for this rather than "Finish setup first",
+    /// which would be a claim nobody has checked.
+    var isAwaitingFirstRead: Bool {
+        !hasReadTargets && (isLoadingTargets || setup.isWorking || setup.reports.isEmpty)
+    }
     @Published private(set) var sessions: [SessionInfo] = []
     /// Target ids with an operation in flight, so rows can show progress and
     /// refuse a second click without a modal.
@@ -161,6 +184,8 @@ final class AppModel: ObservableObject {
     /// seconds after login is expected there, not something to alert about.
     @discardableResult
     func refresh(reportingErrors: Bool = true) async -> Bool {
+        targetReadsInFlight += 1
+        defer { targetReadsInFlight -= 1 }
         loginItemStatus = LoginItem.status
         await setup.checkAll()
         guard setup.isReady else {
@@ -174,8 +199,11 @@ final class AppModel: ObservableObject {
     /// ready: the targets, the sessions, and what is mounted.
     @discardableResult
     private func readTargets(reportingErrors: Bool) async -> Bool {
+        targetReadsInFlight += 1
+        defer { targetReadsInFlight -= 1 }
         do {
             targets = try await DaemonConnection.listTargets()
+            hasReadTargets = true
             sessions = try await DaemonConnection.sessions()
             await attachments.reconcile(targets: targets)
             for attachment in attachments.attachments where attachment.device != nil {

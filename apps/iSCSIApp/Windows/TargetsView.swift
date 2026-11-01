@@ -34,7 +34,10 @@ struct TargetsView: View {
     var body: some View {
         let rows = model.rows
         Group {
-            if rows.isEmpty && !model.isReady {
+            if rows.isEmpty && model.isAwaitingFirstRead {
+                ProgressView("Loading targets…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if rows.isEmpty && !model.isReady {
                 notReady
             } else {
                 Form {

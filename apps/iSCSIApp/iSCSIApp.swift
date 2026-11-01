@@ -125,15 +125,24 @@ struct MainWindow: View {
         if !model.isReady { section = .setup }
     }
 
+    private func isWorking(_ item: Section) -> Bool {
+        switch item {
+        case .targets:             return model.isLoadingTargets
+        case .setup:               return model.setup.isWorking
+        case .discover, .sessions: return false
+        }
+    }
+
     var body: some View {
         NavigationSplitView {
             List(Section.allCases, selection: $section) { item in
                 NavigationLink(value: item) {
-                    Label(item.title, systemImage: item.symbol)
-                        // Setup is the only screen that can be *wrong* rather
-                        // than merely empty, so it says so from the sidebar
-                        // instead of waiting to be visited.
-                        .badge(item == .setup && !model.isReady ? "!" : nil)
+                    // Setup is the only screen that can be *wrong* rather
+                    // than merely empty, so it says so from the sidebar
+                    // instead of waiting to be visited.
+                    SidebarRow(title: item.title, symbol: item.symbol,
+                               isWorking: isWorking(item),
+                               needsAttention: item == .setup && model.setup.needsAttention)
                 }
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)

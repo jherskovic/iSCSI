@@ -28,6 +28,7 @@
 		4DBAB79EACD7DB17E21C8F89 /* OtherCopies.swift in Sources */ = {isa = PBXBuildFile; fileRef = B808F3CCD9834015B10E1D56 /* OtherCopies.swift */; };
 		4E0D9AEC2C32868C1A6D1BB6 /* iSCSIUserClient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E988EFDBF4855884F248B81E /* iSCSIUserClient.cpp */; };
 		55788E1D687E363D11E508DE /* TargetsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A78E2D4EB65C66F2C89DCBF1 /* TargetsView.swift */; };
+		56E053A775D10A0F3E3B5BBF /* SidebarRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEB7014D643231D7883A0AD4 /* SidebarRow.swift */; };
 		5D2750BDD476A45989A9568C /* MenuBarLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00EC6380114B4831D7E0A785 /* MenuBarLabel.swift */; };
 		639F557EB39F50C31EEB5B6F /* InterfacePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E320392778744E1F0F1ED49 /* InterfacePicker.swift */; };
 		63DF83BB8A3C38F8726719F4 /* DaemonController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D391D2F85F1E895FFA385D9 /* DaemonController.swift */; };
@@ -179,6 +180,7 @@
 		B808F3CCD9834015B10E1D56 /* OtherCopies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OtherCopies.swift; sourceTree = "<group>"; };
 		BD45EF66B5901CBA63524A52 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		CC3157616295AC33CB39EFB3 /* DiskImages2Attach.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskImages2Attach.swift; sourceTree = "<group>"; };
+		CEB7014D643231D7883A0AD4 /* SidebarRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarRow.swift; sourceTree = "<group>"; };
 		D3CE19CCF76F0D1615284CE8 /* initiator.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = initiator.icon; sourceTree = "<group>"; };
 		DD771E80CF6EBE9DCF6AA988 /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
 		E2A9410B4B594B4270735046 /* iSCSIUserClient.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = iSCSIUserClient.iig; sourceTree = "<group>"; };
@@ -325,6 +327,7 @@
 				3071CFD21D92FAF593C1D5E5 /* DiscoveryView.swift */,
 				5E320392778744E1F0F1ED49 /* InterfacePicker.swift */,
 				E5D39B691CCE7444B689581C /* SessionsView.swift */,
+				CEB7014D643231D7883A0AD4 /* SidebarRow.swift */,
 				A78E2D4EB65C66F2C89DCBF1 /* TargetsView.swift */,
 				66A066551C98F53B7638A06D /* UninstallView.swift */,
 			);
@@ -667,6 +670,7 @@
 				A5942087ABDE23B87B1E18A0 /* SetupCoordinator.swift in Sources */,
 				1ED426491C5207B50045C36D /* SetupStep.swift in Sources */,
 				F74EF9940358FC4AEA094B4D /* SetupView.swift in Sources */,
+				56E053A775D10A0F3E3B5BBF /* SidebarRow.swift in Sources */,
 				55788E1D687E363D11E508DE /* TargetsView.swift in Sources */,
 				B131D51A4DE8326CD0998844 /* UninstallView.swift in Sources */,
 				806A6B4A377EDE0322099A45 /* Uninstaller.swift in Sources */,

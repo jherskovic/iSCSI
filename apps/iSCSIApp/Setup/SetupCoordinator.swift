@@ -48,7 +48,13 @@ final class SetupCoordinator: ObservableObject {
     }
 
     @Published private(set) var reports: [Report] = []
+    /// Any pass is running. Passes overlap — the launch refresh, the Setup
+    /// screen's own check, coming to the foreground — so this is counted:
+    /// the first pass to end must not report the others as done.
     @Published private(set) var isChecking = false
+    private var passesInFlight = 0 {
+        didSet { isChecking = passesInFlight > 0 }
+    }
     /// The step whose action is running, so the screen can say so.
     ///
     /// Tracked here rather than read off the step's own `.checking` state
@@ -65,6 +71,14 @@ final class SetupCoordinator: ObservableObject {
 
     /// Every prerequisite holds. The GUI gates its Connect affordances on this.
     var isReady: Bool { Self.isReady(reports) }
+
+    /// Checking, or running a step's action. What the sidebar's spinner shows.
+    var isWorking: Bool { isChecking || busyStepID != nil }
+
+    /// A finished check found something to address. Narrower than `!isReady`,
+    /// which is also true before the first check has finished: the "!" is
+    /// for something the user can act on, not for "not known yet".
+    var needsAttention: Bool { reports.contains { $0.state.needsAttention } }
 
     /// `isReady` for a given list, for observers of `$reports`: it publishes
     /// on willSet, so the property still holds the old list when they run.
@@ -88,8 +102,8 @@ final class SetupCoordinator: ObservableObject {
     }
 
     func checkAll() async {
-        isChecking = true
-        defer { isChecking = false }
+        passesInFlight += 1
+        defer { passesInFlight -= 1 }
         // Sequential, not concurrent: later steps read state that earlier ones
         // can change, and four cheap local queries are not worth the confusion
         // of racing them.
