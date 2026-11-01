@@ -167,7 +167,9 @@ exactly the hole FUA closes.
 It moves if either:
 
 - FSKit gains a barrier signal (Apple's move; see the header of
-  `iSCSIFSExtension.swift`), or
+  `iSCSIFSExtension.swift`). Re-checked on macOS 27.2 with both attach
+  engines, 2026-11-01: still none (`docs/backend-a-fskit-notes.md`, "there
+  is no barrier signal"), or
 - the user can declare their target's cache non-volatile — battery-backed or
   UPS-protected — and accept the consequence. That is a UI and a stored setting,
   not a protocol change, and it is the only half available from here.

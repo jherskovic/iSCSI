@@ -1029,6 +1029,45 @@ So on macOS 26.6 with `FSVolume.Operations`, an FSKit volume gets **no barrier
 notification at all**. An APFS barrier on the disk image cannot be observed by
 the extension underneath it.
 
+**Re-checked on macOS 27.2 (26B123), 2026-11-01: still none, with either
+attach engine.** `scripts/vm-fskit-barrier-probe.sh` issues one kind of flush
+per step through the whole shipping stack, from APFS on the attached disk down
+to the extension. It streams the extension's log with a `logger` marker before
+each step, so each line is attributed by order. Run on name-testing (NVMe/TCP)
+with the installed app:
+
+| step | `hdiutil` | DiskImages2, `writeThrough` granted |
+|---|---|---|
+| `fsync`, new 4 MiB file | 117 ms; nothing | 88 ms; nothing |
+| `F_FULLFSYNC`, new 4 MiB file | 133 ms; nothing | 127 ms; nothing |
+| `sync(8)` | nothing | nothing |
+| `fsync` and `F_FULLFSYNC` on `lun0.img` | 0.00 ms each; nothing | 0.00 ms each; nothing |
+| `DKIOCSYNCHRONIZECACHE` on the raw disk | 101 ms; nothing | 66 ms; nothing |
+
+"Nothing" means no `synchronize`, no `closeItem` with `keeping=0` and no
+data-cache `close`.
+
+- **With `hdiutil`, the flush counter did not move.** It read 6 before the
+  run and 6 after the `lun0.img` step, with 56 writes (17.5 MB) in between.
+  The probe did see the extension's other lines: two `CLOSE keeping=1` while
+  idle, and one `CLOSE keeping=3` from its own open of `lun0.img`.
+- **With DiskImages2, the extension logged nothing during the run,** FSKit's
+  own messages included. Its last lines were from the mount, granting
+  `writeThrough` for `lun0.img`. The probe's read-only open of `lun0.img`
+  reached no callback either, since DiskImages2 already held it read-write.
+- **`F_FULLFSYNC` on `lun0.img` returns at once.** The kernel does not take it
+  to FSKit at all; on a local APFS file the same call takes about 5 ms.
+- **The flushes on the volume do wait,** 66–133 ms, for the writes they push.
+  Those arrive at the extension as ordinary writes.
+- **Not covered: `FSVolumeHandler`.** FSKit logs that the extension does not
+  adopt it (`conforms to FSVolumeHandler = 0`), the macOS 27 replacement for
+  `FSVolume.Operations`. The 27 SDK gives it the same single volume-wide
+  `synchronize` and no per-file sync, but whether FSKit calls that more often
+  for a volume that adopts it is untested.
+
+So the design consequence below holds on 27 as well: the extension cannot
+buffer or merge writes, and FUA stays.
+
 What *is* observable is open/close: DiskImages opens `modes=3` and closes with
 `keeping=0` around I/O batches. `closeItem` with no retained modes is therefore
 the only durability hook available, and the extension now flushes there.
