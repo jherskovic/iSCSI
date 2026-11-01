@@ -1,6 +1,9 @@
 //
 //  TargetsView.swift
-//  The list people spend their time in: one row per target, attach or detach.
+//  The screen people spend their time in, laid out like System Settings'
+//  Network pane: iSCSI and NVMe/TCP each in a group of their own, a row per
+//  target with its state and an Attach/Detach button, and + and − at the
+//  foot of each group.
 //
 
 import AppKit
@@ -8,20 +11,49 @@ import ServiceManagement
 import SwiftUI
 import iSCSIKit
 
+/// Which group a target sits in, and which protocol a new one starts on.
+/// Read off the name's prefix like everywhere else — there is no stored
+/// discriminator to consult.
+private enum TargetKind: String, CaseIterable, Identifiable {
+    case iSCSI, nvme
+    var id: String { rawValue }
+    var isNVMe: Bool { self == .nvme }
+    var title: String { isNVMe ? "NVMe/TCP" : "iSCSI" }
+}
+
 struct TargetsView: View {
     @ObservedObject var model: AppModel
     @State private var editing: TargetRecord?
-    @State private var isAdding = false
+    @State private var adding: TargetKind?
+    /// What a group's − acts on. One selection across both groups, as in
+    /// System Settings; a group's − is live only when it holds it.
+    @State private var selection: String?
+    /// Waiting on the Remove confirmation.
+    @State private var removing: TargetRecord?
 
     var body: some View {
+        let rows = model.rows
         Group {
-            if model.rows.isEmpty {
-                empty
+            if rows.isEmpty && !model.isReady {
+                notReady
             } else {
-                List {
-                    ForEach(model.rows) { row in
-                        TargetRow(row: row, model: model) { editing = row.target }
+                Form {
+                    ForEach(TargetKind.allCases) { kind in
+                        section(kind, rows: rows.filter { $0.target.isNVMe == kind.isNVMe })
                     }
+                }
+                .formStyle(.grouped)
+                .alert(removing.map { "Remove “\($0.displayName)”?" } ?? "",
+                       isPresented: Binding(get: { removing != nil },
+                                            set: { if !$0 { removing = nil } }),
+                       presenting: removing) { target in
+                    Button("Remove", role: .destructive) {
+                        if selection == target.id { selection = nil }
+                        Task { await model.delete(target) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: { target in
+                    Text(removalMessage(for: target))
                 }
             }
         }
@@ -31,20 +63,13 @@ struct TargetsView: View {
             }
         }
         .navigationTitle("Targets")
-        .toolbar {
-            Button {
-                isAdding = true
-            } label: {
-                Label("Add Target", systemImage: "plus")
-            }
-            .disabled(!model.isReady)
-            // Explaining the disabled control beats leaving the user to guess
-            // why the only button on an empty screen does nothing.
-            .help(model.isReady ? "Add a target"
-                                : "Finish setup before adding targets")
+        // A removed target takes its selection with it, or the − would stay
+        // live for a row that is no longer there.
+        .onChange(of: model.targets.map(\.id)) { _, ids in
+            if let selection, !ids.contains(selection) { self.selection = nil }
         }
-        .sheet(isPresented: $isAdding) {
-            TargetEditor(model: model, target: nil)
+        .sheet(item: $adding) { kind in
+            TargetEditor(model: model, target: nil, nvme: kind.isNVMe)
         }
         .sheet(item: $editing) { target in
             TargetEditor(model: model, target: target)
@@ -67,14 +92,85 @@ struct TargetsView: View {
         }
     }
 
-    private var empty: some View {
+    /// One protocol's group. Both are always shown, empty or not: each one's
+    /// + is the way to add that protocol, and "NVMe/TCP is over here" is
+    /// worth saying to someone who has only ever added iSCSI.
+    private func section(_ kind: TargetKind, rows: [AppModel.Row]) -> some View {
+        Section(kind.title) {
+            if rows.isEmpty {
+                Text("No \(kind.title) targets")
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 6)
+            }
+            ForEach(rows) { row in
+                TargetRow(row: row, model: model, isSelected: selection == row.id,
+                          edit: { editing = row.target },
+                          remove: { removing = row.target })
+                    .contentShape(Rectangle())
+                    .onTapGesture { selection = row.id }
+            }
+            addRemoveBar(kind, selected: rows.first { $0.id == selection })
+        }
+    }
+
+    /// + and −, at the foot of the group as in System Settings. − removes the
+    /// selected row, after asking.
+    private func addRemoveBar(_ kind: TargetKind, selected: AppModel.Row?) -> some View {
+        HStack(spacing: 2) {
+            Button {
+                adding = kind
+            } label: {
+                Image(systemName: "plus").frame(width: 22, height: 18)
+            }
+            .disabled(!model.isReady)
+            // Explaining the disabled control beats leaving the user to guess
+            // why the only button on an empty screen does nothing.
+            .help(model.isReady ? "Add an \(kind.title) target"
+                                : "Finish setup before adding targets")
+            .accessibilityLabel("Add \(kind.title) Target")
+
+            Divider().frame(height: 14)
+
+            Button {
+                removing = selected?.target
+            } label: {
+                Image(systemName: "minus").frame(width: 22, height: 18)
+            }
+            // Not mid-attach: `AppModel.delete` refuses then, and a button
+            // that does nothing when clicked is worse than a disabled one.
+            .disabled(selected == nil || selected?.isBusy == true)
+            .help(selected.map { "Remove “\($0.target.displayName)”" }
+                  ?? "Select a \(kind.title) target to remove it")
+            .accessibilityLabel("Remove \(kind.title) Target")
+
+            Spacer()
+        }
+        .buttonStyle(.borderless)
+    }
+
+    /// Removing a mounted target ejects it first (`AppModel.delete`), so the
+    /// confirmation says so in the same words as Detach's; otherwise it says
+    /// what goes, which includes a stored CHAP secret.
+    private func removalMessage(for target: TargetRecord) -> String {
+        let mounted = model.rows.first { $0.id == target.id }?.attachment != nil
+        if mounted {
+            return "Its volume is still mounted and will be ejected first; anything "
+                + "still using files on it — a running virtual machine, an open "
+                + "document — should be shut down before continuing."
+        }
+        return target.chapUser == nil
+            ? "Its settings are removed from this Mac. Nothing on the target changes."
+            : "Its settings and saved CHAP secret are removed from this Mac. "
+            + "Nothing on the target changes."
+    }
+
+    /// With setup unfinished and nothing configured, two empty groups with
+    /// disabled + buttons would say nothing about why.
+    private var notReady: some View {
         ContentUnavailableView {
             Label("No Targets", systemImage: "externaldrive.badge.plus")
         } description: {
-            Text(model.isReady
-                 ? "Add the address of an iSCSI or NVMe/TCP target, or use Discover "
-                 + "to find what a storage device is offering."
-                 : "Finish setup first — the background service and filesystem "
+            Text("Finish setup first — the background service and filesystem "
                  + "extension have to be running before a target can be attached.")
         }
     }
@@ -128,23 +224,32 @@ private struct LoginItemBanner: View {
 private struct TargetRow: View {
     let row: AppModel.Row
     @ObservedObject var model: AppModel
+    let isSelected: Bool
     let edit: () -> Void
+    let remove: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol)
-                .font(.title2)
-                .foregroundStyle(row.isAttached ? .green
-                                 : failure != nil ? .orange : .secondary)
-                .frame(width: 28)
+        HStack(spacing: 10) {
+            // Coloured while attached and grey otherwise, as Network does for
+            // services; the dot below carries the finer state.
+            Image(systemName: "externaldrive.fill")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 26, height: 26)
+                .background(row.isAttached ? AnyShapeStyle(Color.accentColor.gradient)
+                                           : AnyShapeStyle(Color.gray.gradient),
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(row.target.displayName).fontWeight(.medium)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                Text(row.target.displayName)
+                HStack(spacing: 5) {
+                    Circle().fill(status.color).frame(width: 7, height: 7)
+                    Text(subtitle)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .font(.callout)
             }
             .help(failure.map { [$0.message, $0.suggestion].compactMap { $0 }
                 .joined(separator: "\n\n") } ?? "")
@@ -159,16 +264,29 @@ private struct TargetRow: View {
                 Button("Detach") { Task { await model.detach(row.target) } }
             } else {
                 Button("Attach") { Task { await model.attach(row.target) } }
-                    .buttonStyle(.borderedProminent)
                     .disabled(!model.isReady)
             }
+
+            Button(action: edit) {
+                Image(systemName: "chevron.right")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 16, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help("Edit “\(row.target.displayName)”")
+            .accessibilityLabel("Edit \(row.target.displayName)")
         }
         .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(isSelected ? AnyShapeStyle(Color.accentColor.opacity(0.18)) : AnyShapeStyle(.clear),
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .padding(.horizontal, -6)
         .contextMenu {
             Button("Edit…", action: edit)
-            Button("Remove", role: .destructive) {
-                Task { await model.delete(row.target) }
-            }
+            Button("Remove…", role: .destructive, action: remove)
+                .disabled(row.isBusy)
         }
     }
 
@@ -178,9 +296,25 @@ private struct TargetRow: View {
         row.isAttached ? nil : row.autoAttachFailure
     }
 
-    private var symbol: String {
-        if row.isAttached { return "externaldrive.fill.badge.checkmark" }
-        return failure != nil ? "exclamationmark.triangle.fill" : "externaldrive"
+    /// The dot: green mounted, yellow connected but not mounted, red failed
+    /// at login, grey idle — Network's vocabulary, mapped onto ours.
+    private enum Status {
+        case on, partial, failed, off
+        var color: Color {
+            switch self {
+            case .on:      .green
+            case .partial: .yellow
+            case .failed:  .red
+            case .off:     .gray
+            }
+        }
+    }
+
+    private var status: Status {
+        if row.isAttached { return .on }
+        if failure != nil { return .failed }
+        if row.attachment != nil || row.session != nil { return .partial }
+        return .off
     }
 
     /// Says the most useful true thing available: where it is mounted if it is,
@@ -255,18 +389,24 @@ struct TargetEditor: View {
     @State private var findNote: String?
     @State private var findFailed = false
 
-    init(model: AppModel, target: TargetRecord?) {
+    /// `nvme` is the protocol a *new* target starts on — which list's + was
+    /// clicked. An existing target's protocol is its name's, and `nvme` is
+    /// ignored.
+    init(model: AppModel, target: TargetRecord?, nvme: Bool = false) {
         self.model = model
         self.existing = target
         _displayName = State(initialValue: target?.displayName ?? "")
-        // A new target starts at the last iSCSI address used (an empty name is
-        // iSCSI until the picker says otherwise); an existing one always
-        // shows its own. Pre-filling an edit sheet with someone else's address
-        // would be a data-loss bug wearing a convenience costume.
-        _host = State(initialValue: target?.host ?? LastPortal.suggestedHost(nvme: false))
-        _port = State(initialValue: String(target?.port ?? LastPortal.port(nvme: false)))
-        _targetIQN = State(initialValue: target?.targetIQN ?? "")
-        _lun = State(initialValue: String(target?.lun ?? 0))
+        // A new target starts at the last address used for its protocol; an
+        // existing one always shows its own. Pre-filling an edit sheet with
+        // someone else's address would be a data-loss bug wearing a
+        // convenience costume.
+        _host = State(initialValue: target?.host ?? LastPortal.suggestedHost(nvme: nvme))
+        _port = State(initialValue: String(target?.port ?? LastPortal.port(nvme: nvme)))
+        // A new NVMe/TCP target starts exactly where flipping the picker
+        // would leave it: the bare prefix (which Save refuses until it is
+        // completed) and namespace 1, since namespace IDs start there.
+        _targetIQN = State(initialValue: target?.targetIQN ?? (nvme ? "nqn." : ""))
+        _lun = State(initialValue: String(target?.lun ?? (nvme ? 1 : 0)))
         _chapUser = State(initialValue: target?.chapUser ?? "")
         _mutualChapUser = State(initialValue: target?.mutualChapUser ?? "")
         _chapSecret = State(initialValue: "")
