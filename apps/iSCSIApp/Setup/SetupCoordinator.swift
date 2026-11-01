@@ -64,7 +64,11 @@ final class SetupCoordinator: ObservableObject {
     @Published private(set) var busyLabel: String?
 
     /// Every prerequisite holds. The GUI gates its Connect affordances on this.
-    var isReady: Bool {
+    var isReady: Bool { Self.isReady(reports) }
+
+    /// `isReady` for a given list, for observers of `$reports`: it publishes
+    /// on willSet, so the property still holds the old list when they run.
+    nonisolated static func isReady(_ reports: [Report]) -> Bool {
         !reports.isEmpty && reports.allSatisfy(\.state.isSatisfied)
     }
 

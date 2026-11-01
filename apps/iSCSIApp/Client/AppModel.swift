@@ -52,6 +52,28 @@ final class AppModel: ObservableObject {
                 MainActor.assumeIsolated { self?.updates.installPendingUpdateIfReady() }
             }
             .store(in: &cancellables)
+
+        // Read the targets the moment setup turns ready, whoever ran the
+        // check. `refresh` reads them only when its own pass ends ready, and
+        // the Setup screen checks on its own — when it appears, on Re-check,
+        // after each step's button — so a launch that started not ready used
+        // to finish green with an empty Targets pane, until the next return
+        // to the foreground or a save. On a launch that is ready at once,
+        // this and `refresh` both read; the reads are idempotent.
+        setup.$reports
+            .map(SetupCoordinator.isReady)
+            .removeDuplicates()
+            .filter { $0 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // Unreported: a failure here is reported by the next
+                    // refresh, which every return to the foreground runs.
+                    Task { await self.readTargets(reportingErrors: false) }
+                }
+            }
+            .store(in: &cancellables)
     }
 
     @Published private(set) var targets: [TargetRecord] = []
@@ -145,6 +167,13 @@ final class AppModel: ObservableObject {
             sessions = []
             return false
         }
+        return await readTargets(reportingErrors: reportingErrors)
+    }
+
+    /// The daemon's half of `refresh`, for when setup is already known to be
+    /// ready: the targets, the sessions, and what is mounted.
+    @discardableResult
+    private func readTargets(reportingErrors: Bool) async -> Bool {
         do {
             targets = try await DaemonConnection.listTargets()
             sessions = try await DaemonConnection.sessions()
