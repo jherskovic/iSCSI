@@ -76,9 +76,14 @@ Two schemes. **iSCSI Initiator** is what ships (app + FSKit extension +
 `iscsid` inside the bundle). **iSCSIDext-dev** builds the parked DriverKit
 extension alone, for a SIP-off machine.
 
-The app builds against the macOS 26 SDK. Its one macOS 27 API,
-`FSClient.openFileSystemExtensionsSettings()`, is reached by selector in
-`FSKitSettingsLink` precisely so that stays true.
+The app builds against the macOS 27 SDK with a macOS 26.0 deployment target,
+so it still installs on 26. Anything newer than 26 must be availability-gated,
+which the compiler enforces against this SDK. CI (`ci.yml`, `release.yml`)
+runs on GitHub's `xcode-27` image with `DEVELOPER_DIR` pinned to Xcode 27.1,
+and `scripts/release.sh` refuses any other SDK version. `FSKitSettingsLink`
+still reaches `FSClient.openFileSystemExtensionsSettings()` by selector, which
+dates from the 26-SDK build and is no longer required. Nothing in CI runs on
+macOS 26, so 26 behaviour is checked on the 26.x test VM.
 
 ### Exercising the protocol without a NAS
 

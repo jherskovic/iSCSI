@@ -56,10 +56,17 @@ concurrency:
 jobs:
   release:
     name: Build, notarize, publish
-    runs-on: macos-26
+    # GitHub's Xcode 27 image: macOS 27, Apple silicon. The same image and
+    # pinned Xcode as ci.yml, so a release builds with what CI checked.
+    runs-on: xcode-27
     # Two notary round trips, each usually a few minutes and occasionally much
     # longer when Apple is busy.
     timeout-minutes: 90
+    # Xcode 27.1 and its macOS 27.0 SDK, pinned rather than taken from the
+    # image default, which moves between image releases. scripts/release.sh
+    # refuses any SDK but 27.x, so a wrong toolchain stops the release early.
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
 
     steps:
       # Full history: the appcast commit at the end pushes to main from what is
@@ -117,10 +124,11 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
-          # If a future image bumps Xcode to something whose SDK breaks the
-          # build, pin it here with DEVELOPER_DIR rather than discovering it in
-          # a release. The app job in ci.yml builds on this same image, so a
-          # break shows up there first.
+          echo "macOS SDK $(xcrun --sdk macosx --show-sdk-version) from $DEVELOPER_DIR"
+          # The Xcode is pinned by DEVELOPER_DIR above. When the image drops
+          # that Xcode, this list shows what is there to move the pin to; the
+          # app job in ci.yml runs on the same image and pin, so a break shows
+          # up there first.
           ls -d /Applications/Xcode*.app 2>/dev/null || true
 
       - name: Install build tools
