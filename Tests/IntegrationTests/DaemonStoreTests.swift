@@ -249,6 +249,53 @@ struct DaemonStoreTests {
         #expect(try read(store, at: UInt64(Self.capacity), length: 4096).isEmpty)
     }
 
+    /// A write at least as slow as the threshold is counted, and the longest
+    /// is kept, so the summary says whether any write came near the 10 s a
+    /// guest's disk timeout allows (docs/open-questions.md item 16). Wide
+    /// margins: a fake-daemon write takes microseconds, and CI runs this on a
+    /// saturated three-core runner.
+    /// A slow read is counted where it was slow. Here the daemon is: the
+    /// store's timing, its daemon round trip and the handler's report all see
+    /// it. A read held up before the store (handler only) is counted only by
+    /// the handler, which is how a stall above the store shows itself.
+    @Test func aSlowReadIsCountedWhereItWasSlow() throws {
+        let daemon = FakeDaemon(byteCount: Self.capacity)
+        let store = DaemonStore(daemon: daemon, session: "s1", blockSize: Self.blockSize,
+                                byteCount: UInt64(Self.capacity), readaheadBudgetBytes: 0,
+                                slowIOThreshold: 0.1)
+        var buf = [UInt8](repeating: 0, count: 4096)
+        _ = try buf.withUnsafeMutableBytes { try store.read(into: $0, at: 0, length: 4096) }
+        #expect(store.slowReads == 0)
+
+        daemon.onRead = { Thread.sleep(forTimeInterval: 0.25) }
+        _ = try buf.withUnsafeMutableBytes { try store.read(into: $0, at: 1 << 20, length: 4096) }
+        #expect(store.slowReads == 1)
+        #expect(store.longestReadNanos >= 250_000_000)
+        #expect(store.longestFetchNanos >= 250_000_000)
+
+        // The handler's own report: only it saw this one.
+        store.noteServedRead(offset: 0, length: 4096, queuedNanos: 150_000_000, totalNanos: 300_000_000)
+        #expect(store.slowServedReads == 1)
+        #expect(store.slowReads == 1)
+        #expect(store.longestServedReadNanos == 300_000_000)
+        #expect(store.summary.contains("slowReads=1/1 "))
+    }
+
+    @Test func aSlowWriteIsCountedAndTheLongestKept() throws {
+        let daemon = FakeDaemon(byteCount: Self.capacity)
+        let store = DaemonStore(daemon: daemon, session: "s1", blockSize: Self.blockSize,
+                                byteCount: UInt64(Self.capacity), slowIOThreshold: 0.1)
+        _ = try store.write(Data(repeating: 1, count: 4096), at: 0)
+        #expect(store.slowWrites == 0)
+
+        daemon.onWrite = { Thread.sleep(forTimeInterval: 0.25) }
+        _ = try store.write(Data(repeating: 2, count: 4096), at: 4096)
+        #expect(store.slowWrites == 1)
+        #expect(store.longestWriteNanos >= 250_000_000)
+        #expect(store.summary.contains("slowWrites=1 "))
+        #expect(daemon.contents(at: 4096, length: 4096) == Data(repeating: 2, count: 4096))
+    }
+
     /// Issue #4 measured QD16 no faster than QD1 through a mount. This pins
     /// that the store and the cache under it are not why: eight readers on
     /// eight different chunks are all held inside the daemon until the eighth

@@ -12,6 +12,10 @@
 //      iscsi://host[:port]/target/lun  --mount -F-->  ~/Library/Caches/.../<tag>/lun0.img
 //      lun0.img  --hdiutil attach-->  /dev/diskN  --DiskArbitration-->  /Volumes/…
 //
+//  With the `ImageAttachEngine` preference on macOS 27 the middle step is
+//  DiskImages2 instead (`attachWithDiskImages2`), which reads lun0.img
+//  concurrently; `hdiutil` is the default and the fallback.
+//
 //  Each volume is then remounted `noatime` (`NoATimeRemount`): on a LUN, an
 //  access-time update is a write to the target.
 //
@@ -154,9 +158,18 @@ final class AttachmentManager: ObservableObject {
         // `-t iSCSI` is the FSKit module's short name, not a protocol; the
         // scheme only names the protocol for anyone reading the mount table,
         // and the daemon decides from the target name.
-        guard let url = MountResourceURL.make(host: target.host, port: target.port,
-                                              target: target.targetIQN, lun: target.lun)?.absoluteString
+        guard let base = MountResourceURL.make(host: target.host, port: target.port,
+                                               target: target.targetIQN, lun: target.lun)
         else { throw AttachmentError.invalidAddress(target.host) }
+        // Decided before the FSKit mount, because the volume serves the two
+        // engines differently (`VolumeIOOptions`) and its mount URL is the only
+        // way it can learn which one is coming.
+        let engine = ImageAttachEngine.choose(
+            osMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+            override: UserDefaults.standard.string(forKey: ImageAttachEngine.preferenceKey))
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        if engine == .diskImages2 { components?.queryItems = [ImageAttachEngine.mountQuery] }
+        let url = components?.url?.absoluteString ?? base.absoluteString
         let targetID = target.id
 
         try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
@@ -209,31 +222,30 @@ final class AttachmentManager: ObservableObject {
             case .attach:
                 break
             }
-            // -noverify: a raw LUN has no checksum, and verification would
-            // read the whole device over the network first.
-            var common = ["attach", "-imagekey", "diskimage-class=CRawDiskImage",
-                          "-noverify", "-plist"]
             // A GPT written with 4096-byte blocks is invisible at DiskImages'
             // default of 512 (GitHub issue #2), and a blank 4Kn LUN should be
             // partitioned at 4096; see PartitionTableProbe. Every other disk
-            // gets exactly the arguments it always has.
-            if let blockSize = Self.attachBlockSize(image: imagePath, volume: hiddenPath) {
-                common += ["-blocksize", String(blockSize)]
-            }
-            common.append(imagePath)
-            var result = try Self.run("/usr/bin/hdiutil", common)
-            if result.status != 0 {
-                // "No mountable file systems" is a *new* LUN, not a broken
-                // attach; re-attach -nomount so Disk Utility has a device.
-                let bare = try Self.run("/usr/bin/hdiutil", common + ["-nomount"])
-                guard bare.status == 0 else {
-                    throw AttachmentError.imageAttachFailed(result.combined)
+            // gets the default.
+            let blockSize = Self.attachBlockSize(image: imagePath, volume: hiddenPath)
+
+            var attached: (device: String?, volumes: [String])?
+            if engine == .diskImages2 {
+                do {
+                    attached = try Self.attachWithDiskImages2(image: imagePath, blockSize: blockSize)
+                } catch {
+                    // Never attach the same image twice: if the newer engine
+                    // got as far as a device, that is the attach.
+                    if let device = Self.attachedDevice(forImage: imagePath) {
+                        attachLog.error("DiskImages2 attach reported \(String(describing: error), privacy: .public), but \(device, privacy: .public) serves the image; using it")
+                        attached = (device, Self.waitForVolumes(of: device, image: imagePath))
+                    } else {
+                        attachLog.error("DiskImages2 attach failed, falling back to hdiutil: \(String(describing: error), privacy: .public)")
+                    }
                 }
-                result = bare
             }
-            let attached = Self.parseAttachPlist(result.stdout)
-            Self.disableAccessTimes(on: attached.volumes)
-            return attached
+            let result = try attached ?? Self.attachWithHdiutil(image: imagePath, blockSize: blockSize)
+            Self.disableAccessTimes(on: result.volumes)
+            return result
         }.value
 
         // Recorded before anything else can go wrong: throwing after the
@@ -360,6 +372,92 @@ final class AttachmentManager: ObservableObject {
         return chosen
     }
 
+    /// The DiskImages engine, as every release before macOS 27 did it.
+    /// -noverify: a raw LUN has no checksum, and verification would read the
+    /// whole device over the network first.
+    nonisolated private static func attachWithHdiutil(
+        image: String, blockSize: Int?
+    ) throws -> (device: String?, volumes: [String]) {
+        var common = ["attach", "-imagekey", "diskimage-class=CRawDiskImage", "-noverify", "-plist"]
+        if let blockSize { common += ["-blocksize", String(blockSize)] }
+        common.append(image)
+        var result = try run("/usr/bin/hdiutil", common)
+        if result.status != 0 {
+            // "No mountable file systems" is a *new* LUN, not a broken
+            // attach; re-attach -nomount so Disk Utility has a device.
+            let bare = try run("/usr/bin/hdiutil", common + ["-nomount"])
+            guard bare.status == 0 else {
+                throw AttachmentError.imageAttachFailed(result.combined)
+            }
+            result = bare
+        }
+        return parseAttachPlist(result.stdout)
+    }
+
+    /// The DiskImages2 engine (`ImageAttachEngine`): concurrent reads, and on
+    /// macOS 27 the FSKit volume grants write-through so its page cache never
+    /// holds a write the target has not acknowledged.
+    ///
+    /// `diskutil image attach` for the default block size; DiskImages2's own
+    /// attach for any other, since `diskutil` has no block-size option. Both
+    /// with auto-mount, which mounts what `hdiutil attach` would — and leaves
+    /// an EFI partition alone, where `diskutil mountDisk` mounts it (measured
+    /// 2026-10-31) — and simply attaches an image with nothing mountable.
+    /// Throws when nothing got attached; the caller then uses `hdiutil`.
+    nonisolated private static func attachWithDiskImages2(
+        image: String, blockSize: Int?
+    ) throws -> (device: String?, volumes: [String]) {
+        var reported: String?
+        if let blockSize {
+            reported = try DiskImages2Attach.attach(image: URL(fileURLWithPath: image),
+                                                    blockSize: blockSize, autoMount: true)
+        } else {
+            let result = try run("/usr/sbin/diskutil",
+                                 ["image", "attach", "--mountPolicy", "autoMount", "--plist", image])
+            guard result.status == 0 else { throw AttachmentError.imageAttachFailed(result.combined) }
+            reported = parseAttachPlist(result.stdout).device
+        }
+        // The device as `hdiutil info` sees it, which is what reuse and detach
+        // ask too, so all three agree on which disk this image is. `diskutil`
+        // and DiskImages2 name it without "/dev/".
+        let fallback = reported.map { $0.hasPrefix("/dev/") ? $0 : "/dev/\($0)" }
+        guard let device = attachedDevice(forImage: image) ?? fallback else {
+            throw AttachmentError.imageAttachFailed("DiskImages2 attached nothing for \(image)")
+        }
+        attachLog.log("""
+            attached \(device, privacy: .public) with DiskImages2\
+            \(blockSize.map { " at \($0)-byte blocks" } ?? "", privacy: .public)
+            """)
+        return (device, waitForVolumes(of: device, image: image))
+    }
+
+    /// The device's mount points, giving auto-mount up to five seconds to
+    /// finish. An image whose only entity is the whole disk has nothing to
+    /// mount (a blank LUN) and returns at once.
+    nonisolated private static func waitForVolumes(of device: String, image: String) -> [String] {
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            let points = mountPoints(ofDevice: device)
+            if !points.isEmpty || !hasPartitions(image: image) { return points }
+            Thread.sleep(forTimeInterval: 0.25)
+        } while Date() < deadline
+        return mountPoints(ofDevice: device)
+    }
+
+    /// Whether `hdiutil info` lists anything under this image besides the
+    /// whole disk.
+    nonisolated private static func hasPartitions(image: String) -> Bool {
+        guard let result = try? run("/usr/bin/hdiutil", ["info", "-plist"]),
+              result.status == 0,
+              let plist = try? PropertyListSerialization.propertyList(
+                from: result.stdout, format: nil) as? [String: Any],
+              let images = plist["images"] as? [[String: Any]],
+              let entry = images.first(where: { $0["image-path"] as? String == image }),
+              let entities = entry["system-entities"] as? [[String: Any]]
+        else { return false }
+        return entities.count > 1
+    }
+
     nonisolated private static func isMounted(_ path: String) -> Bool {
         mountTable().contains { $0.on == path }
     }
@@ -458,7 +556,8 @@ final class AttachmentManager: ObservableObject {
         return points
     }
 
-    /// Parse `hdiutil attach -plist`.
+    /// Parse `hdiutil attach -plist` or `diskutil image attach --plist`; the
+    /// latter names devices without "/dev/".
     nonisolated private static func parseAttachPlist(_ data: Data) -> (device: String?, volumes: [String]) {
         guard let plist = try? PropertyListSerialization.propertyList(
             from: data, format: nil) as? [String: Any],
@@ -469,8 +568,8 @@ final class AttachmentManager: ObservableObject {
         var volumes: [String] = []
         for entity in entities {
             if let dev = entity["dev-entry"] as? String, device == nil,
-               dev.range(of: #"^/dev/disk\d+$"#, options: .regularExpression) != nil {
-                device = dev
+               dev.range(of: #"^(/dev/)?disk\d+$"#, options: .regularExpression) != nil {
+                device = dev.hasPrefix("/dev/") ? dev : "/dev/\(dev)"
             }
             if let point = entity["mount-point"] as? String, !point.isEmpty {
                 volumes.append(point)

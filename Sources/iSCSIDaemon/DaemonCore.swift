@@ -26,6 +26,13 @@ public actor DaemonCore {
         /// that missed it.
         var writeGeneration: UInt64 = 0
         var flushedGeneration: UInt64 = 0
+        /// Reads, writes and flushes in progress on this session right now,
+        /// and the most there have been at once.
+        var inFlight = 0
+        var peakInFlight = 0
+        /// Operations at least `slowOperationThreshold` long, and the longest.
+        var slowOperations = 0
+        var longestOperation: Duration = .zero
     }
 
     private var sessions: [String: SessionEntry] = [:]
@@ -46,14 +53,21 @@ public actor DaemonCore {
     /// Keepalive cadence, recovery backoff, and the per-task deadline. One
     /// policy for both protocols: NVMe's Keep Alive runs on `nopInterval`.
     private let policy: SessionPolicy
+    /// An operation at least this long is logged with how many others were in
+    /// flight on its session when it started — whether it waited in a queue
+    /// or the target was slow. A FreeBSD guest panicked when a disk command
+    /// took over 10 s on a DiskImages2 volume (docs/open-questions.md item 16).
+    private let slowOperationThreshold: Duration
 
     public init(
         initiatorName: String,
         writeThrough: Bool = true,
         policy: SessionPolicy = SessionPolicy(),
         hostIdentity: NVMeHostIdentity? = nil,
+        slowOperationThreshold: Duration = .seconds(1),
         transportFactory: @escaping @Sendable (String, UInt16, InterfaceBinding?) async throws -> any ConnectionTransport
     ) {
+        self.slowOperationThreshold = slowOperationThreshold
         self.initiatorName = initiatorName
         self.hostIdentity = hostIdentity ?? HostIdentity.nvmeHost()
         self.writeThrough = writeThrough
@@ -307,7 +321,7 @@ public actor DaemonCore {
               entry.writeGeneration > entry.flushedGeneration else { return }
         let goal = entry.writeGeneration
         do {
-            try await entry.device.flush()
+            try await timed(handle, "periodic flush") { try await entry.device.flush() }
             // Only advance to what this flush provably covered; a write that
             // landed while the flush was in flight stays dirty.
             if let current = sessions[handle], current.flushedGeneration < goal {
@@ -322,6 +336,11 @@ public actor DaemonCore {
 
     public func logout(_ handle: String) async throws {
         guard let entry = sessions.removeValue(forKey: handle) else { return }
+        DaemonLog.session("""
+            \(entry.targetIQN): I/O timing — \(entry.slowOperations) slow operation(s), \
+            longest \(Self.milliseconds(entry.longestOperation)) ms, \
+            at most \(entry.peakInFlight) in flight
+            """)
         entry.flushTask?.cancel()
         // Under FUA every acknowledged write is already durable. In either
         // relaxed mode the target's cache may hold acknowledged writes, and
@@ -342,11 +361,17 @@ public actor DaemonCore {
     }
 
     public func read(_ handle: String, offset: UInt64, length: Int) async throws -> Data {
-        try await device(handle).read(offset: offset, length: length)
+        let device = try device(handle)
+        return try await timed(handle, "read of \(length) B at \(offset)") {
+            try await device.read(offset: offset, length: length)
+        }
     }
 
     public func write(_ handle: String, offset: UInt64, data: Data) async throws {
-        try await device(handle).write(offset: offset, data: data)
+        let device = try device(handle)
+        try await timed(handle, "write of \(data.count) B at \(offset)") {
+            try await device.write(offset: offset, data: data)
+        }
         sessions[handle]?.writeGeneration += 1
     }
 
@@ -355,7 +380,65 @@ public actor DaemonCore {
         // proof of which writes it covered relative to the counter. The worst
         // case is one redundant SYNCHRONIZE CACHE on an interval session's
         // next tick, which is cheaper than reasoning about the race.
-        try await device(handle).flush()
+        let device = try device(handle)
+        try await timed(handle, "flush") { try await device.flush() }
+    }
+
+    /// Per-session I/O timing, for tests and diagnostics.
+    struct IOTiming: Equatable {
+        var inFlight: Int
+        var peakInFlight: Int
+        var slowOperations: Int
+        var longestOperation: Duration
+    }
+
+    func ioTiming(_ handle: String) -> IOTiming? {
+        sessions[handle].map {
+            IOTiming(inFlight: $0.inFlight, peakInFlight: $0.peakInFlight,
+                     slowOperations: $0.slowOperations, longestOperation: $0.longestOperation)
+        }
+    }
+
+    /// Run one operation, counting it in flight on its session while it runs;
+    /// log it if it took at least `slowOperationThreshold`, with how many
+    /// others were already in flight when it started. Runs on the actor, which
+    /// `body`'s awaits leave free, so concurrent operations each count.
+    private func timed<T: Sendable>(_ handle: String, _ what: @autoclosure () -> String,
+                                    _ body: () async throws -> T) async throws -> T {
+        let ahead = sessions[handle]?.inFlight ?? 0
+        if sessions[handle] != nil {
+            sessions[handle]!.inFlight += 1
+            sessions[handle]!.peakInFlight = max(sessions[handle]!.peakInFlight, sessions[handle]!.inFlight)
+        }
+        let clock = ContinuousClock()
+        let started = clock.now
+        var failed = false
+        defer {
+            let took = started.duration(to: clock.now)
+            if sessions[handle] != nil {
+                sessions[handle]!.inFlight -= 1
+                sessions[handle]!.longestOperation = max(sessions[handle]!.longestOperation, took)
+                if took >= slowOperationThreshold { sessions[handle]!.slowOperations += 1 }
+            }
+            if took >= slowOperationThreshold {
+                let target = sessions[handle]?.targetIQN ?? handle
+                DaemonLog.error("""
+                    \(target): slow \(what()): \(Self.milliseconds(took)) ms, \
+                    \(ahead) other operation(s) in flight when it started\(failed ? ", failed" : "")
+                    """)
+            }
+        }
+        do {
+            return try await body()
+        } catch {
+            failed = true
+            throw error
+        }
+    }
+
+    static func milliseconds(_ d: Duration) -> String {
+        let (seconds, attoseconds) = d.components
+        return String(format: "%.1f", Double(seconds) * 1000 + Double(attoseconds) / 1e15)
     }
 
     /// Every live session with everything the diagnostics pane needs.

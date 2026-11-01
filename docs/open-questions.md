@@ -979,39 +979,222 @@ So 4Kn LUNs can have the concurrent engine. The costs:
     engine is the same;
   - `autoMount` YES.
 
-What would raise the ceiling, in order of reach:
+**What is on `adaptive-read-around`: DiskImages2 opt-in on macOS 27, `hdiutil` by
+default.** It was the 27 default for one evening, 2026-10-31. Then a FreeBSD 15
+guest under VMware Fusion, booting from `seattle-vms` attached through
+DiskImages2, panicked with "NVME polled command failed to complete within
+10s". The host device counters showed writes averaging 120-140 ms (589 writes,
+70.7 s in total), and VMware logged "Something may be hung". The same VM had
+booted cleanly on `hdiutil` earlier that day.
 
-1. **Async replies plus the `DiskImages2` engine plus a `DataCacheHandler`
-   grant, on macOS 27.** It uses `diskutil image attach`, or for 4Kn LUNs the
-   framework's own attach with `setBlockSize:4096` (above). Measured
-   above: 8 reads in flight, about 7x the reads per second of one thread on
-   a cold region, and writes on the target before the call returns.
-   Choose `writeThrough` (keeps the read cache) or `noCache` (4 KiB reads).
-   Before it ships:
-   - It needs the macOS 27 SDK, against the 26-SDK policy. Shown harmless on
-     macOS 26.6.2 (2026-10-31, SIP-on VM, a 27-SDK Developer ID build with a
-     26.0 deployment target):
-     - `FSOpenItemResult` and `FSUpgradeItemResult` are weak imports;
-     - the extension loaded and mounted, and `hdiutil` + APFS read back 8 MiB
-       intact;
-     - with `?cache=writethrough`, FSKit 26 never called the handler and kept
-       `OpenCloseOperations`, final-close flush included.
+The extension's summary ruled out two explanations:
+- **not extra flushing:** 4 flushes in the session;
+- **not read-before-write in the page cache:** reads and writes at the
+  extension matched the device's, about 1:1.
 
-     On 26.6.2 the module needed the documented `enabledModules.plist` entry
-     and a `killall fskitd` first.
-   - Measure `noCache` writes.
-   - What a target loss does to writes in flight. They are synchronous now,
-     so they should fail loudly. Untested.
-   - A real host power cut on the VM with `crash-consistency.py`.
-   - Move the app's attach and detach to `diskutil image`.
-2. **Async replies alone, as the default.** They change nothing through
-   `hdiutil`, but they are necessary on every path. The cost is relying on
-   buffer lifetime Apple has not documented. 1,139,667 async reads have been
-   checked byte for byte with no mismatch. 126,928 were on the `hdiutil`
-   path. 1,012,739 were through `diskutil image attach`, but those were mostly
-   served from the page cache, so they prove less.
-3. **A Feedback report to Apple** on `hdiutil`'s CRawDiskImage reading its
-   backing file serially.
+It showed up to 17 reads in flight, plus 16-deep speculation, where `hdiutil`
+had 1. But a mixed test on name-testing (8 random readers and 1 64 KiB writer)
+did not reproduce it: writes averaged 17 ms on DiskImages2 against 33 ms on
+`hdiutil`, with a worst case of 171 ms. That test differed from the VM's
+session in three ways:
+- **write policy:** `seattle-vms` flushes every 5 s without FUA;
+- **the NAS:** cold for the VM, warm in the test;
+- **the workload:** VMware on HFS+, against fio on APFS.
+
+**Reproduced with timing, 2026-10-31: the seconds are spent above the
+extension.** The extension and the daemon now log any I/O that takes a
+second or more, with where its time went, and the extension times every
+read from FSKit's handover to its reply (CLAUDE.md, "Slow I/O is logged
+where it happens"). Three experiments used that.
+
+*The VM boot, again,* from `seattle-vms` through DiskImages2, with its
+flush every 5 s. It booted this time, but the counters for the attached disk
+showed two stalls:
+
+- **19:47:20–27:** 7–47 writes a second, averaging 0.7–1.2 s;
+- **19:48:21–25:** 5 writes a second, averaging 2.0 s, then 3.0 s and
+  3.75 s.
+
+Across the session the extension served 587 writes: the longest took
+33.5 ms and none took a second. The daemon's longest operation was 391 ms,
+with at most 23 in flight. Those counters are `IOBlockStorageDriver`'s,
+under the HFS+ volume that holds the VM. So the seconds passed between the
+disk device and the extension's write handler, in DiskImages2 or the
+kernel's side of FSKit.
+
+*A synthetic load on name-testing* (NVMe/TCP, 10 GbE). fio could not run
+it: on macOS each fio job takes a System V shared-memory segment, and the
+default limits (4 MiB in all) fail at about 16 jobs with "failed to setup
+shm segment". A Python load generator ran instead:
+
+- 16 threads of random 32 KiB `pread`s over one 1 GiB file, and 32 threads
+  of random 64 KiB `pwrite`s over another;
+- `F_NOCACHE`, as fio's `direct=1` sets;
+- 20 s per run, each setup on a fresh mount and attach, run forwards and
+  then backwards.
+
+With the logging build and blocking writes:
+
+| setup | reads: IOPS, mean (max) | writes: IOPS, mean (max) |
+|---|---|---|
+| DiskImages2, async reads (the opt-in) | 709 / 505, 23–32 ms (0.27 s) | 120 / 140, 229–269 ms (3.8 s) |
+| DiskImages2, blocking reads | 137 / 114, 117–140 ms (0.42 s) | 33 / 28, 985–1,164 ms (5.3 s) |
+| DiskImages2, writers only | — | 232 / 230, 138–139 ms (1.7 s) |
+| `hdiutil` | 49 / 48, 329–332 ms (0.64 s) | 53 / 52, 615–618 ms (5.0 s) |
+
+- **Writes do not starve behind concurrent reads.** That was the hypothesis,
+  and blocking the reads made writes four times slower, not faster.
+  Blocking replies give reads and writes one handover between them.
+- **Writes reach the extension one at a time.** With writers only, it
+  finished one every 4.3 ms, back to back (4,628 in 20 s), none over
+  18.3 ms. 32 writers queuing for that wait about 138 ms each, the mean they
+  saw. FSKit hands blocking writes over serially, as the layer table earlier
+  in this item shows it doing for reads.
+- **`hdiutil` was slowest on every count,** with both reads and writes
+  serial.
+- **No I/O took a second anywhere in our code** in these 9 runs. The worst
+  read the app saw took 1.6 s, in the warm-up.
+
+*Concurrent writes, tried and not adopted.* A speculative build answered
+writes asynchronously as well, behind `?writes=async`:
+
+- up to 32 writes in flight, replied to from a concurrent queue;
+- an ordered range lock in place of `ioLock`, in both modes, so overlapping
+  writes still reach the device and the chunk cache in arrival order.
+
+Its tests passed. With writers alone it did what it was for: 375–863 IOPS
+against 216–244 blocking, with 9–16 writes in flight at the extension. But
+with readers and writers together, reads stalled. Two sets, of the same
+nine runs; set 2 added the read timing:
+
+| set | mixed run | writes | worst read in the app | worst write | longest read at the extension | daemon's longest |
+|---|---|---|---|---|---|---|
+| 1 | warm-up | async | **9.1 s** | 1.9 s | not timed | 711 ms |
+| 1 | A forwards | blocking | 0.36 s | 2.4 s | not timed | 632 ms |
+| 1 | A' forwards | async | **11.4 s** | 7.6 s | not timed | 388 ms |
+| 1 | A' backwards | async | **17.5 s** | 5.9 s | not timed | 1,336 ms |
+| 1 | A backwards | blocking | **18.4 s** | 17.3 s | not timed | 608 ms |
+| 2 | warm-up | async | **9.2 s** | 1.0 s | 459 ms | 458 ms |
+| 2 | A forwards | blocking | **10.2 s** | 4.5 s | 326 ms | 325 ms |
+| 2 | A' forwards | async | **11.3 s** | 1.4 s | 533 ms | 533 ms |
+| 2 | A' backwards | async | **18.0 s** | 1.0 s | 809 ms | 808 ms |
+| 2 | A backwards | blocking | 0.38 s | 1.0 s | 500 ms | 499 ms |
+
+Between the sets, the read-timing build without the write patch ran 4 mixed
+and 3 writers-only runs. None stalled, and the worst read in the app took
+0.54 s. In every run the extension's longest read, its longest daemon fetch
+and the daemon's longest operation were the same figure, at most 456 ms.
+
+- **The write patch provokes the stall.** All 6 mixed runs with async writes
+  had a read held for 9–18 s; 0 of the 11 mixed runs on builds without the
+  patch did. Two of its four blocking-write runs stalled too. All four
+  followed an async-write run, each on a fresh mount, and the patch replaces
+  `ioLock` in blocking mode as well. So this cannot tell a carry-over from
+  the patch's blocking path.
+- **The stalled reads never waited in our code.** In set 2 no read took
+  over 0.81 s between FSKit's handover and the reply, and none waited for a
+  thread. The exceptions were two 16 KiB reads in a writers-only run, which
+  took 1.1 s at the NAS; the extension and the daemon timed them within a
+  millisecond of each other. So 8–17 s of each stalled read passed outside
+  the handler. That is APFS, DiskImages2, or the kernel's side of FSKit,
+  including the page cache the `writeThrough` grant keeps for `lun0.img`.
+- **The VM's stall looks like the same thing.** It had no write patch, and
+  still the disk waited 2–4 s for writes the extension finished in under
+  34 ms. The patch makes the stall easy to reproduce; it does not create it.
+
+So:
+
+- **DiskImages2 is not safe for VM disks.** Under a VM's load, or a heavy
+  mixed one, it holds single requests for seconds where our code cannot see
+  them.
+- **Concurrent writes are not adopted.** Their only gain is on DiskImages2,
+  where they make the stall routine. `hdiutil` sends one request at a time,
+  so there they would change nothing.
+- **`hdiutil` stays the default.** Under this load its tail was queueing for
+  its one-at-a-time engine, up to 5.0 s for a write, but no read in its
+  runs took over 0.64 s.
+
+**Next, to find what holds the reads:** a system-wide `spindump` (it needs
+`sudo`) while a read is stuck. The async-write build stalls within one 20 s
+run, so it is the reproduction to use. Until the stall is explained,
+DiskImages2 stays behind
+`defaults write me.herko.iSCSIInitiator ImageAttachEngine diskimages2`.
+
+When opted in:
+
+- **The app** attaches with `diskutil image attach --mountPolicy autoMount`,
+  or with `DiskImages2Attach` (`setBlockSize:4096`, `autoMount`) when a 4Kn
+  LUN needs it. On any failure it falls back to `hdiutil`, using an already
+  attached device rather than attaching twice. `autoMount` was chosen over
+  attach-then-`diskutil mountDisk` because `mountDisk` also mounts an EFI
+  partition; `autoMount` left EFI alone, like `hdiutil`, and attached a blank
+  image without complaint (both measured on scratch images, 2026-10-31).
+- **The extension**, told by `engine=diskimages2` on the mount URL, answers
+  reads asynchronously and grants `writeThrough` for `lun0.img`
+  (`VolumeIOOptions`). Without that query it behaves as every release did.
+  `writeThrough` rather than `noCache` because its write durability is the
+  one measured.
+- **On macOS 26** the app keeps `hdiutil` and the extension keeps blocking
+  replies. `ImageAttachEngine` will not choose DiskImages2 there even when
+  asked, since nothing can make its writes write-through.
+- **Escape hatches:**
+  - `defaults write me.herko.iSCSIInitiator ImageAttachEngine hdiutil`;
+  - `?reads=blocking` and `?cache=fskit` on a hand-made mount URL.
+
+The 27 SDK it needs is shown harmless on macOS 26.6.2 (2026-10-31, SIP-on VM,
+a 27-SDK Developer ID build with a 26.0 deployment target):
+
+- `FSOpenItemResult` and `FSUpgradeItemResult` are weak imports;
+- the extension loaded and mounted, and `hdiutil` + APFS read back 8 MiB
+  intact;
+- with `?cache=writethrough`, FSKit 26 never called the handler and kept
+  `OpenCloseOperations`, final-close flush included.
+
+On 26.6.2 the module needed the documented `enabledModules.plist` entry and a
+`killall fskitd` first.
+
+**Through the app on macOS 27.2, 2026-10-31.** Attaching name-testing from
+the app used DiskImages2 (`read/write disk image`, 512-byte blocks). EFI was
+left unmounted, the volume was remounted `noatime`, the extension logged
+`reads: async`, and FSKit's `readWriteWithCache` request for `lun0.img` got
+`writeThrough`.
+
+Its first fio runs were slow (8 threads: 390 IOPS). That was a cold NAS: an
+`hdiutil` control right after gave 330. One ranking of the cache grants then
+rose in exactly its run order. So it was redone with one sequential warm-up
+pass over `read.dat`, then each setup run forwards and again backwards. 8
+threads, 4 KiB random, `direct=1`, 15 s:
+
+| setup | IOPS (two runs) | mean latency | reads the extension served |
+|---|---|---|---|
+| DiskImages2 + `writethrough` (default) | 59,693 / 52,981 | 0.13–0.15 ms | 65,580: all of the 1 GiB file, once |
+| DiskImages2 + FSKit default caching | 59,667 / 55,392 | 0.13–0.14 ms | 65,580 |
+| DiskImages2 + `readcache` | 55,026 / 47,980 | 0.15–0.17 ms | 65,590 |
+| DiskImages2 + `nocache` | 6,578 / 5,797 | 1.2–1.4 ms | 88,000–99,000, every read |
+| `hdiutil` | 688 / 654 | 11.6–12.2 ms | about 11,000, one at a time |
+
+- **`writethrough` costs reads nothing** against FSKit's own caching, and it is
+  the grant with measured write durability, so it stays the default.
+- **The cached modes run at RAM speed once the file is cached.** Within each
+  15 s run the extension fetched all of the 1 GiB file once, in 16 KiB pages,
+  and every later read was served from the Mac's page cache.
+- **`nocache` shows the network path: about nine times `hdiutil`**, with 8
+  reads in flight against 1. But `ReadAroundController` settled on 8-16 KiB
+  units, the near-tie noted above, costing 2.4-4.3x on the wire.
+
+Still unverified:
+- **`noCache` writes.**
+- **A target loss with writes in flight.** They are synchronous now, so they
+  should fail loudly.
+- **A real host power cut** on a VM with `crash-consistency.py`.
+- **Async replies rely on undocumented buffer lifetime.** 1,139,667 async
+  reads have been checked byte for byte with no mismatch. 126,928 were on the
+  `hdiutil` path. 1,012,739 were through `diskutil image attach`, but those
+  were mostly served from the page cache, so they prove less.
+
+Also outstanding: a Feedback report to Apple on `hdiutil`'s CRawDiskImage
+reading its backing file serially, and on DiskImageKit having no attach
+with a block size.
 
 ## A note on method
 

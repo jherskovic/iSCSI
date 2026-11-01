@@ -602,7 +602,7 @@ without a reboot or an `fskit_agent` restart** — so on 26.6.2 a re-registratio
 prunes the entry at once, not only at the next boot as the table under "The
 rule" recorded. Enable again fixed it.
 
-### `hdiutil attach -nomount` is deprecated with no usable replacement
+### `hdiutil attach` is deprecated, and `diskutil image attach` can replace it
 
 Attaching a LUN that has no filesystem needs `-nomount`, or `hdiutil` refuses
 outright with "no mountable file systems" — the normal state of every newly
@@ -611,13 +611,47 @@ created LUN. macOS 26 warns:
 > `hdiutil attach -nomount` is deprecated. Please use `diskutil image attach
 > --noMount` instead.
 
-**That replacement cannot express what we need.** `diskutil image attach` has no
-`--imagekey`, so there is no way to force `diskimage-class=CRawDiskImage` — and
-a LUN is raw bytes with no disk-image header, so without it DiskImages has
-nothing to recognise. `hdiutil` stays until Apple either removes the flag or
-gives `diskutil` an equivalent; if the former happens first, the fallback is
-attaching read-write without `-nomount` and treating the failure as "unformatted"
-by inspecting the device rather than the exit status.
+macOS 27.2 warns on every `hdiutil attach` and `hdiutil detach`, `-nomount` or
+not, and points at `diskutil image attach` and `diskutil eject`.
+
+**Retracted, 2026-11-01: "that replacement cannot express what we need."**
+This section said `diskutil image attach` could not attach a LUN. It has no
+`--imagekey`, so it cannot force `diskimage-class=CRawDiskImage`, and a LUN is
+raw bytes with no disk-image header, so DiskImages would have nothing to
+recognise. The missing flag is real; the conclusion was never tested, and it
+is wrong. `diskutil image attach` attaches a headerless image as a raw disk
+without any key:
+
+- **macOS 27.2:** name-testing's `lun0.img` (GPT and APFS), through the app's
+  opt-in engine. Also a 64 MiB file of zeros, with `--noMount` and with
+  `--mountPolicy autoMount`: a 512-byte device that `hdiutil info` lists as
+  `read/write disk image`.
+- **macOS 26.6.2 and 26.7.2:** the `lun0.img` of the extension's `proto`
+  store (`docs/open-questions.md` item 17).
+
+On 27.2 even plain `hdiutil attach -nomount`, without the key, attached the
+file of zeros as a raw image with the old engine (`read/write`). That file was
+named `blank.img`; nobody has tried a name without `.img`.
+
+**So `hdiutil` stays because of how the newer engine behaves, not because the
+newer one cannot attach.** From `docs/open-questions.md` item 17:
+
+- **No block size.** `diskutil image attach` has no block-size option, so a
+  4Kn LUN gets a 512-byte device and its GPT cannot be seen. The framework under
+  it can set one (`DIAttachParams setBlockSize:`, private API), and the app's
+  opt-in path uses that.
+- **It reads `lun0.img` through the page cache.** On 27, writes short of a
+  full flush waited there 10–30 s before reaching the extension, until the
+  extension granted the kernel `writeThrough`. On 26 nothing can close that
+  window.
+- **Under a VM's load it holds single requests for seconds** above the
+  extension. A FreeBSD guest booting from such a volume panicked on a 10 s
+  disk timeout.
+
+If `hdiutil` loses `-nomount` or goes away, `diskutil image attach` is the
+replacement, once those three are dealt with. The fallback this section used to
+plan is not needed: attaching without `-nomount` and reading the failure as
+"unformatted".
 
 ### An unexplained state on the SIP-off dev VM — do not re-litigate
 

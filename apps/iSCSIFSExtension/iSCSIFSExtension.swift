@@ -205,11 +205,11 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         }
         do {
             let store = try makeStore(for: resource, localPath: path)
-            let asyncReads = Self.asksForAsyncReads(resource)
-            fsLog.log("reads: \(asyncReads ? "async (experiment)" : "blocking", privacy: .public)")
-            let cacheGrant = Self.asksForCacheGrant(resource)
-            fsLog.log("kernel data cache: \(cacheGrant.map { "\($0.rawValue) (experiment)" } ?? "FSKit default", privacy: .public)")
-            let volume = ProtoVolume(store: store, asyncReads: asyncReads, cacheGrant: cacheGrant)
+            let options = Self.ioOptions(for: resource)
+            fsLog.log("reads: \(options.asyncReads ? "async" : "blocking", privacy: .public)")
+            fsLog.log("kernel data cache: \(options.cacheGrant?.rawValue ?? "FSKit default", privacy: .public)")
+            let volume = ProtoVolume(store: store, asyncReads: options.asyncReads,
+                                     cacheGrant: options.cacheGrant)
             // `loadResource` transitions notReady -> ready; `.active` here
             // makes FSKit reject the load ("unexpected container state").
             // The no-error form matters: `.ready(status:)` with POSIX code 0
@@ -232,38 +232,22 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         reply(nil)
     }
 
-    /// EXPERIMENT (issue #4, docs/open-questions.md item 17): `?reads=async`
-    /// on the mount URL. Nothing the app builds carries it; it exists so one
-    /// installed build can be measured both ways, by hand, with `mount -F`.
-    private static func asksForAsyncReads(_ resource: FSResource) -> Bool {
-        guard let generic = resource as? FSGenericURLResource,
-              let items = URLComponents(url: generic.url, resolvingAgainstBaseURL: false)?.queryItems
-        else { return false }
-        return items.contains { $0.name == "reads" && $0.value == "async" }
-    }
-
-    /// EXPERIMENT (issue #4): `?cache=writethrough|readcache|nocache` makes the
-    /// volume answer the kernel's cache-mode requests itself (macOS 27's
-    /// `FSVolume.DataCacheHandler`) instead of leaving caching to FSKit.
-    private static func asksForCacheGrant(_ resource: FSResource) -> CacheGrant? {
-        guard let generic = resource as? FSGenericURLResource,
-              let items = URLComponents(url: generic.url, resolvingAgainstBaseURL: false)?.queryItems,
-              let value = items.first(where: { $0.name == "cache" })?.value
-        else { return nil }
-        return CacheGrant(rawValue: value)
+    /// Read and cache behaviour for this volume: the defaults for the running
+    /// macOS, with any override from the mount URL's query (`VolumeIOOptions`
+    /// has the rules and the measurements behind them). The app's mount URLs
+    /// carry no query, so they get the defaults.
+    private static func ioOptions(for resource: FSResource) -> VolumeIOOptions {
+        let items = (resource as? FSGenericURLResource).flatMap {
+            URLComponents(url: $0.url, resolvingAgainstBaseURL: false)?.queryItems
+        } ?? []
+        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        return VolumeIOOptions.resolve(query: items, osMajor: major)
     }
 }
 
-/// What the volume grants the kernel for `lun0.img` when the cache experiment
-/// is on. Kept free of macOS 27 types so `ProtoVolume` can store it on 26.
-enum CacheGrant: String {
-    /// Reads cached; every write reaches `write(contents:…)` before it returns.
-    case writeThrough = "writethrough"
-    /// Reads cached; writes bypass the cache.
-    case readCache = "readcache"
-    /// Nothing cached: what `hdiutil`'s CRawDiskImage path behaves like.
-    case noCache = "nocache"
-}
+/// What the volume grants the kernel for `lun0.img`. Free of macOS 27 types so
+/// `ProtoVolume` can store it on 26.
+typealias CacheGrant = VolumeIOOptions.CacheGrant
 
 // MARK: - Volume
 
@@ -274,10 +258,12 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
     private let store: LUNStore
     private let root: ProtoItem
     private let image: ProtoItem
-    /// EXPERIMENT: answer reads from `asyncReadQueue` instead of on FSKit's
-    /// calling thread. See `read(from:…)`.
+    /// Answer reads from `asyncReadQueue` instead of on FSKit's calling
+    /// thread (`VolumeIOOptions`: on with `engine=diskimages2` on macOS 27).
+    /// See `read(from:…)`.
     private let asyncReads: Bool
-    /// EXPERIMENT: nil leaves kernel caching to FSKit (shipping behaviour).
+    /// What to grant the kernel for `lun0.img`; nil leaves caching to FSKit
+    /// (`VolumeIOOptions`: write-through with `engine=diskimages2` on macOS 27).
     let cacheGrant: CacheGrant?
 
     private static let asyncReadQueue = DispatchQueue(
@@ -464,26 +450,36 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
               length: Int,
               into buffer: FSMutableFileDataBuffer,
               replyHandler reply: @escaping (Int, (any Error)?) -> Void) {
+        let handedOver = DispatchTime.now().uptimeNanoseconds
         guard asyncReads else {
-            Self.serve(store, offset, length, buffer, reply)
+            Self.serve(store, offset, length, buffer, reply, handedOver: handedOver)
             return
         }
-        // EXPERIMENT (issue #4): return to FSKit at once and answer from a
-        // concurrent queue. If FSKit waits for this method to return before
-        // it hands over the next read, blocking here is what made reads
-        // serial; if it waits for the reply, this changes nothing. Assumes
-        // FSKit keeps `buffer` valid until `reply` — the reply handler is the
-        // only completion signal it has, but that is not documented, so the
-        // experiment is checked against a reference copy of the data.
+        // Return to FSKit at once and answer from a concurrent queue. FSKit
+        // waits for this method to return, not for the reply, before handing
+        // over the next read: blocking here kept reads strictly serial, and
+        // replying asynchronously took eight concurrent readers on lun0.img
+        // from 651 to 9,820 IOPS (docs/open-questions.md item 17). Relies on
+        // FSKit keeping `buffer` valid until `reply`, which Apple does not
+        // document; 1,139,667 async reads were checked byte for byte against
+        // reference copies with no mismatch.
         let work = AsyncRead(store: store, buffer: buffer, reply: reply)
         Self.asyncReadQueue.async {
-            Self.serve(work.store, offset, length, work.buffer, work.reply)
+            Self.serve(work.store, offset, length, work.buffer, work.reply, handedOver: handedOver)
         }
     }
 
+    /// Serve one read and report its timing from FSKit's hand-over, which is
+    /// the only place a wait for a read-queue thread is visible.
     private static func serve(_ store: LUNStore, _ offset: off_t, _ length: Int,
                               _ buffer: FSMutableFileDataBuffer,
-                              _ reply: @escaping (Int, (any Error)?) -> Void) {
+                              _ reply: @escaping (Int, (any Error)?) -> Void,
+                              handedOver: UInt64) {
+        let queued = DispatchTime.now().uptimeNanoseconds &- handedOver
+        defer {
+            store.noteServedRead(offset: UInt64(offset), length: length, queuedNanos: queued,
+                                 totalNanos: DispatchTime.now().uptimeNanoseconds &- handedOver)
+        }
         do {
             let n = try buffer.withUnsafeMutableBytes { raw -> Int in
                 try store.read(into: raw, at: UInt64(offset), length: min(length, raw.count))
@@ -546,7 +542,7 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
     }
 }
 
-/// One read handed from FSKit's thread to `asyncReadQueue` (EXPERIMENT).
+/// One read handed from FSKit's thread to `asyncReadQueue`.
 /// FSKit's buffer and reply handler are not `Sendable`; they are used on
 /// exactly one thread after the hand-off, and FSKit's own calling convention
 /// already moves them between threads.
@@ -556,21 +552,23 @@ private struct AsyncRead: @unchecked Sendable {
     let reply: (Int, (any Error)?) -> Void
 }
 
-// MARK: - Kernel data cache (EXPERIMENT, macOS 27)
+// MARK: - Kernel data cache (macOS 27)
 
-/// Issue #4: with `diskutil image attach`, DiskImages reads `lun0.img`
-/// through the kernel's page cache and reads concurrently — but its writes
-/// waited there 10–30 s before reaching this extension, so a plain `fsync`
-/// stopped meaning "on the NAS" (docs/open-questions.md item 17). The page
-/// cache in question is this volume's own, and macOS 27 lets the volume say
-/// how the kernel may cache each item. Granting `.writeThrough` for
-/// `lun0.img` asks for cached reads with every write delivered here before it
-/// returns.
+/// Issue #4: DiskImages2, the attach engine the app can opt into on macOS 27,
+/// reads `lun0.img` concurrently but through the kernel's page cache, and
+/// without this its writes waited there 10–30 s before reaching this
+/// extension, so a plain `fsync` stopped meaning "on the NAS"
+/// (docs/open-questions.md item 17). The page cache in question is this
+/// volume's own, and macOS 27 lets the volume say how the kernel may cache
+/// each item. Granting `.writeThrough` for `lun0.img` keeps cached reads and
+/// delivers every write here before it returns: measured, every write was on
+/// the target when its call returned.
 ///
-/// Active only when the mount URL carries `?cache=…`: FSKit reads
-/// `isDataCacheInhibited` once, after `loadResource`, and while it is true
-/// keeps routing open and close through `FSVolume.OpenCloseOperations`
-/// exactly as before.
+/// On with `engine=diskimages2` on macOS 27 (`VolumeIOOptions`). With
+/// `?cache=fskit` on the mount URL, `isDataCacheInhibited` is true; FSKit
+/// reads it once, after `loadResource`, and then routes open and close
+/// through `FSVolume.OpenCloseOperations` as before. On macOS 26 FSKit never
+/// consults this protocol at all.
 @available(macOS 27.0, *)
 extension ProtoVolume: FSVolume.DataCacheHandler {
 

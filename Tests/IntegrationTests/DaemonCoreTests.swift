@@ -12,10 +12,12 @@ struct DaemonCoreTests {
     /// A daemon whose transport factory serves a shared RAMDisk over MockTarget.
     func makeDaemon(
         disk: RAMDisk = RAMDisk(),
-        config: MockTargetConfig = MockTargetConfig()
+        config: MockTargetConfig = MockTargetConfig(),
+        slowOperationThreshold: Duration = .seconds(1)
     ) -> (DaemonCore, @Sendable () -> Void) {
         let harnesses = HarnessBox()
-        let core = DaemonCore(initiatorName: "iqn.2026-08.com.example:daemon") { _, _, _ in
+        let core = DaemonCore(initiatorName: "iqn.2026-08.com.example:daemon",
+                              slowOperationThreshold: slowOperationThreshold) { _, _, _ in
             let (initiatorSide, targetSide) = MemoryPipe.pair()
             let target = MockTarget(config: config, disk: disk, transport: targetSide)
             let task = Task { await target.run() }
@@ -81,6 +83,42 @@ struct DaemonCoreTests {
         let error = DaemonUnitError.notPresent(requested: 0, available: [1], isNVMe: false)
         #expect(error.errorDescription == "The target has no LUN 0; it reports LUN 1.")
         #expect(error.recoverySuggestion == "Edit the target and set its LUN to 1.")
+    }
+
+    /// The daemon counts each session's reads, writes and flushes in flight,
+    /// and counts as slow any that take at least the threshold, so a stalled
+    /// command can be told apart from one queued behind others
+    /// (docs/open-questions.md item 16). The mock target holds every reply
+    /// for 60 ms; the threshold is 20 ms.
+    @Test func slowOperationsAreCountedWithTheirConcurrency() async throws {
+        var config = MockTargetConfig()
+        config.faults.responseDelay = .milliseconds(60)
+        let disk = RAMDisk(blockSize: 512, capacityBlocks: 4096)
+        let (core, cleanup) = makeDaemon(disk: disk, config: config,
+                                         slowOperationThreshold: .milliseconds(20))
+        defer { cleanup() }
+        let handle = try await core.login(host: "nas", port: 3260,
+                                          targetIQN: "iqn.2026-08.test.example:disk0", lun: 0)
+        // Login's own exchanges are not I/O and are not counted.
+        #expect(await core.ioTiming(handle)?.slowOperations == 0)
+
+        try await core.write(handle, offset: 0, data: Data(repeating: 7, count: 512))
+        let afterWrite = await core.ioTiming(handle)
+        #expect(afterWrite?.slowOperations == 1)
+        #expect((afterWrite?.longestOperation ?? .zero) >= .milliseconds(60))
+        #expect(afterWrite?.inFlight == 0)
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for i in 0 ..< 4 {
+                group.addTask { _ = try await core.read(handle, offset: UInt64(i) * 512, length: 512) }
+            }
+            try await group.waitForAll()
+        }
+        let afterReads = await core.ioTiming(handle)
+        #expect(afterReads?.peakInFlight == 4)
+        #expect(afterReads?.slowOperations == 5)
+        #expect(afterReads?.inFlight == 0)
+        try await core.logout(handle)
     }
 
     @Test func loginAcceptsTheLUNTheTargetReports() async throws {
