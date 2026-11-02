@@ -602,7 +602,7 @@ without a reboot or an `fskit_agent` restart** — so on 26.6.2 a re-registratio
 prunes the entry at once, not only at the next boot as the table under "The
 rule" recorded. Enable again fixed it.
 
-### `hdiutil attach -nomount` is deprecated with no usable replacement
+### `hdiutil attach` is deprecated, and `diskutil image attach` can replace it
 
 Attaching a LUN that has no filesystem needs `-nomount`, or `hdiutil` refuses
 outright with "no mountable file systems" — the normal state of every newly
@@ -611,13 +611,47 @@ created LUN. macOS 26 warns:
 > `hdiutil attach -nomount` is deprecated. Please use `diskutil image attach
 > --noMount` instead.
 
-**That replacement cannot express what we need.** `diskutil image attach` has no
-`--imagekey`, so there is no way to force `diskimage-class=CRawDiskImage` — and
-a LUN is raw bytes with no disk-image header, so without it DiskImages has
-nothing to recognise. `hdiutil` stays until Apple either removes the flag or
-gives `diskutil` an equivalent; if the former happens first, the fallback is
-attaching read-write without `-nomount` and treating the failure as "unformatted"
-by inspecting the device rather than the exit status.
+macOS 27.2 warns on every `hdiutil attach` and `hdiutil detach`, `-nomount` or
+not, and points at `diskutil image attach` and `diskutil eject`.
+
+**Retracted, 2026-11-01: "that replacement cannot express what we need."**
+This section said `diskutil image attach` could not attach a LUN. It has no
+`--imagekey`, so it cannot force `diskimage-class=CRawDiskImage`, and a LUN is
+raw bytes with no disk-image header, so DiskImages would have nothing to
+recognise. The missing flag is real; the conclusion was never tested, and it
+is wrong. `diskutil image attach` attaches a headerless image as a raw disk
+without any key:
+
+- **macOS 27.2:** name-testing's `lun0.img` (GPT and APFS), through the app's
+  opt-in engine. Also a 64 MiB file of zeros, with `--noMount` and with
+  `--mountPolicy autoMount`: a 512-byte device that `hdiutil info` lists as
+  `read/write disk image`.
+- **macOS 26.6.2 and 26.7.2:** the `lun0.img` of the extension's `proto`
+  store (`docs/open-questions.md` item 17).
+
+On 27.2 even plain `hdiutil attach -nomount`, without the key, attached the
+file of zeros as a raw image with the old engine (`read/write`). That file was
+named `blank.img`; nobody has tried a name without `.img`.
+
+**So `hdiutil` stays because of how the newer engine behaves, not because the
+newer one cannot attach.** From `docs/open-questions.md` item 17:
+
+- **No block size.** `diskutil image attach` has no block-size option, so a
+  4Kn LUN gets a 512-byte device and its GPT cannot be seen. The framework under
+  it can set one (`DIAttachParams setBlockSize:`, private API), and the app's
+  opt-in path uses that.
+- **It reads `lun0.img` through the page cache.** On 27, writes short of a
+  full flush waited there 10–30 s before reaching the extension, until the
+  extension granted the kernel `writeThrough`. On 26 nothing can close that
+  window.
+- **Under a VM's load it holds single requests for seconds** above the
+  extension. A FreeBSD guest booting from such a volume panicked on a 10 s
+  disk timeout.
+
+If `hdiutil` loses `-nomount` or goes away, `diskutil image attach` is the
+replacement, once those three are dealt with. The fallback this section used to
+plan is not needed: attaching without `-nomount` and reading the failure as
+"unformatted".
 
 ### An unexplained state on the SIP-off dev VM — do not re-litigate
 
@@ -994,6 +1028,45 @@ separate probes confirm it is not merely rare:
 So on macOS 26.6 with `FSVolume.Operations`, an FSKit volume gets **no barrier
 notification at all**. An APFS barrier on the disk image cannot be observed by
 the extension underneath it.
+
+**Re-checked on macOS 27.2 (26B123), 2026-11-01: still none, with either
+attach engine.** `scripts/vm-fskit-barrier-probe.sh` issues one kind of flush
+per step through the whole shipping stack, from APFS on the attached disk down
+to the extension. It streams the extension's log with a `logger` marker before
+each step, so each line is attributed by order. Run on name-testing (NVMe/TCP)
+with the installed app:
+
+| step | `hdiutil` | DiskImages2, `writeThrough` granted |
+|---|---|---|
+| `fsync`, new 4 MiB file | 117 ms; nothing | 88 ms; nothing |
+| `F_FULLFSYNC`, new 4 MiB file | 133 ms; nothing | 127 ms; nothing |
+| `sync(8)` | nothing | nothing |
+| `fsync` and `F_FULLFSYNC` on `lun0.img` | 0.00 ms each; nothing | 0.00 ms each; nothing |
+| `DKIOCSYNCHRONIZECACHE` on the raw disk | 101 ms; nothing | 66 ms; nothing |
+
+"Nothing" means no `synchronize`, no `closeItem` with `keeping=0` and no
+data-cache `close`.
+
+- **With `hdiutil`, the flush counter did not move.** It read 6 before the
+  run and 6 after the `lun0.img` step, with 56 writes (17.5 MB) in between.
+  The probe did see the extension's other lines: two `CLOSE keeping=1` while
+  idle, and one `CLOSE keeping=3` from its own open of `lun0.img`.
+- **With DiskImages2, the extension logged nothing during the run,** FSKit's
+  own messages included. Its last lines were from the mount, granting
+  `writeThrough` for `lun0.img`. The probe's read-only open of `lun0.img`
+  reached no callback either, since DiskImages2 already held it read-write.
+- **`F_FULLFSYNC` on `lun0.img` returns at once.** The kernel does not take it
+  to FSKit at all; on a local APFS file the same call takes about 5 ms.
+- **The flushes on the volume do wait,** 66–133 ms, for the writes they push.
+  Those arrive at the extension as ordinary writes.
+- **Not covered: `FSVolumeHandler`.** FSKit logs that the extension does not
+  adopt it (`conforms to FSVolumeHandler = 0`), the macOS 27 replacement for
+  `FSVolume.Operations`. The 27 SDK gives it the same single volume-wide
+  `synchronize` and no per-file sync, but whether FSKit calls that more often
+  for a volume that adopts it is untested.
+
+So the design consequence below holds on 27 as well: the extension cannot
+buffer or merge writes, and FUA stays.
 
 What *is* observable is open/close: DiskImages opens `modes=3` and closes with
 `keeping=0` around I/O batches. `closeItem` with no retained modes is therefore

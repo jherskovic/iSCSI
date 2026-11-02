@@ -13,13 +13,22 @@ concurrency:
 permissions:
   contents: read
 
+# One pinned toolchain for every job: Xcode 27.1 and its macOS 27.0 SDK, on
+# GitHub's Xcode 27 image (`xcode-27`, macOS 27, Apple silicon). Pinned rather
+# than taken from the image default, which moves between image releases (that
+# image also carries 27.0 and a 27.2 release candidate). It is the Xcode the
+# dev host builds with, so CI and local builds agree.
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+
 jobs:
   package:
     name: Package tests
-    # macOS 26 like everything else. The package itself declares .macOS(.v15)
+    # macOS 27 like everything else. The package itself declares .macOS(.v15)
     # and does build there, but nothing ships to 15 — testing on it measures a
-    # configuration no user has.
-    runs-on: macos-26
+    # configuration no user has. Nothing in CI runs on macOS 26 any more; the
+    # 26.x test VM is where 26 behaviour gets checked.
+    runs-on: xcode-27
     # Only for the badge push at the end of this job. The other two jobs keep
     # the read-only default from above.
     permissions:
@@ -96,7 +105,7 @@ jobs:
 
   hygiene:
     name: Project hygiene
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
 
@@ -173,25 +182,28 @@ jobs:
 
   app:
     name: App build
-    # Needs the macOS 26 SDK, not merely a macOS 26 runner: the deployment
-    # target is 26.0 and the extension uses FSGenericURLResource, which is a
-    # macOS 26 API. Verified locally against the 26.5 SDK. If this image label
-    # does not exist yet the job fails to start, which is visible — unlike
-    # building against an older SDK, which would fail confusingly deep in the
-    # extension.
-    runs-on: macos-26
+    # Built against the macOS 27 SDK with a 26.0 deployment target, so the app
+    # still installs on 26: anything newer than 26 must be availability-gated,
+    # and against the 27 SDK the compiler is what enforces that. The step
+    # below fails the job outright if the image ever hands it another SDK,
+    # rather than letting that surface deep in the extension.
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          sdk=$(xcrun --sdk macosx --show-sdk-version)
+          echo "macOS SDK $sdk from $DEVELOPER_DIR"
+          case "$sdk" in
+            27|27.*) ;;
+            *) echo "::error::expected a macOS 27 SDK, got ${sdk:-none}"; exit 1 ;;
+          esac
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      # The app is built against the macOS 26 SDK on purpose. Its one macOS 27
-      # API — FSClient.openFileSystemExtensionsSettings() — is reached by
-      # selector in FSKitSettingsLink precisely so this job can exist. Before
-      # that, the entire GUI, setup machine and attach path were compiled by
-      # nothing but the author's machine.
-      #
       # No signing: this is a compile check. scripts/release.sh is what asserts
       # the things that matter about a shipping artifact.
       - name: Build

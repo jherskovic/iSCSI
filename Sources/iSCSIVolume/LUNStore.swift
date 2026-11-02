@@ -53,10 +53,16 @@ public protocol LUNStore: AnyObject {
     func flush() throws
     /// The volume is going away: return any local cache space now.
     func releaseLocalCache()
+    /// The FSKit handler's view of one read: from FSKit handing it over to the
+    /// reply, and how much of that it waited for a thread on the read queue.
+    /// The store's own timing starts later, so a read held up before it gets
+    /// here is visible only through this.
+    func noteServedRead(offset: UInt64, length: Int, queuedNanos: UInt64, totalNanos: UInt64)
 }
 
 extension LUNStore {
     public func releaseLocalCache() {}
+    public func noteServedRead(offset: UInt64, length: Int, queuedNanos: UInt64, totalNanos: UInt64) {}
 }
 
 /// A local sparse file (resource URL host `proto`); isolates FSKit problems
@@ -162,6 +168,21 @@ public final class BackingStore: LUNStore {
 
 // MARK: - Daemon-backed store (the real Backend A path)
 
+/// Daemon round-trip time spent by the calling thread since the last reset,
+/// so a read can say how much of its time was the daemon's and how much was
+/// waiting in the chunk cache. The cache's miss path calls `rawRead`
+/// synchronously on the reader's thread, which is what makes a thread-local
+/// the right scope; speculative fetches run elsewhere and are not counted.
+private enum DaemonTimeOnThisThread {
+    private static let key = "me.herko.iSCSIVolume.daemonNanos"
+    static func reset() { Thread.current.threadDictionary.removeObject(forKey: key) }
+    static func add(_ nanos: UInt64) {
+        let dict = Thread.current.threadDictionary
+        dict[key] = NSNumber(value: ((dict[key] as? NSNumber)?.uint64Value ?? 0) &+ nanos)
+    }
+    static var value: UInt64 { (Thread.current.threadDictionary[key] as? NSNumber)?.uint64Value ?? 0 }
+}
+
 /// Carries a value across a queue hop the surrounding code already makes
 /// safe but the compiler cannot prove — the same idiom as XPCService's.
 private struct SendableBox<T>: @unchecked Sendable {
@@ -201,6 +222,32 @@ public final class DaemonStore: LUNStore {
     /// accounting lives in `PrefetchChunkCache.Stats`.
     private(set) var lastRequestBytes = 0
 
+    /// Reads inside `read(into:at:length:)` at once — what the volume above
+    /// handed this store concurrently.
+    let readsInFlight = InFlightGauge()
+    /// Blocking daemon reads (misses and RMW edges) at once — what this store
+    /// put on the XPC connection concurrently. Speculation is not counted: it
+    /// is asynchronous and has its own depth controller.
+    let fetchesInFlight = InFlightGauge()
+
+    /// A write or flush at least this slow is logged with where its time went
+    /// (waiting for `ioLock`, or in the daemon). A FreeBSD guest panicked when
+    /// one of its disk commands took over 10 s on a DiskImages2 volume whose
+    /// writes averaged 120-140 ms (docs/open-questions.md item 17); this is how
+    /// the next one says where the time went.
+    private let slowIONanos: UInt64
+    private(set) var slowWrites = 0
+    private(set) var longestWriteNanos: UInt64 = 0
+    /// Reads at least `slowIONanos` long, timed in the store (chunk-cache wait
+    /// plus daemon round trips) and at the FSKit handler (which adds any wait
+    /// for a thread before the store sees the read).
+    private(set) var slowReads = 0
+    private(set) var slowServedReads = 0
+    private(set) var longestReadNanos: UInt64 = 0
+    private(set) var longestServedReadNanos: UInt64 = 0
+    /// The longest single daemon read round trip, demand or speculative.
+    private(set) var longestFetchNanos: UInt64 = 0
+
     /// Seconds to wait for any single daemon call.
     private static let timeout: TimeInterval = 30
 
@@ -221,7 +268,8 @@ public final class DaemonStore: LUNStore {
     }
 
     /// Speculative bytes allowed in flight once a stream earns that depth
-    /// (`ReadaheadPolicy`). FSKit issues one read at a time and waits, so
+    /// (`ReadaheadPolicy`). Through `hdiutil`, DiskImages reads `lun0.img` one
+    /// request at a time (measured 2026-10-31, open-questions item 17), so
     /// readahead is the only source of link depth. This only seeds the first
     /// second of a mount; `ReadaheadDepthController` steers it afterwards on
     /// measured waste. See docs/queue-depth.md.
@@ -238,9 +286,16 @@ public final class DaemonStore: LUNStore {
     /// between every pair of writes and wasted all of it.
     private static let readaheadMinStream = 256 * 1024
 
-    /// The cache's unit of fetch and residence: the single-command throughput
+    /// The cache's unit of residence, and of fetch until the read-around
+    /// controller measures that less would do: the single-command throughput
     /// sweet spot, and never smaller than a block (geometry allows up to 1 MiB).
     private static func chunkBytes(forBlockSize bs: Int) -> Int { max(256 << 10, bs) }
+
+    /// The finest read-around unit: 4 KiB, or the block when that is larger
+    /// — the least a miss can usefully fetch, and at most 64 to a chunk, so a
+    /// chunk's bitmaps are one word. A 4 KiB random read used to fetch the
+    /// whole 256 KiB chunk: 64x the traffic (issue #4).
+    private static func sectorBytes(forBlockSize bs: Int) -> Int { max(4096, bs) }
 
     /// Resident cache ceiling. 16 MiB churned — chunks evicted before their
     /// neighbours were read back; 32 MiB is the next measured step.
@@ -355,16 +410,25 @@ public final class DaemonStore: LUNStore {
         // Averaged: the last request alone misrepresents the run.
         let avgRequest = readCount > 0 ? Int(readBytes / UInt64(readCount)) : 0
         // `unused` = speculative chunks never touched; `readAround` = bytes
-        // fetched beyond what callers asked. hit% alone cannot indict the
-        // cache; these can.
+        // fetched beyond what callers asked; `unit` = what a miss fetches
+        // around its request now. hit% alone cannot indict the cache; these
+        // can. `inflight` = most reads ever inside this store at once / most
+        // blocking daemon reads at once (`InFlightGauge`).
+        // Built in statements: one long `+` chain is past what the type
+        // checker will solve in reasonable time.
         var line = "reads=\(readCount)/\(readBytes)B writes=\(writeCount)/\(writeBytes)B "
-             + "flushes=\(flushCount) avgReq=\(avgRequest)B lastReq=\(lastRequestBytes)B "
-             + "cache=\(rate)% (\(s.hits) hit, \(s.misses) miss, \(s.unanswered) unanswered) "
-             + "maxDepth=\(s.maxDepth) cap=\(s.currentCap) "
-             + "speculated=\(s.chunksSpeculated)/\(s.speculatedBytes)B "
-             + "unused=\(s.chunksSpeculated - s.speculatedUsed) "
-             + "settled=\(s.resolvedUsed)used/\(s.resolvedWasted)wasted "
-             + "readAround=\(s.readAroundBytes)B"
+        line += "flushes=\(flushCount) avgReq=\(avgRequest)B lastReq=\(lastRequestBytes)B "
+        line += "cache=\(rate)% (\(s.hits) hit, \(s.misses) miss, \(s.unanswered) unanswered) "
+        line += "maxDepth=\(s.maxDepth) cap=\(s.currentCap) unit=\(s.readAroundUnit)B "
+        line += "inflight=\(readsInFlight.peak)/\(fetchesInFlight.peak) "
+        line += "slowWrites=\(slowWrites) longestWrite=\(Self.ms(longestWriteNanos))ms "
+        line += "slowReads=\(slowReads)/\(slowServedReads) "
+        line += "longestRead=\(Self.ms(longestReadNanos))/\(Self.ms(longestServedReadNanos))ms "
+        line += "longestFetch=\(Self.ms(longestFetchNanos))ms "
+        line += "speculated=\(s.chunksSpeculated)/\(s.speculatedBytes)B "
+        line += "unused=\(s.chunksSpeculated - s.speculatedUsed) "
+        line += "settled=\(s.resolvedUsed)used/\(s.resolvedWasted)wasted "
+        line += "readAround=\(s.readAroundBytes)B"
         if let d {
             line += " disk=\(d.hits)/\(d.lookups) diskSaved=\(d.savedBytes)B"
                   + " spilled=\(d.spilled) diskCorrupt=\(d.corrupt)"
@@ -465,7 +529,9 @@ public final class DaemonStore: LUNStore {
     private init(connection: NSXPCConnection?, injectedDaemon: ISCSIDaemonProtocol?,
                  session: String, blockSize bs: UInt64, byteCount: UInt64,
                  budgetBytes: Int, pinned: Bool,
-                 ramCacheBytes: Int, diskTier: DiskChunkTier?, diskTierOff: String?) {
+                 ramCacheBytes: Int, diskTier: DiskChunkTier?, diskTierOff: String?,
+                 slowIOThreshold: TimeInterval = 1) {
+        self.slowIONanos = UInt64(max(0, slowIOThreshold) * 1e9)
         self.connection = connection
         self.injectedDaemon = injectedDaemon
         self.session = session
@@ -487,6 +553,7 @@ public final class DaemonStore: LUNStore {
                                     chunkBytes: chunk),
             timeout: Self.timeout,
             adaptiveDepth: !pinned,
+            sectorBytes: Self.sectorBytes(forBlockSize: Int(bs)),
             fetchSync: { [weak self] offset, length in
                 guard let self else { throw POSIXError(.EIO) }
                 if let data = self.diskTier?.lookup(offset: offset, length: length) { return data }
@@ -520,21 +587,27 @@ public final class DaemonStore: LUNStore {
                             blockSize: UInt64, byteCount: UInt64,
                             readaheadBudgetBytes: Int? = nil,
                             ramCacheBytes: Int? = nil,
-                            diskTier: DiskChunkTier? = nil) {
+                            diskTier: DiskChunkTier? = nil,
+                            slowIOThreshold: TimeInterval = 1) {
         self.init(connection: nil, injectedDaemon: daemon, session: session,
                   blockSize: blockSize, byteCount: byteCount,
                   budgetBytes: readaheadBudgetBytes ?? Self.readaheadBytes,
                   pinned: readaheadBudgetBytes != nil,
                   ramCacheBytes: ramCacheBytes ?? Self.maxCachedBytes,
-                  diskTier: diskTier, diskTierOff: nil)
+                  diskTier: diskTier, diskTierOff: nil,
+                  slowIOThreshold: slowIOThreshold)
     }
 
 
     /// One speculative chunk from the daemon; nil on any failure.
     private func fetchFromDaemon(offset: UInt64, length: Int, _ done: @escaping (Data?) -> Void) {
         guard let proxy = try? daemon() else { done(nil); return }
+        let started = Self.now()
+        let ahead = fetchesInFlight.current
         proxy.read(session: session, offset: NSNumber(value: offset),
-                   length: NSNumber(value: length)) { data, error in
+                   length: NSNumber(value: length)) { [weak self] data, error in
+            self?.recordFetch(offset: offset, length: length, took: Self.now() &- started,
+                              ahead: ahead, speculative: true)
             done(error == nil ? data : nil)
         }
     }
@@ -609,6 +682,15 @@ public final class DaemonStore: LUNStore {
     /// Reads exactly `[offset, offset+length)` where both are already
     /// block-aligned. Every aligned access funnels through here.
     private func rawRead(offset: UInt64, length: Int) throws -> Data {
+        let ahead = fetchesInFlight.current
+        fetchesInFlight.enter()
+        let started = Self.now()
+        defer {
+            fetchesInFlight.leave()
+            let took = Self.now() &- started
+            DaemonTimeOnThisThread.add(took)
+            recordFetch(offset: offset, length: length, took: took, ahead: ahead, speculative: false)
+        }
         let proxy = try daemon()
         var data: Data?
         var err: Error?
@@ -635,6 +717,17 @@ public final class DaemonStore: LUNStore {
     }
 
     public func read(into buffer: UnsafeMutableRawBufferPointer, at offset: UInt64, length: Int) throws -> Int {
+        let readsAhead = readsInFlight.current
+        let fetchesAhead = fetchesInFlight.current
+        readsInFlight.enter()
+        DaemonTimeOnThisThread.reset()
+        let started = Self.now()
+        defer {
+            readsInFlight.leave()
+            recordRead(offset: offset, length: length, took: Self.now() &- started,
+                       daemonNanos: DaemonTimeOnThisThread.value,
+                       readsAhead: readsAhead, fetchesAhead: fetchesAhead)
+        }
         guard let plan = aligner.plan(offset: offset, length: min(length, buffer.count)) else { return 0 }
 
         let data = try readAligned(offset: plan.alignedOffset, length: plan.alignedLength)
@@ -661,6 +754,11 @@ public final class DaemonStore: LUNStore {
         // `rawRead`, never the cache, so it cannot pick up a stale edge block.
         cache.willWrite(offset: plan.alignedOffset, length: plan.alignedLength)
         diskTier?.beginWrite(offset: plan.alignedOffset, length: plan.alignedLength)
+        // Where the time goes, for `recordWrite`: waiting for `ioLock`, and in
+        // the daemon (both round trips of a read-modify-write).
+        let started = Self.now()
+        var lockedAt = started
+        var daemonNanos: UInt64 = 0
         do {
             // `ioLock` covers every write: it serialises RMW (two partial
             // writes to one block must not lose an update) and pins
@@ -668,12 +766,17 @@ public final class DaemonStore: LUNStore {
             // the media. FSKit currently delivers one operation at a time;
             // nothing here relies on that.
             ioLock.lock()
+            lockedAt = Self.now()
             defer { ioLock.unlock() }
             if plan.isExact {
+                let t = Self.now()
+                defer { daemonNanos &+= Self.now() &- t }
                 try rawWrite(offset: plan.alignedOffset, data: payload)
                 cache.didWrite(payload, at: plan.alignedOffset)
             } else {
                 // Read-modify-write the partial edge blocks.
+                let t = Self.now()
+                defer { daemonNanos &+= Self.now() &- t }
                 var block = try rawRead(offset: plan.alignedOffset, length: plan.alignedLength)
                 block.replaceSubrange(plan.skip ..< (plan.skip + plan.count), with: payload)
                 try rawWrite(offset: plan.alignedOffset, data: block)
@@ -683,8 +786,12 @@ public final class DaemonStore: LUNStore {
         } catch {
             cache.writeFailed(offset: plan.alignedOffset, length: plan.alignedLength)
             diskTier?.endWrite(offset: plan.alignedOffset, length: plan.alignedLength)
+            recordWrite(offset: offset, length: plan.count, started: started, lockedAt: lockedAt,
+                        daemonNanos: daemonNanos, rmw: !plan.isExact, failed: true)
             throw error
         }
+        recordWrite(offset: offset, length: plan.count, started: started, lockedAt: lockedAt,
+                    daemonNanos: daemonNanos, rmw: !plan.isExact, failed: false)
 
         lock.lock(); writeCount += 1; writeBytes += UInt64(plan.count); lock.unlock()
         // rmw=true: this write cost an extra round trip for the edge blocks.
@@ -700,11 +807,89 @@ public final class DaemonStore: LUNStore {
     public func flush() throws {
         let proxy = try daemon()
         var err: Error?
+        let started = Self.now()
+        defer {
+            let took = Self.now() &- started
+            if took >= slowIONanos {
+                fsLog.error("slow flush: \(Self.ms(took), privacy: .public) ms in the daemon")
+            }
+        }
         try daemonCall { done in
             proxy.flush(session: session) { e in err = e; done() }
         }
         if let err { throw err }
         lock.lock(); flushCount += 1; lock.unlock()
+    }
+
+    private static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+    private static func ms(_ nanos: UInt64) -> String { String(format: "%.1f", Double(nanos) / 1e6) }
+
+    /// One read through the store. What is not daemon round trips is waiting
+    /// in the chunk cache, for another read's fetch of the same chunk.
+    private func recordRead(offset: UInt64, length: Int, took: UInt64, daemonNanos: UInt64,
+                            readsAhead: Int, fetchesAhead: Int) {
+        lock.lock()
+        longestReadNanos = max(longestReadNanos, took)
+        let slow = took >= slowIONanos
+        if slow { slowReads += 1 }
+        lock.unlock()
+        guard slow else { return }
+        let waited = took &- min(took, daemonNanos)
+        fsLog.error("""
+            slow read: \(length) B at \(offset) took \(Self.ms(took), privacy: .public) ms in the store — \
+            \(Self.ms(daemonNanos), privacy: .public) ms in daemon round trips, \
+            \(Self.ms(waited), privacy: .public) ms waiting in the chunk cache; \
+            \(readsAhead) read(s) and \(fetchesAhead) daemon read(s) in flight when it arrived
+            """)
+    }
+
+    /// One daemon read round trip, demand or speculative, as this side saw it:
+    /// it includes XPC and the daemon's wait to start, which the daemon's own
+    /// timing does not.
+    private func recordFetch(offset: UInt64, length: Int, took: UInt64, ahead: Int, speculative: Bool) {
+        lock.lock()
+        longestFetchNanos = max(longestFetchNanos, took)
+        lock.unlock()
+        guard took >= slowIONanos else { return }
+        fsLog.error("""
+            slow daemon read (\(speculative ? "speculative" : "demand", privacy: .public)): \
+            \(length) B at \(offset): \(Self.ms(took), privacy: .public) ms round trip, \
+            \(ahead) other daemon read(s) in flight when it started
+            """)
+    }
+
+    public func noteServedRead(offset: UInt64, length: Int, queuedNanos: UInt64, totalNanos: UInt64) {
+        lock.lock()
+        longestServedReadNanos = max(longestServedReadNanos, totalNanos)
+        let slow = totalNanos >= slowIONanos
+        if slow { slowServedReads += 1 }
+        lock.unlock()
+        guard slow else { return }
+        fsLog.error("""
+            slow read at the FSKit handler: \(length) B at \(offset): \
+            \(Self.ms(totalNanos), privacy: .public) ms from FSKit handing it over to the reply, \
+            \(Self.ms(queuedNanos), privacy: .public) ms of it waiting for a thread
+            """)
+    }
+
+    /// Count the write, keep the longest, and log it with its breakdown when it
+    /// took at least `slowIONanos`.
+    private func recordWrite(offset: UInt64, length: Int, started: UInt64, lockedAt: UInt64,
+                             daemonNanos: UInt64, rmw: Bool, failed: Bool) {
+        let total = Self.now() &- started
+        lock.lock()
+        longestWriteNanos = max(longestWriteNanos, total)
+        let slow = total >= slowIONanos
+        if slow { slowWrites += 1 }
+        lock.unlock()
+        guard slow else { return }
+        let waited = lockedAt &- started
+        fsLog.error("""
+            slow write: \(length) B at \(offset) took \(Self.ms(total), privacy: .public) ms — \
+            \(Self.ms(waited), privacy: .public) ms waiting for ioLock, \
+            \(Self.ms(daemonNanos), privacy: .public) ms in the daemon\
+            \(rmw ? " (read-modify-write)" : "", privacy: .public)\(failed ? ", failed" : "", privacy: .public)
+            """)
     }
 }
 

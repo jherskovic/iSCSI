@@ -13,6 +13,7 @@ else turns the LUN (or namespace) into a block device. Two things follow from th
   Network.framework, any DriverKit SDK through 25.x). That is why there is a
   daemon at all.
 - **The shipping block-device backend is FSKit + `hdiutil`**, not the driver.
+  DiskImages2 is an opt-in alternative on macOS 27.
 
 ## Commands
 
@@ -76,9 +77,14 @@ Two schemes. **iSCSI Initiator** is what ships (app + FSKit extension +
 `iscsid` inside the bundle). **iSCSIDext-dev** builds the parked DriverKit
 extension alone, for a SIP-off machine.
 
-The app builds against the macOS 26 SDK. Its one macOS 27 API,
-`FSClient.openFileSystemExtensionsSettings()`, is reached by selector in
-`FSKitSettingsLink` precisely so that stays true.
+The app builds against the macOS 27 SDK with a macOS 26.0 deployment target,
+so it still installs on 26. Anything newer than 26 must be availability-gated,
+which the compiler enforces against this SDK. CI (`ci.yml`, `release.yml`)
+runs on GitHub's `xcode-27` image with `DEVELOPER_DIR` pinned to Xcode 27.1,
+and `scripts/release.sh` refuses any other SDK version. `FSKitSettingsLink`
+still reaches `FSClient.openFileSystemExtensionsSettings()` by selector, which
+dates from the 26-SDK build and is no longer required. Nothing in CI runs on
+macOS 26, so 26 behaviour is checked on the 26.x test VM.
 
 ### Exercising the protocol without a NAS
 
@@ -134,7 +140,7 @@ iscsictl / app / FSKit extension ──XPC──► iscsid (LaunchDaemon)
                                             │ NVMeKit: NVMe/TCP PDUs, capsules,
                                             │ controller + queue actors
                                             └─ Network.framework ──TCP──► target
-LUN ──► FSKit file ──hdiutil CRawDiskImage──► /dev/diskN        (Backend A, ships)
+LUN ──► FSKit file ──hdiutil (DiskImages2 opt-in on 27)──► /dev/diskN   (Backend A, ships)
 LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Backend B, parked)
 ```
 
@@ -180,6 +186,33 @@ LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Bac
   an acknowledged write in a volatile target cache is a lie APFS acts on. Per
   target this can be relaxed to a 1–60 s timer or never; the interval bounds how
   stale the disk can be after a target power cut, not whether it survives intact.
+- **The attach engine and the extension's I/O mode go together** (issue #4,
+  `docs/open-questions.md` items 16-17). `hdiutil` is the default. With
+  `defaults write me.herko.iSCSIInitiator ImageAttachEngine diskimages2`, on
+  macOS 27 only, the app attaches with DiskImages2 instead: `diskutil image
+  attach`, or `DiskImages2Attach` when a 4Kn LUN needs a 4096-byte block
+  size. DiskImages2 reads `lun0.img` concurrently. The app then adds
+  `engine=diskimages2` to the mount URL, and the extension answers reads
+  asynchronously and grants the kernel write-through caching for `lun0.img`
+  (`VolumeIOOptions`). Without that grant, DiskImages2's page cache holds
+  acknowledged writes. It was the 27 default until a FreeBSD guest booting
+  from a DiskImages2 volume panicked on a 10 s disk timeout; until that is
+  explained it stays opt-in. Under that VM's load, and under heavy mixed
+  load, it holds single requests for seconds before they reach the
+  extension, so it is not for VM disks. Answering writes asynchronously
+  made that stall happen in every mixed run, so concurrent writes were
+  tried and not adopted.
+- **Slow I/O is logged where it happens.** A write or flush in the extension
+  that takes at least a second is logged with its time waiting for `ioLock`
+  and in the daemon, and the summary line carries `slowWrites=` and
+  `longestWrite=`. A slow read is logged at three points: in the store, with
+  its time in daemon round trips; per daemon round trip; and at the FSKit
+  handler, from handover to reply. The summary carries `slowReads=`,
+  `longestRead=` and `longestFetch=`. In the daemon, any read, write or flush
+  that takes at least a second is logged with how many others were in flight
+  on its session, and logout logs each session's slow count, longest
+  operation and peak in flight. When the app waits seconds and none of these
+  fire, the time was spent above the extension.
 - **Backend B is behind `ISCSI_BACKEND_B` and ships in nothing.**
   `swift build -Xswiftc -DISCSI_BACKEND_B` turns it back on. It is parked on two
   Apple-side blockers: an APFS wedge that reproduces with iSCSI removed

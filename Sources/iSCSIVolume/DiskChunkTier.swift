@@ -277,9 +277,11 @@ public final class DiskChunkTier: @unchecked Sendable {
 
     // MARK: - Lookup
 
-    /// The bytes of `[offset, offset + length)` if every chunk of it is on
-    /// disk and authentic, nil otherwise — never an error. `offset` is
-    /// chunk-aligned, as every fetch the RAM tier makes is.
+    /// The bytes of `[offset, offset + length)` if every chunk it touches is
+    /// on disk and authentic, nil otherwise — never an error. `offset` need
+    /// not be chunk-aligned: once the RAM tier's read-around unit shrinks, a
+    /// miss asks for part of a chunk, and a chunk on disk answers it whole and
+    /// is sliced.
     func lookup(offset: UInt64, length: Int) -> Data? {
         guard length > 0 else { return nil }
         let chunk = UInt64(chunkBytes)
@@ -292,10 +294,12 @@ public final class DiskChunkTier: @unchecked Sendable {
             return nil
         }
         statsStore.lookups += 1
-        var co = offset
+        var co = (offset / chunk) * chunk
         while co < end {
-            let clen = Int(min(chunk, end - co))
-            guard let slot = slots[co], slot.length == clen, fences[co] == nil else {
+            // A slot holds its chunk from the chunk's first byte, so it
+            // answers if it reaches as far as the request does in this chunk.
+            let reach = Int(min(chunk, end - co))
+            guard let slot = slots[co], slot.length >= reach, fences[co] == nil else {
                 lock.unlock()
                 return nil
             }
@@ -323,7 +327,9 @@ public final class DiskChunkTier: @unchecked Sendable {
                 notAuthentic(co, slot)
                 return nil
             }
-            out.append(plain)
+            let from = Int(max(offset, co) - co)
+            let to = Int(min(end, co &+ chunk) - co)
+            out.append(plain[plain.startIndex + from ..< plain.startIndex + to])
         }
 
         lock.lock()

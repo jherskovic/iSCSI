@@ -495,3 +495,348 @@ extension PrefetchChunkCacheTests {
         #expect(s.resolvedUsed > 0, "speculation that was read must resolve as used, not waste")
     }
 }
+
+// MARK: - Read-around below the chunk
+
+/// A clock the test moves. `step` is added on every reading, so each cache
+/// read is that much activity after the previous one; 0 freezes it, which
+/// keeps the read-around controller from ever deciding anything.
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nanos: UInt64 = 1
+    let step: UInt64
+    init(step: UInt64) { self.step = step }
+    func now() -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        nanos &+= step
+        return nanos
+    }
+}
+
+/// A LUN that takes writes, for checking the cache against the truth.
+private final class MutableBacking: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes: [UInt8]
+    var capacity: UInt64 { UInt64(bytes.count) }
+    init(capacity: Int) { bytes = (0 ..< capacity).map { FakeBacking.byte(at: UInt64($0)) } }
+    func read(_ offset: UInt64, _ length: Int) -> Data {
+        lock.lock(); defer { lock.unlock() }
+        return Data(bytes[Int(offset) ..< Int(offset) + length])
+    }
+    func write(_ data: Data, at offset: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        bytes.replaceSubrange(Int(offset) ..< Int(offset) + data.count, with: data)
+    }
+}
+
+/// Deterministic, so a failure names a reproducible sequence.
+private struct SplitMix64: RandomNumberGenerator {
+    var state: UInt64
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
+/// Entries that hold only part of a chunk. The geometry is the suite above's
+/// 4 KiB chunk cut into eight 512-byte sectors, with the clock frozen so the
+/// unit stays wherever the test puts it.
+@Suite("Prefetch chunk cache: read-around below the chunk")
+struct PrefetchChunkCacheReadAroundTests {
+    static let chunk = PrefetchChunkCacheTests.chunk
+    static let sector = 512
+
+    private static func make(backing: FakeBacking, unit: Int = sector,
+                             maxCachedBytes: Int = 1 << 20, minStreamBytes: Int = .max,
+                             onEvict: ((UInt64, Data) -> Void)? = nil) -> PrefetchChunkCache {
+        PrefetchChunkCache(
+            chunkBytes: chunk,
+            capacity: backing.capacity,
+            maxCachedBytes: maxCachedBytes,
+            policy: ReadaheadPolicy(budgetBytes: 8 * chunk, maxSlots: 32,
+                                    minStreamBytes: minStreamBytes, chunkBytes: chunk),
+            timeout: 5,
+            sectorBytes: sector,
+            readAroundStartBytes: unit,
+            clock: { 1 },
+            fetchSync: backing.fetchSync,
+            fetchAsync: backing.fetchAsync,
+            onEvict: onEvict)
+    }
+
+    @Test("a miss fetches only the sectors it needs")
+    func missFetchesOnlyItsSectors() throws {
+        let backing = PrefetchChunkCacheTests.makeBacking()
+        let cache = Self.make(backing: backing)
+        let data = try cache.read(offset: 1124, length: 200)
+        #expect(data == FakeBacking.pattern(offset: 1124, length: 200))
+        #expect(backing.syncFetches.count == 1)
+        #expect(backing.syncFetches[0].offset == 1024)
+        #expect(backing.syncFetches[0].length == 512)
+        #expect(cache.stats.readAroundBytes == 312)
+        #expect(cache.stats.readAroundUnit == 512)
+    }
+
+    @Test("a read inside what a partial entry holds is a hit; one outside it fetches just its own part")
+    func partialEntryHitsInsideAndMissesOutside() throws {
+        let backing = PrefetchChunkCacheTests.makeBacking()
+        let cache = Self.make(backing: backing)
+        _ = try cache.read(offset: 1024, length: 512)
+        let inside = try cache.read(offset: 1100, length: 100)
+        #expect(inside == FakeBacking.pattern(offset: 1100, length: 100))
+        #expect(backing.syncCount == 1)
+        #expect(cache.stats.hits == 1)
+        let outside = try cache.read(offset: 3072, length: 512)
+        #expect(outside == FakeBacking.pattern(offset: 3072, length: 512))
+        #expect(backing.syncCount == 2)
+        #expect(backing.syncFetches[1].offset == 3072 && backing.syncFetches[1].length == 512)
+    }
+
+    @Test("neighbouring pieces of one chunk merge into one entry")
+    func adjacentPiecesMerge() throws {
+        let backing = PrefetchChunkCacheTests.makeBacking()
+        let cache = Self.make(backing: backing)
+        _ = try cache.read(offset: 1024, length: 512)
+        _ = try cache.read(offset: 1536, length: 512)
+        #expect(backing.syncCount == 2)
+        let both = try cache.read(offset: 1024, length: 1024)
+        #expect(both == FakeBacking.pattern(offset: 1024, length: 1024))
+        #expect(backing.syncCount == 2, "the merged entry covers both pieces")
+    }
+
+    /// One contiguous range per chunk: the newer, disjoint piece wins.
+    @Test("a disjoint piece of the same chunk replaces the older one")
+    func disjointPieceReplaces() throws {
+        let backing = PrefetchChunkCacheTests.makeBacking()
+        let cache = Self.make(backing: backing)
+        _ = try cache.read(offset: 0, length: 512)
+        _ = try cache.read(offset: 2048, length: 512)
+        let again = try cache.read(offset: 0, length: 512)
+        #expect(again == FakeBacking.pattern(offset: 0, length: 512))
+        #expect(backing.syncCount == 3)
+    }
+
+    @Test("a write is patched into a partial entry at the entry's own offset")
+    func writePatchesAPartialEntry() throws {
+        let backing = PrefetchChunkCacheTests.makeBacking()
+        let cache = Self.make(backing: backing)
+        _ = try cache.read(offset: 1024, length: 512)   // holds [1024, 1536)
+        let inside = Data(repeating: 0xAB, count: 64)
+        cache.willWrite(offset: 1100, length: 64)
+        cache.didWrite(inside, at: 1100)
+        // Straddles the entry's end: only [1500, 1536) lands in it.
+        let straddling = Data(repeating: 0xCD, count: 100)
+        cache.willWrite(offset: 1500, length: 100)
+        cache.didWrite(straddling, at: 1500)
+
+        let data = try cache.read(offset: 1024, length: 512)
+        #expect(backing.syncCount == 1, "still a hit")
+        #expect(data.subdata(in: 0 ..< 76) == FakeBacking.pattern(offset: 1024, length: 76))
+        #expect(data.subdata(in: 76 ..< 140) == inside)
+        #expect(data.subdata(in: 140 ..< 476) == FakeBacking.pattern(offset: 1164, length: 336))
+        #expect(data.subdata(in: 476 ..< 512) == Data(repeating: 0xCD, count: 36))
+    }
+
+    @Test("a read across a chunk boundary is one fetch, served back in order")
+    func boundaryReadIsOneFetch() throws {
+        let backing = PrefetchChunkCacheTests.makeBacking()
+        let cache = Self.make(backing: backing)
+        _ = try cache.read(offset: 3584, length: 1024)
+        #expect(backing.syncFetches.count == 1)
+        #expect(backing.syncFetches[0].offset == 3584 && backing.syncFetches[0].length == 1024)
+        let data = try cache.read(offset: 3700, length: 700)
+        #expect(data == FakeBacking.pattern(offset: 3700, length: 700))
+        #expect(backing.syncCount == 1)
+    }
+
+    /// The disk tier keys a slot by its chunk and serves it from the chunk's
+    /// first byte, so handing it part of a chunk would later serve the wrong
+    /// bytes at the right offset.
+    @Test("only whole chunks reach onEvict, including one merged up from pieces")
+    func onlyWholeChunksReachOnEvict() throws {
+        let backing = PrefetchChunkCacheTests.makeBacking()
+        let log = EvictLog()
+        let cache = Self.make(backing: backing, maxCachedBytes: Self.chunk,
+                              onEvict: { log.add($0, $1) })
+        // Chunk 0 a sector at a time, until the pieces merge into all of it.
+        for s in 0 ..< Self.chunk / Self.sector {
+            _ = try cache.read(offset: UInt64(s * Self.sector), length: Self.sector)
+        }
+        #expect(backing.syncCount == 8)
+        // A piece of chunk 4 pushes the cache over budget: chunk 0 goes, whole.
+        _ = try cache.read(offset: UInt64(4 * Self.chunk), length: Self.sector)
+        #expect(log.offsets == [0])
+        #expect(log.all.first?.data == FakeBacking.pattern(offset: 0, length: Self.chunk))
+        // Eight more pieces evict chunk 4's, which must not be handed on.
+        for c in [1, 2, 3, 5, 6, 7, 8, 9] {
+            _ = try cache.read(offset: UInt64(c * Self.chunk), length: Self.sector)
+        }
+        let before = backing.syncCount
+        _ = try cache.read(offset: UInt64(4 * Self.chunk), length: Self.sector)
+        #expect(backing.syncCount == before + 1, "chunk 4's piece was evicted")
+        #expect(log.offsets == [0])
+    }
+
+    @Test("speculation fetches the whole of a chunk a miss left partly cached")
+    func speculationCompletesAPartialChunk() throws {
+        let backing = PrefetchChunkCacheTests.makeBacking()
+        let cache = Self.make(backing: backing, minStreamBytes: 2 * Self.chunk)
+        _ = try cache.read(offset: UInt64(2 * Self.chunk) + 512, length: 512)  // a piece of chunk 2
+        _ = try cache.read(offset: 0, length: Self.chunk)
+        _ = try cache.read(offset: UInt64(Self.chunk), length: Self.chunk)    // opens the gate
+        #expect(backing.asyncFetches.map(\.offset) == [UInt64(2 * Self.chunk), UInt64(3 * Self.chunk)])
+        #expect(backing.asyncFetches.allSatisfy { $0.length == Self.chunk })
+        let before = backing.syncCount
+        let data = try cache.read(offset: UInt64(2 * Self.chunk), length: Self.chunk)
+        #expect(data == FakeBacking.pattern(offset: UInt64(2 * Self.chunk), length: Self.chunk))
+        #expect(backing.syncCount == before)
+    }
+
+    @Test("a miss that only touches a chunk still being speculated leaves that speculation in place")
+    func partialMissKeepsPendingSpeculation() throws {
+        let backing = PrefetchChunkCacheTests.makeBacking()
+        backing.asyncMode = .manual
+        let cache = Self.make(backing: backing, minStreamBytes: 2 * Self.chunk)
+        _ = try cache.read(offset: 0, length: Self.chunk)
+        _ = try cache.read(offset: UInt64(Self.chunk), length: Self.chunk)
+        #expect(backing.pending.count == 2, "chunks 2 and 3 on their way")
+        // The tail of pending chunk 3 and the head of absent chunk 4: a miss.
+        let edge = try cache.read(offset: UInt64(4 * Self.chunk) - 512, length: 1024)
+        #expect(edge == FakeBacking.pattern(offset: UInt64(4 * Self.chunk) - 512, length: 1024))
+        backing.completeAllPending()
+        let before = backing.syncCount
+        let head = try cache.read(offset: UInt64(3 * Self.chunk), length: 512)
+        #expect(head == FakeBacking.pattern(offset: UInt64(3 * Self.chunk), length: 512))
+        #expect(backing.syncCount == before, "served by the speculation the miss left alone")
+    }
+
+    /// Everything above, at once and at random: reads that wander and reads
+    /// that stream (so speculation runs), writes acknowledged and writes
+    /// whose outcome is unknown, under eviction pressure, at every fixed unit
+    /// and with the controller free to move. Every read is checked against
+    /// the LUN itself.
+    @Test("every read matches the LUN, at any unit, whatever the mix of operations",
+          arguments: [512, 1024, 2048, 4096], [false, true])
+    func readsMatchTheLUN(unit: Int, adaptive: Bool) throws {
+        let lun = MutableBacking(capacity: 10 * Self.chunk + 2048)
+        let clock = TestClock(step: adaptive ? 50_000_000 : 0)
+        let cache = PrefetchChunkCache(
+            chunkBytes: Self.chunk,
+            capacity: lun.capacity,
+            maxCachedBytes: 3 * Self.chunk,
+            policy: ReadaheadPolicy(budgetBytes: 4 * Self.chunk, maxSlots: 32,
+                                    minStreamBytes: 2 * Self.chunk, chunkBytes: Self.chunk),
+            timeout: 5,
+            adaptiveDepth: adaptive,
+            sectorBytes: Self.sector,
+            readAroundStartBytes: unit,
+            clock: { clock.now() },
+            fetchSync: { offset, length in lun.read(offset, length) },
+            fetchAsync: { offset, length, done in done(lun.read(offset, length)) })
+
+        var rng = SplitMix64(state: UInt64(unit) &* 31 &+ (adaptive ? 7 : 0))
+        let capacity = Int(lun.capacity)
+        var lastEnd = 0
+        var units: Set<Int> = []
+        for step in 0 ..< 3000 {
+            let roll = Int.random(in: 0 ..< 100, using: &rng)
+            if roll < 55 {
+                let offset: Int
+                switch Int.random(in: 0 ..< 10, using: &rng) {
+                case 0 ..< 3: offset = lastEnd < capacity ? lastEnd : 0              // continue a stream
+                case 3 ..< 5: offset = Int.random(in: 0 ..< capacity, using: &rng)   // any byte
+                default: offset = Int.random(in: 0 ..< capacity / Self.sector, using: &rng) * Self.sector
+                }
+                let length = Int.random(in: 1 ... 6, using: &rng) * Self.sector
+                let count = min(length, capacity - offset)
+                let got = try cache.read(offset: UInt64(offset), length: length)
+                #expect(got == lun.read(UInt64(offset), count), "step \(step): read \(count) at \(offset)")
+                lastEnd = offset + count
+                units.insert(cache.stats.readAroundUnit)
+            } else {
+                let offset = Int.random(in: 0 ..< capacity - Self.sector, using: &rng)
+                let length = min(Int.random(in: 1 ... 8192, using: &rng), capacity - offset)
+                let data = Data((0 ..< length).map { _ in UInt8.random(in: 0 ... 255, using: &rng) })
+                cache.willWrite(offset: UInt64(offset), length: length)
+                if roll < 90 {
+                    lun.write(data, at: UInt64(offset))
+                    cache.didWrite(data, at: UInt64(offset))
+                } else {
+                    // Outcome unknown: it may or may not have reached the media.
+                    if Bool.random(using: &rng) { lun.write(data, at: UInt64(offset)) }
+                    cache.writeFailed(offset: UInt64(offset), length: length)
+                }
+            }
+        }
+        if !adaptive { #expect(units == [unit], "a frozen clock never moves the unit") }
+    }
+}
+
+/// The adaptation end to end, at the shipping geometry: 256 KiB chunks,
+/// 4 KiB sectors, a 32 MiB cache, reads 50 ms of activity apart.
+@Suite("Prefetch chunk cache: read-around adapts")
+struct PrefetchChunkCacheAdaptationTests {
+    static let chunk = 256 << 10
+    static let sector = 4096
+
+    private func make(_ backing: FakeBacking) -> PrefetchChunkCache {
+        let clock = TestClock(step: 50_000_000)
+        return PrefetchChunkCache(
+            chunkBytes: Self.chunk,
+            capacity: backing.capacity,
+            maxCachedBytes: 32 << 20,
+            policy: ReadaheadPolicy(budgetBytes: 8 << 20, maxSlots: 32,
+                                    minStreamBytes: Self.chunk, chunkBytes: Self.chunk),
+            timeout: 5,
+            sectorBytes: Self.sector,
+            clock: { clock.now() },
+            fetchSync: backing.fetchSync,
+            fetchAsync: backing.fetchAsync)
+    }
+
+    /// Issue #4: each 4 KiB random read fetched the whole 256 KiB chunk.
+    @Test("scattered 4 KiB reads stop fetching whole chunks within a second of activity")
+    func scatterStopsFetchingWholeChunks() throws {
+        let backing = FakeBacking(capacity: 1 << 30)
+        let cache = make(backing)
+        func scattered(_ i: Int) -> UInt64 { UInt64((i * 7) * Self.chunk + (i % 64) * Self.sector) }
+
+        // Twenty reads make the first second; the twenty-first is decided on it.
+        for i in 0 ..< 20 { _ = try cache.read(offset: scattered(i), length: Self.sector) }
+        #expect(backing.syncFetches.allSatisfy { $0.length == Self.chunk }, "it starts at the whole chunk")
+
+        for i in 20 ..< 60 {
+            let data = try cache.read(offset: scattered(i), length: Self.sector)
+            #expect(data == FakeBacking.pattern(offset: scattered(i), length: Self.sector))
+        }
+        #expect(cache.stats.readAroundUnit == Self.sector)
+        let after = backing.syncFetches.dropFirst(20)
+        #expect(after.count == 40)
+        #expect(after.allSatisfy { $0.length == Self.sector }, "fetched exactly what was asked")
+    }
+
+    @Test("dense reads after a scatter bring whole-chunk read-around back")
+    func densityRestoresTheWholeChunk() throws {
+        let backing = FakeBacking(capacity: 1 << 30)
+        let cache = make(backing)
+        for i in 0 ..< 40 {
+            _ = try cache.read(offset: UInt64((i * 7) * Self.chunk), length: Self.sector)
+        }
+        #expect(cache.stats.readAroundUnit == Self.sector)
+
+        // Every sector of each of four chunks, shuffled so no stream forms.
+        for c in 1000 ..< 1004 {
+            for s in (0 ..< 64).map({ ($0 * 37) % 64 }) {
+                let offset = UInt64(c * Self.chunk + s * Self.sector)
+                let data = try cache.read(offset: offset, length: Self.sector)
+                #expect(data == FakeBacking.pattern(offset: offset, length: Self.sector))
+            }
+        }
+        #expect(cache.stats.readAroundUnit == Self.chunk)
+        _ = try cache.read(offset: UInt64(2000 * Self.chunk), length: Self.sector)
+        #expect(backing.syncFetches.last?.length == Self.chunk)
+    }
+}

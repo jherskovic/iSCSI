@@ -11,8 +11,9 @@ import iSCSIKit
 struct NVMe: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "nvme",
-        abstract: "NVMe/TCP operations against a subsystem: discover, verify, read-bench.",
-        subcommands: [NVMeDiscover.self, NVMeVerify.self, NVMeReadBench.self, NVMeWriteBench.self]
+        abstract: "NVMe/TCP operations against a subsystem: discover, verify, read-bench, cache-bench.",
+        subcommands: [NVMeDiscover.self, NVMeVerify.self, NVMeReadBench.self, NVMeWriteBench.self,
+                      NVMeCacheBench.self]
     )
 }
 

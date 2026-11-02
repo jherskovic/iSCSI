@@ -55,6 +55,32 @@ struct DiskChunkTierTests {
         #expect(tier.lookup(offset: 0, length: 2 * Self.chunk) == Self.pattern(1) + Self.pattern(2))
     }
 
+    /// Once the RAM tier's read-around unit shrinks, a miss asks for part of
+    /// a chunk; a chunk on disk answers it.
+    @Test("part of a chunk on disk is served from it, sliced, across a boundary too")
+    func partOfAChunkIsServed() {
+        let (tier, _, queue) = makeTier(slots: 4)
+        tier.spill(offset: 0, data: Self.pattern(1))
+        tier.spill(offset: UInt64(Self.chunk), data: Self.pattern(2))
+        queue.sync {}
+        #expect(tier.lookup(offset: 512, length: 1024) == Self.pattern(1).subdata(in: 512 ..< 1536))
+        #expect(tier.lookup(offset: UInt64(Self.chunk) - 512, length: 1024)
+                == Self.pattern(1).subdata(in: Self.chunk - 512 ..< Self.chunk)
+                 + Self.pattern(2).subdata(in: 0 ..< 512))
+        #expect(tier.lookup(offset: UInt64(2 * Self.chunk) + 512, length: 512) == nil, "nothing on disk there")
+        #expect(tier.stats.savedBytes == 2048)
+    }
+
+    @Test("a short final chunk answers a part inside it and nothing past its end")
+    func partOfAShortChunk() {
+        let (tier, _, queue) = makeTier(slots: 4)
+        let tail = Self.pattern(9, 1000)
+        tier.spill(offset: UInt64(8 * Self.chunk), data: tail)
+        queue.sync {}
+        #expect(tier.lookup(offset: UInt64(8 * Self.chunk) + 512, length: 488) == tail.subdata(in: 512 ..< 1000))
+        #expect(tier.lookup(offset: UInt64(8 * Self.chunk) + 512, length: 512) == nil)
+    }
+
     @Test("the file holds ciphertext, never the chunk itself")
     func storedBytesAreEncrypted() {
         let (tier, file, queue) = makeTier(slots: 4)
