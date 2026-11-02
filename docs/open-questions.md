@@ -719,10 +719,21 @@ One account is safe in practice: the extension cannot have mounted anything
 while it was disabled for that account. The hazard is a Mac with several
 accounts, which attach at login now makes ordinary.
 
-To fix, in its own branch: before asking for the restart, read the mount table
-(`AttachmentManager.mountTable()`) and refuse, with an explanation, while any
-FSKit volume of any account is mounted. Also warn in the consent prompt.
-Restarting the Mac remains the safe way.
+Seen again 2026-11-02 on the 26.7.2 VM: a second account's first Setup
+restarted fskitd at 15:18:25, RunningBoard terminated the first account's
+extension, and its attached volume went with it.
+
+**Fixed 2026-11-02 (build 52.6, untested on a VM yet).** `refreshFSKitEnablement`
+reads the mount table as root, which sees every account, and refuses while
+anything FSKit serves is mounted: any `MNT_EXT_FSKIT` mount, and every
+`iscsi://` or `nvme://` mount whether flagged or not (`FSKitRestart`). Setup
+checks the same table first so it can say what to detach. It still writes the
+enablement entry, so restarting the Mac turns the extension on without
+disconnecting anything. The consent prompt now says the restart disconnects
+every account's FSKit volumes, FAT and exFAT drives included on 26.x. The
+manual pass: with one account's volume attached, a second account's first
+Setup must stop at the extension step and name that volume, and the first
+account's volume must stay up.
 
 ## 15. LIO's placeholder LUN 0, when nothing at all is mapped
 

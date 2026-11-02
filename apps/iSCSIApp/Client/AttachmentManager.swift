@@ -664,7 +664,8 @@ final class AttachmentManager: ObservableObject {
         return (0..<Int(count)).map { index in
             var entry = buffer[index]
             return MountTableEntry(from: cString(&entry.f_mntfromname),
-                                   on: cString(&entry.f_mntonname))
+                                   on: cString(&entry.f_mntonname),
+                                   isFSKit: entry.f_flags_ext & UInt32(MNT_EXT_FSKIT) != 0)
         }
     }
 

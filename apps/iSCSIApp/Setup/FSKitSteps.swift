@@ -295,6 +295,12 @@ final class ModuleEnablement: SetupStep {
             and then restart the system service that reads it. Nothing else on \
             that list is changed.
 
+            Restarting that service disconnects everything mounted through it, \
+            in every account on this Mac — this app's volumes, and on this \
+            version of macOS also FAT and exFAT drives. So it is not done while \
+            anything like that is mounted; you will be told what to detach, \
+            or you can restart the Mac instead.
+
             This is normally done by the switch in System Settings, but that \
             switch does not work on this version of macOS.
             """
@@ -319,6 +325,19 @@ final class ModuleEnablement: SetupStep {
         // that needs root — hence the daemon. If the daemon is not up yet this
         // fails, which is why the coordinator orders the daemon step before
         // this one.
+        //
+        // Not while anything FSKit serves is mounted, in any account: the
+        // restart takes every such volume down mid-write (docs/open-questions.md
+        // item 14). The daemon refuses that too; checking here first is what
+        // lets the step say what to detach. The entry written above stays: a
+        // restart of the Mac turns it on without disconnecting anything.
+        let mounted = FSKitRestart.mountsItWouldDisconnect(AttachmentManager.mountTable())
+        if !mounted.isEmpty {
+            let refused = FSKitRestart.Refused(mounted: mounted)
+            state = .blocked([refused.errorDescription, refused.recoverySuggestion]
+                .compactMap { $0 }.joined(separator: " "))
+            return
+        }
         do {
             try await DaemonConnection.refreshFSKitEnablement()
         } catch {

@@ -285,7 +285,10 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
-    public func refreshFSKitEnablement(reply: @escaping (Error?) -> Void) {
+    /// The mount table and the restart, swapped by tests so that no test can
+    /// read this Mac's mounts as empty and then really kill fskitd.
+    nonisolated(unsafe) static var mountTable: () -> [MountTableEntry] = { MountTable.read() }
+    nonisolated(unsafe) static var restartFSKit: () throws -> Int32 = {
         // killall, not `launchctl kickstart -k`: SIP forbids launchctl job
         // control on Apple's daemons, while signalling as root is allowed and
         // launchd respawns on demand (docs/backend-a-fskit-notes.md). The
@@ -293,13 +296,32 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let killall = Process()
         killall.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
         killall.arguments = ["fskitd"]
+        try killall.run()
+        killall.waitUntilExit()
+        return killall.terminationStatus
+    }
+
+    public func refreshFSKitEnablement(reply: @escaping (Error?) -> Void) {
+        // Killing fskitd kills every FSKit extension instance on the Mac, in
+        // every account, and their volumes go down mid-write
+        // (docs/open-questions.md item 14: seen 2026-10-22 and again
+        // 2026-11-02, a second account's first Setup taking the first
+        // account's attached volume with it). Root sees every account's
+        // mounts, so the refusal belongs here, where the kill is; Setup
+        // checks first only to say it in its own words.
+        let mounted = FSKitRestart.mountsItWouldDisconnect(Self.mountTable())
+        guard mounted.isEmpty else {
+            let refused = FSKitRestart.Refused(mounted: mounted)
+            DaemonLog.error("refreshFSKitEnablement refused: would disconnect "
+                            + refused.mounted.joined(separator: "; "))
+            reply(ISCSIError.nsError(from: refused, context: "Turning on the filesystem extension"))
+            return
+        }
         do {
-            try killall.run()
-            killall.waitUntilExit()
+            let status = try Self.restartFSKit()
             // Exit 1 (nothing matched) is fine: fskitd is on-demand, and the
             // next mount starts a fresh one that reads the new file.
-            DaemonLog.lifecycle("refreshFSKitEnablement: killall fskitd exited "
-                                + "\(killall.terminationStatus)")
+            DaemonLog.lifecycle("refreshFSKitEnablement: killall fskitd exited \(status)")
             reply(nil)
         } catch {
             DaemonLog.error("refreshFSKitEnablement failed: \(error)")

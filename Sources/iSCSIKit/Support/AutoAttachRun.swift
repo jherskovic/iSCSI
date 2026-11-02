@@ -193,13 +193,61 @@ public struct AutoAttachRun: Sendable, Equatable {
 }
 
 /// One row of the mount table: what is mounted (`f_mntfromname`) where
-/// (`f_mntonname`).
+/// (`f_mntonname`), and whether FSKit serves it (`MNT_EXT_FSKIT` in
+/// `f_flags_ext`, which `mount` prints as `fskit`).
 public struct MountTableEntry: Sendable, Equatable {
     public let from: String
     public let on: String
+    public let isFSKit: Bool
 
-    public init(from: String, on: String) {
+    public init(from: String, on: String, isFSKit: Bool = false) {
         self.from = from
         self.on = on
+        self.isFSKit = isFSKit
+    }
+}
+
+/// Restarting fskitd — Setup's way to enable the extension on macOS 26.x,
+/// where the System Settings switch does not move — kills every FSKit
+/// extension instance on the Mac, in every account, and the volumes they
+/// serve go with them, unwritten data and all (docs/open-questions.md item
+/// 14). So it is refused while anything it would disconnect is mounted.
+public enum FSKitRestart {
+    /// The mounts a restart would take down: every FSKit mount, and every
+    /// mount this app made whether or not the flag says so, in case a macOS
+    /// leaves `f_flags_ext` clear.
+    public static func mountsItWouldDisconnect(_ mounts: [MountTableEntry]) -> [MountTableEntry] {
+        mounts.filter { $0.isFSKit || AutoAttachRun.mountedUnit($0.from) != nil }
+    }
+
+    /// One mount, the way the refusal names it: for this app's, the disk and
+    /// whose it is; for anything else, where it is mounted.
+    public static func describe(_ mount: MountTableEntry) -> String {
+        guard let unit = AutoAttachRun.mountedUnit(mount.from) else { return mount.on }
+        let disk = "\(unit.name) \(unit.isNVMe ? "namespace" : "LUN") \(unit.unit)"
+        let parts = mount.on.split(separator: "/", omittingEmptySubsequences: true)
+        guard parts.count >= 2, parts[0] == "Users" else { return disk }
+        return "\(disk) (\(parts[1])'s)"
+    }
+
+    /// Why the restart was refused, for both the daemon and Setup to say.
+    public struct Refused: LocalizedError, Equatable, Sendable {
+        public let mounted: [String]
+
+        public init(mounted: [MountTableEntry]) {
+            self.mounted = mounted.map(FSKitRestart.describe)
+        }
+
+        public var errorDescription: String? {
+            "Turning the extension on means restarting macOS's filesystem service, which "
+                + "would disconnect what is mounted through it on this Mac, in every account: "
+                + mounted.joined(separator: "; ") + "."
+        }
+
+        public var recoverySuggestion: String? {
+            "Detach those first — in each account that has one — and try again. Or restart "
+                + "this Mac: the extension is already on macOS's list, and a restart turns it "
+                + "on without disconnecting anything."
+        }
     }
 }
