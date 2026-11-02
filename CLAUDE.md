@@ -64,6 +64,9 @@ same-named build phases (two "Embed Dependencies" copy-files phases, one per
 embed destination) by Swift's per-process-randomized `Dictionary` iteration,
 so an unmodified `project.yml` can regenerate into a spuriously different
 `.pbxproj` — and CI, which does set the env var, uses it as its baseline.
+CI also pins xcodegen itself (2.46.0, in `scripts/install-build-tools.sh`,
+which the release job uses for `create-dmg` too); regenerate with that
+version, because a different xcodegen can rewrite the file just as well.
 
 **Regenerate from a checkout directory named `iSCSI`.** xcodegen names the
 `..` folder reference after the checkout's basename, so a clone called

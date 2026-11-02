@@ -535,8 +535,12 @@ if [ "$SKIP_NOTARIZE" -eq 0 ]; then
 
     SIGN_UPDATE="${SPARKLE_SIGN_UPDATE:-}"
     if [ -z "$SIGN_UPDATE" ]; then
-        SIGN_UPDATE=$(find ~/Library/Developer/Xcode/DerivedData \
-            -path "*/artifacts/sparkle/Sparkle/bin/sign_update" -type f 2>/dev/null | head -1)
+        # This project's DerivedData only, and the newest copy: the first match
+        # anywhere could be another app's Sparkle, or an older one of ours,
+        # handed the private key.
+        SIGN_UPDATE=$(find ~/Library/Developer/Xcode/DerivedData/iSCSIInitiator-* \
+            -path "*/artifacts/sparkle/Sparkle/bin/sign_update" -type f -print0 2>/dev/null \
+            | xargs -0 ls -t 2>/dev/null | head -1)
     fi
     [ -n "$SIGN_UPDATE" ] || die "sign_update not found. It ships in Sparkle's package
 artifacts, which appear once the app has been built at least once. Override the

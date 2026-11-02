@@ -29,12 +29,10 @@ jobs:
     # configuration no user has. Nothing in CI runs on macOS 26 any more; the
     # 26.x test VM is where 26 behaviour gets checked.
     runs-on: xcode-27
-    # Only for the badge push at the end of this job. The other two jobs keep
-    # the read-only default from above.
-    permissions:
-      contents: write
+    # Read-only like every job that runs repository code. The badge push
+    # needs write, and has a job of its own below that builds nothing.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Show toolchain
         run: swift --version
@@ -76,17 +74,41 @@ jobs:
           set -euo pipefail
           scripts/coverage-badges.sh "$RUNNER_TEMP/swift-test.log" "$RUNNER_TEMP/badges"
 
-      # Derived data, not history: one orphan commit holding two shields.io
-      # endpoint documents, force-pushed over whatever was there. Main only —
-      # a pull request must not be able to move the numbers the README shows,
-      # and this step is skipped rather than failed on a fork, where the token
-      # is read-only regardless.
-      #
-      # The badge is only refreshed when the suite is green, since the step
-      # above fails first otherwise. A red run therefore leaves a stale count
-      # standing next to a red build badge, which is the honest pairing.
-      - name: Publish the tests and coverage badges
+      - name: Keep the badges for the publishing job
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: badges
+          path: ${{ runner.temp }}/badges
+          if-no-files-found: error
+          retention-days: 1
+
+  # Derived data, not history: one orphan commit holding two shields.io
+  # endpoint documents, force-pushed over whatever was there. Main only — a
+  # pull request must not be able to move the numbers the README shows.
+  #
+  # Its own job because it is the only thing in CI that needs a write token,
+  # and the test job runs the whole suite and every dependency it builds: a
+  # job-wide write token there was a repository write for any code the tests
+  # execute. This job checks nothing out and runs nothing but git.
+  #
+  # The badge is only refreshed when the suite is green, since this job needs
+  # the package job to pass. A red run therefore leaves a stale count standing
+  # next to a red build badge, which is the honest pairing.
+  badges:
+    name: Publish the tests and coverage badges
+    needs: package
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: badges
+          path: ${{ runner.temp }}/badges
+
+      - name: Push them to the badges branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -107,10 +129,10 @@ jobs:
     name: Project hygiene
     runs-on: xcode-27
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: scripts/install-build-tools.sh "$RUNNER_TEMP/tools" xcodegen
 
       # The highest-value check in this repo.
       #
@@ -189,7 +211,7 @@ jobs:
     # rather than letting that surface deep in the extension.
     runs-on: xcode-27
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Toolchain
         run: |
@@ -202,7 +224,7 @@ jobs:
           esac
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: scripts/install-build-tools.sh "$RUNNER_TEMP/tools" xcodegen
 
       # No signing: this is a compile check. scripts/release.sh is what asserts
       # the things that matter about a shipping artifact.

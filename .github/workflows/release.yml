@@ -72,7 +72,7 @@ jobs:
       # Full history: the appcast commit at the end pushes to main from what is
       # otherwise a shallow, detached checkout of a tag, and a shallow push is
       # a class of failure worth not having at the very last step of a release.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -131,8 +131,21 @@ jobs:
           # up there first.
           ls -d /Applications/Xcode*.app 2>/dev/null || true
 
+      # Pinned and verified (see the script), because everything from here on
+      # runs on a machine that is about to hold the signing identities.
       - name: Install build tools
-        run: brew install xcodegen create-dmg
+        run: scripts/install-build-tools.sh "$RUNNER_TEMP/tools" xcodegen create-dmg
+
+      # Sparkle, the only package the app pulls, is fetched here — before any
+      # certificate is imported or key written — rather than inside the
+      # archive, which runs with every credential present. It is pinned to an
+      # exact version in apps/project.yml, and SwiftPM checks its binary
+      # artifact's checksum. release.sh's archive then finds it already in
+      # DerivedData.
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies -project apps/iSCSIInitiator.xcodeproj \
+            -scheme 'iSCSI Initiator'
 
       # Both of these are also enforced later — the tag by the DMG filename it
       # produces, the build number by update-appcast.py. But "later" is after an
@@ -562,7 +575,7 @@ jobs:
 
       - name: Keep the DMG even when something later failed
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dmg
           path: build/*.dmg
@@ -572,5 +585,6 @@ jobs:
       - name: Shred the credentials
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/asc.p8" "$RUNNER_TEMP/sparkle_ed_key" "$RUNNER_TEMP/cert.p12"
+          rm -f "$RUNNER_TEMP/asc.p8" "$RUNNER_TEMP/sparkle_ed_key" "$RUNNER_TEMP/cert.p12" \
+            "$RUNNER_TEMP/appledev.p12"
           security delete-keychain "${KEYCHAIN:-$RUNNER_TEMP/release.keychain-db}" 2>/dev/null || true
