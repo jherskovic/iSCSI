@@ -126,11 +126,14 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value)
                 presented = self.identity(targetIQN: targetIQN, chap: chap)
+                // The filesystem's session: it holds the unit for its life.
+                // `testConnection` below is a read-only probe and does not.
                 let handle = try await core.login(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value, chap: chap,
                     flushPolicy: FlushPolicy(intervalSeconds: record.flushIntervalSeconds),
-                    binding: record.interfaceBinding
+                    binding: record.interfaceBinding,
+                    claimingUnit: true
                 )
                 self.claim(handle, budgets: SessionBudgets(
                     readahead: WorkloadProfile.pinnedBudgetBytes(stored: record.workloadProfile) ?? 0,

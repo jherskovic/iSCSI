@@ -13,11 +13,13 @@ struct DaemonCoreTests {
     func makeDaemon(
         disk: RAMDisk = RAMDisk(),
         config: MockTargetConfig = MockTargetConfig(),
-        slowOperationThreshold: Duration = .seconds(1)
+        slowOperationThreshold: Duration = .seconds(1),
+        unitClaimWait: Duration = .milliseconds(300)
     ) -> (DaemonCore, @Sendable () -> Void) {
         let harnesses = HarnessBox()
         let core = DaemonCore(initiatorName: "iqn.2026-08.com.example:daemon",
-                              slowOperationThreshold: slowOperationThreshold) { _, _, _ in
+                              slowOperationThreshold: slowOperationThreshold,
+                              unitClaimWait: unitClaimWait) { _, _, _ in
             let (initiatorSide, targetSide) = MemoryPipe.pair()
             let target = MockTarget(config: config, disk: disk, transport: targetSide)
             let task = Task { await target.run() }
@@ -62,6 +64,79 @@ struct DaemonCoreTests {
         try await core.logout(h1)
         #expect(await core.sessionHandles() == [h2])
         cleanup()
+    }
+
+    // MARK: - One filesystem session per unit
+
+    private static let disk0 = "iqn.2026-08.test.example:disk0"
+
+    /// The S-01/S-08 corruption path: a second filesystem session for a unit
+    /// already carrying one — another account's attach, or this account's
+    /// attach under an edited address. Matched by name and unit, so another
+    /// spelling of the portal or the name is still the same disk.
+    @Test func aSecondFilesystemSessionForOneUnitIsRefused() async throws {
+        let (core, cleanup) = makeDaemon()
+        defer { cleanup() }
+        let first = try await core.login(host: "192.168.20.1", port: 3260, targetIQN: Self.disk0,
+                                         lun: 0, claimingUnit: true)
+        await #expect(throws: UnitInUseError(targetIQN: Self.disk0, lun: 0)) {
+            try await core.login(host: "nas.local", port: 3260, targetIQN: Self.disk0.uppercased(),
+                                 lun: 0, claimingUnit: true)
+        }
+        // A probe (testConnection) is read-only and does not claim.
+        let probe = try await core.login(host: "nas.local", port: 3260, targetIQN: Self.disk0, lun: 0)
+        try await core.logout(probe)
+        #expect(await core.sessionHandles() == [first])
+
+        try await core.logout(first)
+        let again = try await core.login(host: "nas.local", port: 3260, targetIQN: Self.disk0,
+                                         lun: 0, claimingUnit: true)
+        try await core.logout(again)
+    }
+
+    @Test func anotherUnitOfTheSameTargetIsNotHeld() async throws {
+        var config = MockTargetConfig()
+        config.luns = [0, 1]
+        let (core, cleanup) = makeDaemon(config: config)
+        defer { cleanup() }
+        let zero = try await core.login(host: "nas", port: 3260, targetIQN: Self.disk0,
+                                        lun: 0, claimingUnit: true)
+        let one = try await core.login(host: "nas", port: 3260, targetIQN: Self.disk0,
+                                       lun: 1, claimingUnit: true)
+        try await core.logout(one)
+        try await core.logout(zero)
+    }
+
+    /// A detach releases its claim only when the extension's connection
+    /// drops, a moment after the unmount; an attach right behind it waits.
+    @Test func aLoginWaitsForAClaimBeingReleased() async throws {
+        let (core, cleanup) = makeDaemon(unitClaimWait: .seconds(5))
+        defer { cleanup() }
+        let first = try await core.login(host: "nas", port: 3260, targetIQN: Self.disk0,
+                                         lun: 0, claimingUnit: true)
+        let second = Task {
+            try await core.login(host: "nas", port: 3260, targetIQN: Self.disk0,
+                                 lun: 0, claimingUnit: true)
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        try await core.logout(first)
+        let handle = try await second.value
+        #expect(await core.sessionHandles() == [handle])
+        try await core.logout(handle)
+    }
+
+    @Test func aFailedLoginGivesItsReservationBack() async throws {
+        var config = MockTargetConfig()
+        config.luns = [1]
+        let (core, cleanup) = makeDaemon(config: config)
+        defer { cleanup() }
+        for _ in 0 ..< 2 {
+            // The second attempt fails the same way, not as "in use".
+            await #expect(throws: DaemonUnitError.self) {
+                try await core.login(host: "nas", port: 3260, targetIQN: Self.disk0,
+                                     lun: 0, claimingUnit: true)
+            }
+        }
     }
 
     // GitHub #3: a Synology (LIO) target with its LUN mapped at 1 answers LUN

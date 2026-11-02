@@ -33,8 +33,37 @@ public actor DaemonCore {
         /// Operations at least `slowOperationThreshold` long, and the longest.
         var slowOperations = 0
         var longestOperation: Duration = .zero
+        /// The unit this session holds for a filesystem, released at logout.
+        var claim: UnitKey?
     }
 
+    /// One LUN or namespace, named the way a mount of it is: by target name
+    /// and unit, not portal — a NAS reached by address and by hostname, or
+    /// through a group address, is still one disk. Lowercased because IQNs
+    /// compare case-insensitively, and refusing too much here costs a retry
+    /// where refusing too little costs a filesystem.
+    struct UnitKey: Hashable, Sendable {
+        let name: String
+        let unit: UInt64
+        init(targetIQN: String, lun: UInt64) {
+            name = targetIQN.lowercased()
+            unit = lun
+        }
+    }
+
+    /// Units held by a filesystem's session, and by which handle ("" while
+    /// that login is still in progress). At most one per unit, from any user,
+    /// app or mount: two sessions writing one filesystem each believe they
+    /// own it, and corrupt it. The app checks the mount table before attaching
+    /// and says why; this is the backstop for whatever gets past that — a
+    /// race, another account, a mount made by hand.
+    private var claimedUnits: [UnitKey: String] = [:]
+    /// How long a login waits for a claimed unit before refusing. A detach
+    /// releases its claim only once RunningBoard has terminated the extension
+    /// and the connection drops (docs/resilience.md, "A dead client leaked its
+    /// session"), so an attach right behind a detach finds the claim still
+    /// held for a moment.
+    private let unitClaimWait: Duration
     private var sessions: [String: SessionEntry] = [:]
     private var handleCounter: UInt64 = 0
     /// The iSCSI initiator name presented in every login. `nonisolated`, like
@@ -65,9 +94,11 @@ public actor DaemonCore {
         policy: SessionPolicy = SessionPolicy(),
         hostIdentity: NVMeHostIdentity? = nil,
         slowOperationThreshold: Duration = .seconds(1),
+        unitClaimWait: Duration = .seconds(10),
         transportFactory: @escaping @Sendable (String, UInt16, InterfaceBinding?) async throws -> any ConnectionTransport
     ) {
         self.slowOperationThreshold = slowOperationThreshold
+        self.unitClaimWait = unitClaimWait
         self.initiatorName = initiatorName
         self.hostIdentity = hostIdentity ?? HostIdentity.nvmeHost()
         self.writeThrough = writeThrough
@@ -165,8 +196,17 @@ public actor DaemonCore {
         lun: UInt64,
         chap: CHAP.Credentials? = nil,
         flushPolicy: FlushPolicy? = nil,
-        binding: InterfaceBinding? = nil
+        binding: InterfaceBinding? = nil,
+        claimingUnit: Bool = false
     ) async throws -> String {
+        // A session that will carry a filesystem holds its unit for its whole
+        // life (`claimedUnits`). Reserved before the first suspension, or a
+        // second login could pass the check while this one is still connecting.
+        let claim = claimingUnit ? UnitKey(targetIQN: targetIQN, lun: lun) : nil
+        if let claim { try await reserve(claim) }
+        var registered = false
+        defer { if let claim, !registered { claimedUnits[claim] = nil } }
+
         // A record's stored policy wins; nil is a record-less login
         // (iscsictl direct), which follows the ISCSI_WRITE_THROUGH default.
         let durability = flushPolicy ?? (writeThrough ? FlushPolicy.writeThrough : FlushPolicy.never)
@@ -244,7 +284,9 @@ public actor DaemonCore {
         let handle = "s\(handleCounter)"
         sessions[handle] = SessionEntry(session: session, device: device,
                                         targetIQN: targetIQN, lun: lun,
-                                        flushPolicy: durability, path: path)
+                                        flushPolicy: durability, path: path, claim: claim)
+        if let claim { claimedUnits[claim] = handle }
+        registered = true
         if case .interval(let seconds) = durability {
             sessions[handle]?.flushTask = Task { [weak self] in
                 while !Task.isCancelled {
@@ -334,8 +376,27 @@ public actor DaemonCore {
         }
     }
 
+    /// Take `unit`, waiting up to `unitClaimWait` for a holder to let go.
+    private func reserve(_ unit: UnitKey) async throws {
+        let deadline = ContinuousClock.now.advanced(by: unitClaimWait)
+        while let holder = claimedUnits[unit] {
+            guard ContinuousClock.now < deadline else {
+                DaemonLog.error("""
+                    refusing a second session for \(unit.name) unit \(unit.unit): \
+                    \(holder.isEmpty ? "another login of it is in progress" : "held by \(holder)")
+                    """)
+                throw UnitInUseError(targetIQN: unit.name, lun: unit.unit)
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        claimedUnits[unit] = ""
+    }
+
     public func logout(_ handle: String) async throws {
         guard let entry = sessions.removeValue(forKey: handle) else { return }
+        // Released once the session is down, not before: a relaxed flush
+        // policy's last SYNCHRONIZE CACHE below still belongs to this holder.
+        defer { if let claim = entry.claim, claimedUnits[claim] == handle { claimedUnits[claim] = nil } }
         DaemonLog.session("""
             \(entry.targetIQN): I/O timing — \(entry.slowOperations) slow operation(s), \
             longest \(Self.milliseconds(entry.longestOperation)) ms, \
@@ -519,5 +580,22 @@ public actor DaemonCore {
     private func device(_ handle: String) throws -> any BlockDeviceBackend {
         guard let entry = sessions[handle] else { throw BlockDeviceError.notReady }
         return entry.device
+    }
+}
+
+/// A filesystem session for a unit that already has one (`DaemonCore.claimedUnits`).
+public struct UnitInUseError: LocalizedError, Equatable, Sendable {
+    public let targetIQN: String
+    public let lun: UInt64
+
+    public var errorDescription: String? {
+        "\(targetIQN) \(IQN.isNQN(targetIQN) ? "namespace" : "LUN") \(lun) is already attached on this Mac."
+    }
+
+    public var recoverySuggestion: String? {
+        "Detach it where it is attached first — in this account or another one on this Mac. "
+            + "Two attachments of one disk each write its filesystem without knowing about "
+            + "the other, which corrupts it. If nothing has it attached, try again in half a "
+            + "minute: an attach that failed partway lets go of it by then."
     }
 }

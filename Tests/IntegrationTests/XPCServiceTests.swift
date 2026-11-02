@@ -48,10 +48,10 @@ struct XPCServiceTests {
         return (core, harnesses, store, record)
     }
 
-    private func login(_ service: ISCSIXPCService) async throws -> String {
+    private func login(_ service: ISCSIXPCService, lun: UInt64 = 0) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             service.login(host: "mock", port: 3260, targetIQN: Self.targetIQN,
-                          lun: 0) { handle, error in
+                          lun: NSNumber(value: lun)) { handle, error in
                 if let error { continuation.resume(throwing: error) }
                 else { continuation.resume(returning: handle!) }
             }
@@ -419,11 +419,19 @@ struct XPCServiceTests {
     // boundary `checkOwned` enforces on every call.
     @Test("a dropped connection leaves another connection's sessions alone")
     func invalidationIsScopedToItsOwnConnection() async throws {
-        let (core, harness, store, _) = try await makeCore()
+        // Two units: a unit carries one filesystem session at a time
+        // (`DaemonCore.claimedUnits`), so two clients cannot share LUN 0.
+        var targetConfig = MockTargetConfig()
+        targetConfig.luns = [0, 1]
+        let (core, harness, store, record) = try await makeCore(targetConfig: targetConfig)
         defer { harness.cancelAll() }
+        var second = record
+        second.id = UUID().uuidString
+        second.lun = 1
+        try await store.save(second)
         let owner = ISCSIXPCService(core: core, targets: store)
         let bystander = ISCSIXPCService(core: core, targets: store)
-        let kept = try await login(bystander)
+        let kept = try await login(bystander, lun: 1)
         let doomed = try await login(owner)
         #expect(await Set(core.sessionHandles()) == [kept, doomed])
 
