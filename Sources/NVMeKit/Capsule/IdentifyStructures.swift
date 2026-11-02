@@ -67,8 +67,18 @@ public struct IdentifyController: Sendable, Equatable {
     public var inCapsuleDataOffsetBytes: Int { Int(icdoff) * 16 }
 
     /// MDTS in bytes for the given MPSMIN page size; nil when unlimited.
+    ///
+    /// Saturates rather than trapping. Both factors come from the controller
+    /// (MDTS up to 255, the page up to 2^27 from CAP.MPSMIN), and the plain
+    /// product overflowed `Int` from MDTS 51 at 4 KiB pages — a trap, which in
+    /// `iscsid` took every session on the machine down with it. A limit past
+    /// anything this initiator transfers in one command is no limit, so the
+    /// saturated value only ever loses to the caller's own cap.
     public func maxTransferBytes(pageBytes: Int) -> Int? {
-        mdts == 0 ? nil : (1 << Int(mdts)) * pageBytes
+        guard mdts != 0 else { return nil }
+        guard Int(mdts) < Int.bitWidth - 1, pageBytes > 0 else { return Int.max }
+        let (bytes, overflow) = (1 << Int(mdts)).multipliedReportingOverflow(by: pageBytes)
+        return overflow ? Int.max : bytes
     }
 }
 

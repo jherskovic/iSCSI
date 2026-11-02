@@ -40,6 +40,26 @@ struct NVMeHostileTests {
         await fleet.shutdown()
     }
 
+    /// MDTS 51 at 4 KiB pages overflowed `Int` in the I/O planner and trapped,
+    /// killing the daemon and every other session in it. Through the whole
+    /// path now: bring-up, the Sessions pane's pairs, and a planned read and
+    /// write, which stay within the initiator's own cap.
+    @Test func anOverflowingMDTSIsNoLimitRatherThanACrash() async throws {
+        for mdts: UInt8 in [51, 63, 64, 255] {
+            var config = MockNVMeConfig()
+            config.mdts = mdts
+            let fleet = NVMeFleet(config: config)
+            let controller = try await activatedController(fleet: fleet)
+            #expect(await controller.maxTransferBytes == Int.max)
+            #expect(await controller.displayPairs["MDTS"] == "\(Int.max) bytes")
+            let device = NVMeBlockDevice(controller: controller, nsid: 1)
+            let payload = Data((0 ..< 512 * 1024).map { UInt8(($0 &* 7) & 0xFF) })
+            try await device.write(offset: 0, data: payload)
+            #expect(try await device.read(offset: 0, length: payload.count) == payload)
+            await fleet.shutdown()
+        }
+    }
+
     @Test func aTerminationRequestFailsTheCommandNotTheProcess() async throws {
         let fleet = hostileFleet { $0.terminateOnFirstIOCommand = true }
         let controller = try await activatedController(
