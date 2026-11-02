@@ -475,8 +475,10 @@ Still open, in cost order:
   attached target and the fields should be locked; with a hand-made orphan
   (`mount -F` at a stray tag directory) the orphan should be listed and eject.
   **The editor lock passed 2026-11-02 on the macOS 27.2 and 26.7.2 VMs (build
-  52.5).** The second-account refusal and the orphan listing are untested on
-  both.
+  52.5), and the orphan listing on the 26.7.2 VM:** a hand-made `mount -F` at a
+  stray tag directory was listed under Other Attached Disks and ejected. The
+  second-account refusal, and the daemon's refusal of a second session for an
+  attached disk, are untested.
 - **Who may use the daemon** (an external audit's S-01, deferred). The daemon
   checks the calling app's signature, not the calling user, and the target
   list and secrets are machine-wide. On a Mac with more than one account any
