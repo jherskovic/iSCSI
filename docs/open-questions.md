@@ -455,8 +455,8 @@ Still open, in cost order:
   **Passed 2026-11-02 on the macOS 27.2 VM (build 52.5):** the Force Eject
   question for a Terminal `cd`'d into the volume, Cancel leaving it attached,
   and uninstall stopping at step 1. On the macOS 26.7.2 VM (build 52.5) the
-  Force Eject question and Cancel passed the same day; uninstall not yet run
-  there.
+  Force Eject question, Cancel, and uninstall stopping at step 1 all passed
+  the same day.
 
 - **One disk, one writer** (built 2026-11-02, untested in the UI). Nothing
   stopped a LUN from being attached twice — by a second account under fast
