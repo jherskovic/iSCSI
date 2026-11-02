@@ -477,8 +477,13 @@ Still open, in cost order:
   **The editor lock passed 2026-11-02 on the macOS 27.2 and 26.7.2 VMs (build
   52.5), and the orphan listing on the 26.7.2 VM:** a hand-made `mount -F` at a
   stray tag directory was listed under Other Attached Disks and ejected. The
-  second-account refusal, and the daemon's refusal of a second session for an
-  attached disk, are untested.
+  daemon's claim held on the same VM: a hand `mount -F` of a LUN the app had
+  attached (`iscsi://192.168.20.1/…/0`, session s5), spelled with an explicit
+  `:3260`, logged `refusing a second session … held by s5` after the 10 s
+  wait and failed in `loadResource` with "already attached on this Mac".
+  mount(8) itself prints only a generic failure; the words reach the user
+  only through the app's own pre-check. The second-account refusal is
+  untested.
 - **Who may use the daemon** (an external audit's S-01, deferred). The daemon
   checks the calling app's signature, not the calling user, and the target
   list and secrets are machine-wide. On a Mac with more than one account any
