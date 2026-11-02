@@ -474,9 +474,9 @@ Still open, in cost order:
   LUN's device) now offer Detach rather than Attach. The manual pass: edit an
   attached target and the fields should be locked; with a hand-made orphan
   (`mount -F` at a stray tag directory) the orphan should be listed and eject.
-  **The editor lock passed 2026-11-02 on the macOS 27.2 VM (build 52.5).** The
-  second-account refusal and the orphan listing are untested, and nothing of
-  this has run on macOS 26.
+  **The editor lock passed 2026-11-02 on the macOS 27.2 and 26.7.2 VMs (build
+  52.5).** The second-account refusal and the orphan listing are untested on
+  both.
 - **Who may use the daemon** (an external audit's S-01, deferred). The daemon
   checks the calling app's signature, not the calling user, and the target
   list and secrets are machine-wide. On a Mac with more than one account any
