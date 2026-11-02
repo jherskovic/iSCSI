@@ -41,6 +41,20 @@ public struct SessionPolicy: Sendable {
     /// commands usually still answers NOPs. 30s is the conventional SCSI
     /// command timeout.
     public var taskTimeout: Duration? = .seconds(30)
+    /// How long a target that accepted the connection gets to finish logging
+    /// in: the iSCSI login exchange, or an NVMe/TCP queue's ICReq and Fabrics
+    /// Connect. The TCP connect has its own deadline (`NetworkTransport`);
+    /// this one starts after it. nil waits forever, which is what every login
+    /// did before 2026-11 — and since `taskTimeout` only covers I/O on an
+    /// established connection, a target that accepted TCP and then went
+    /// quiet hung the attach, and every recovery attempt behind it, with
+    /// nothing to give up on. 15 s is open-iscsi's default login timeout.
+    public var loginTimeout: Duration? = .seconds(15)
+    /// How long a logout waits for the target's response before closing the
+    /// connection anyway — the TMF path's five seconds. Bounded because the
+    /// extension logs out on unmount, so an unanswered logout is an unmount
+    /// that never finishes.
+    public var logoutTimeout: Duration = .seconds(5)
     /// RFC 7143 §7.5: after a transport exception, recovery SHOULD NOT begin
     /// before the negotiated DefaultTime2Wait. Tests that script fast
     /// reconnects turn this off.
@@ -122,7 +136,11 @@ public actor ISCSISession {
         keepaliveTask?.cancel()
         keepaliveTask = nil
         guard let connection else { return }
-        _ = try? await connection.logout(reason: .closeSession)
+        // Bounded (`SessionPolicy.logoutTimeout`), and closed either way.
+        _ = try? await withDeadline(policy.logoutTimeout, onTimeout: { await connection.close() }) {
+            try await connection.logout(reason: .closeSession)
+        }
+        await connection.close()
         self.connection = nil
         self.loginResult = nil
     }
@@ -213,7 +231,8 @@ public actor ISCSISession {
         let home = makeTransport
         let redirect = makeRedirectTransport
         let outcome = try await RedirectingLogin.login(
-            loginConfig, startingAt: movedTo, followRedirects: redirect != nil
+            loginConfig, startingAt: movedTo, followRedirects: redirect != nil,
+            loginTimeout: policy.loginTimeout
         ) { portal in
             if let portal, let redirect { return try await redirect(portal) }
             return try await home()
@@ -375,21 +394,37 @@ public struct DiscoveredTarget: Sendable, Equatable {
 public enum Discovery {
     /// Run a discovery session on `transport`: login (type Discovery),
     /// SendTargets=All, logout. Returns the advertised targets.
+    ///
+    /// `timeout` bounds the login and the SendTargets exchange together; a
+    /// target that answers neither has its connection closed and the call
+    /// throws `DeadlineError.timedOut`. nil waits as long as the target does.
     public static func sendTargets(
         transport: any ConnectionTransport,
         initiatorName: String,
         chap: CHAP.Credentials? = nil,
+        timeout: Duration? = SessionPolicy().loginTimeout,
         trace: (@Sendable (String) -> Void)? = nil
     ) async throws -> [DiscoveredTarget] {
         var config = LoginConfig(initiatorName: initiatorName, sessionType: .discovery,
                                  chap: chap, trace: trace)
         config.desired.offerDigests = false
         let connection = ISCSIConnection(transport: transport, login: config)
-        _ = try await connection.login()
-        var request = TextParameters()
-        request.append("SendTargets", "All")
-        let response = try await connection.textExchange(request)
-        _ = try? await connection.logout(reason: .closeSession)
+        let response: TextParameters
+        do {
+            response = try await withDeadline(timeout, onTimeout: { await connection.close() }) {
+                _ = try await connection.login()
+                var request = TextParameters()
+                request.append("SendTargets", "All")
+                return try await connection.textExchange(request)
+            }
+        } catch {
+            await connection.close()
+            throw error
+        }
+        _ = try? await withDeadline(SessionPolicy().logoutTimeout, onTimeout: { await connection.close() }) {
+            try await connection.logout(reason: .closeSession)
+        }
+        await connection.close()
         return parse(response)
     }
 

@@ -47,6 +47,9 @@ public struct MockTargetFaults: Sendable {
     /// Ignore task management requests. A target this sick is the reason an
     /// abort cannot be a precondition for giving up on a task.
     public var swallowTMF = false
+    /// Ignore logout requests, keeping the connection open: the target that
+    /// makes an unbounded logout an unmount that never finishes.
+    public var swallowLogout = false
     /// Freeze MaxCmdSN at login value (command window never reopens).
     public var freezeWindow = false
     /// Split text responses into C-bit continuations of this size.
@@ -512,6 +515,7 @@ public actor MockTarget {
                 try await handleText(request)
             case .logoutRequest(let request):
                 noteCmdSN(request.cmdSN, immediate: request.immediate)
+                if faults.swallowLogout { break }
                 var resp = LogoutResponsePDU()
                 resp.response = .success
                 resp.initiatorTaskTag = request.initiatorTaskTag

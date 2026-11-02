@@ -242,23 +242,34 @@ public actor NVMeController {
 
     /// Admin queue up and the controller enabled — shared with discovery,
     /// which stops here.
+    ///
+    /// Nothing on a queue has an answer timeout of its own, so bring-up runs
+    /// in bounded steps: the IC exchange through CC.EN within `timeout`
+    /// (`SessionPolicy.loginTimeout`), then the CSTS.RDY wait within CAP.TO,
+    /// which the controller states and can legitimately exceed the login
+    /// timeout. A step that runs out closes the queue — the only thing that
+    /// ends its parked read — and throws `DeadlineError.timedOut`.
     static func bringUpAdminQueue(
-        _ queue: NVMeQueue, host: NVMeHostIdentity, subsystemNQN: String, keepAliveMS: UInt32
+        _ queue: NVMeQueue, host: NVMeHostIdentity, subsystemNQN: String, keepAliveMS: UInt32,
+        timeout: Duration? = SessionPolicy().loginTimeout
     ) async throws -> (controllerID: UInt16, capabilities: ControllerCapabilities) {
-        let (controllerID, authRequired) = try await queue.connect(
-            host: host, subsystemNQN: subsystemNQN, controllerID: 0xFFFF, keepAliveMS: keepAliveMS)
-        if authRequired {
-            // Surfaced as the status the spec assigns it, so the error text
-            // can say what to switch off on the NAS.
-            throw BlockDeviceError.nvmeStatus(sct: 1, sc: 0x91, opcode: NVMeOpcode.Admin.fabrics)
+        let (controllerID, cap) = try await withDeadline(timeout, onTimeout: { await queue.close() }) {
+            let (controllerID, authRequired) = try await queue.connect(
+                host: host, subsystemNQN: subsystemNQN, controllerID: 0xFFFF, keepAliveMS: keepAliveMS)
+            if authRequired {
+                // Surfaced as the status the spec assigns it, so the error text
+                // can say what to switch off on the NAS.
+                throw BlockDeviceError.nvmeStatus(sct: 1, sc: 0x91, opcode: NVMeOpcode.Admin.fabrics)
+            }
+            let cap = ControllerCapabilities(raw: try await queue.submitChecked(
+                NVMeCommands.propertyGet(commandID: 0, offset: NVMeProperty.cap, wide: true)).cqe.result64)
+            guard cap.supportsNVMCommandSet else {
+                throw ConnectionError.protocolError("controller does not support the NVM command set")
+            }
+            _ = try await queue.submitChecked(NVMeCommands.propertySet(
+                commandID: 0, offset: NVMeProperty.cc, value: NVMeCommands.controllerConfigurationEnable))
+            return (controllerID, cap)
         }
-        let cap = ControllerCapabilities(raw: try await queue.submitChecked(
-            NVMeCommands.propertyGet(commandID: 0, offset: NVMeProperty.cap, wide: true)).cqe.result64)
-        guard cap.supportsNVMCommandSet else {
-            throw ConnectionError.protocolError("controller does not support the NVM command set")
-        }
-        _ = try await queue.submitChecked(NVMeCommands.propertySet(
-            commandID: 0, offset: NVMeProperty.cc, value: NVMeCommands.controllerConfigurationEnable))
         // CSTS.RDY follows CC.EN within CAP.TO; CFS means it never will.
         try await withDeadline(.milliseconds(max(cap.readyTimeoutMS, 500))) {
             while true {
@@ -279,18 +290,22 @@ public actor NVMeController {
             requestDigests: config.requestDigests, maxPDUBytes: Self.adminPDULimit)
         do {
             let (cntlid, cap) = try await Self.bringUpAdminQueue(
-                adminQueue, host: config.host, subsystemNQN: config.subsystemNQN, keepAliveMS: keepAliveMS)
+                adminQueue, host: config.host, subsystemNQN: config.subsystemNQN, keepAliveMS: keepAliveMS,
+                timeout: policy.loginTimeout)
             controllerID = cntlid
             capabilities = cap
             digests = await adminQueue.digests
 
-            let id = try IdentifyController(data: try await adminQueue.submitChecked(
-                NVMeCommands.identify(commandID: 0, cns: IdentifyCNS.controller),
-                expectedRead: IdentifyController.size).data)
+            let id = try await withDeadline(policy.loginTimeout, onTimeout: { await adminQueue.close() }) {
+                let id = try IdentifyController(data: try await adminQueue.submitChecked(
+                    NVMeCommands.identify(commandID: 0, cns: IdentifyCNS.controller),
+                    expectedRead: IdentifyController.size).data)
+                // One I/O submission queue and one completion queue (0's based).
+                _ = try await adminQueue.submitChecked(NVMeCommands.setFeatures(
+                    commandID: 0, featureID: NVMeFeature.numberOfQueues, dword11: 0))
+                return id
+            }
             identity = id
-            // One I/O submission queue and one completion queue (0's based).
-            _ = try await adminQueue.submitChecked(NVMeCommands.setFeatures(
-                commandID: 0, featureID: NVMeFeature.numberOfQueues, dword11: 0))
 
             // Never deeper than CAP.MQES allows, nor than MAXCMD says the
             // controller will process per queue (0 = unstated).
@@ -302,8 +317,11 @@ public actor NVMeController {
                 transport: try await makeTransport(), queueID: 1, entries: max(entries, 2),
                 requestDigests: config.requestDigests, maxPDUBytes: Self.ioPDULimit)
             do {
-                _ = try await ioQueue.connect(host: config.host, subsystemNQN: config.subsystemNQN,
+                let host = config.host, subsystemNQN = config.subsystemNQN
+                _ = try await withDeadline(policy.loginTimeout, onTimeout: { await ioQueue.close() }) {
+                    try await ioQueue.connect(host: host, subsystemNQN: subsystemNQN,
                                               controllerID: cntlid, keepAliveMS: 0)
+                }
                 // In-capsule data is addressed from ICDOFF, which this
                 // initiator only supports at 0 (nvmet's value); anything
                 // else means every write is solicited instead.

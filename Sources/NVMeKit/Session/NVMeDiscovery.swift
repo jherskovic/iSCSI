@@ -16,17 +16,23 @@ public enum NVMeDiscovery {
     /// not a TCP port (§3.1.2 says not to use them) and ports that require
     /// TLS, which this initiator does not speak — listing them would only
     /// move the failure to attach time.
+    ///
+    /// `timeout` bounds each step — bring-up, then the log page reads — the
+    /// way `SessionPolicy.loginTimeout` bounds an attach.
     public static func getLogPage(
         transport: any ConnectionTransport,
         host: NVMeHostIdentity,
-        requestDigests: Bool = false
+        requestDigests: Bool = false,
+        timeout: Duration? = SessionPolicy().loginTimeout
     ) async throws -> [DiscoveredTarget] {
         let queue = NVMeQueue(transport: transport, queueID: 0, entries: 32,
                               requestDigests: requestDigests, maxPDUBytes: NVMeController.adminPDULimit)
         do {
             _ = try await NVMeController.bringUpAdminQueue(
-                queue, host: host, subsystemNQN: NQN.discovery, keepAliveMS: 0)
-            let page = try await readWholePage(on: queue)
+                queue, host: host, subsystemNQN: NQN.discovery, keepAliveMS: 0, timeout: timeout)
+            let page = try await withDeadline(timeout, onTimeout: { await queue.close() }) {
+                try await readWholePage(on: queue)
+            }
             await queue.close()
             return page.entries
                 .filter { $0.trtype == DiscoveryLogEntry.transportTCP && $0.subtype == DiscoveryLogEntry.subtypeNVM }

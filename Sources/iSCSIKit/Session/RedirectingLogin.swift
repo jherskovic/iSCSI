@@ -29,6 +29,10 @@ public enum RedirectingLogin {
     /// - Parameter followRedirects: false surfaces the first redirect as
     ///   `ConnectionError.redirected`, for callers that cannot reach an
     ///   arbitrary address.
+    /// - Parameter loginTimeout: how long each connection's login exchange
+    ///   may take once connected (`SessionPolicy.loginTimeout`). A login that
+    ///   runs out has its connection closed and throws
+    ///   `DeadlineError.timedOut`; nil waits as long as the target does.
     ///
     /// An address we cannot read surfaces the redirect too: a guessed port
     /// connects to the wrong service, and the error that comes back blames
@@ -37,6 +41,7 @@ public enum RedirectingLogin {
         _ config: LoginConfig,
         startingAt start: TargetPortal? = nil,
         followRedirects: Bool = true,
+        loginTimeout: Duration? = SessionPolicy().loginTimeout,
         connect: @Sendable (TargetPortal?) async throws -> any ConnectionTransport
     ) async throws -> Outcome {
         var portal = start
@@ -45,7 +50,9 @@ public enum RedirectingLogin {
         while true {
             let connection = ISCSIConnection(transport: try await connect(portal), login: config)
             do {
-                let result = try await connection.login()
+                let result = try await withDeadline(loginTimeout, onTimeout: { await connection.close() }) {
+                    try await connection.login()
+                }
                 return Outcome(connection: connection, result: result, movedPermanentlyTo: moved)
             } catch let ConnectionError.redirected(address, permanent) {
                 guard followRedirects, hops < maxRedirects,
