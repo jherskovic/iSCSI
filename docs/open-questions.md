@@ -452,6 +452,9 @@ Still open, in cost order:
   a mounted filesystem. The manual pass: a Terminal `cd`'d into the volume
   should produce the Force Eject question naming Terminal; Cancel must leave
   the row attached; uninstall with it open must stop at step 1.
+  **Passed 2026-11-02 on the macOS 27.2 VM (build 52.5):** the Force Eject
+  question for a Terminal `cd`'d into the volume, Cancel leaving it attached,
+  and uninstall stopping at step 1. Not yet run on macOS 26.
 
 - **One disk, one writer** (built 2026-11-02, untested in the UI). Nothing
   stopped a LUN from being attached twice — by a second account under fast
@@ -469,6 +472,9 @@ Still open, in cost order:
   LUN's device) now offer Detach rather than Attach. The manual pass: edit an
   attached target and the fields should be locked; with a hand-made orphan
   (`mount -F` at a stray tag directory) the orphan should be listed and eject.
+  **The editor lock passed 2026-11-02 on the macOS 27.2 VM (build 52.5).** The
+  second-account refusal and the orphan listing are untested, and nothing of
+  this has run on macOS 26.
 - **Who may use the daemon** (an external audit's S-01, deferred). The daemon
   checks the calling app's signature, not the calling user, and the target
   list and secrets are machine-wide. On a Mac with more than one account any
