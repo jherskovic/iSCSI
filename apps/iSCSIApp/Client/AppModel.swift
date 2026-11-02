@@ -52,9 +52,54 @@ final class AppModel: ObservableObject {
                 MainActor.assumeIsolated { self?.updates.installPendingUpdateIfReady() }
             }
             .store(in: &cancellables)
+
+        // Read the targets the moment setup turns ready, whoever ran the
+        // check. `refresh` reads them only when its own pass ends ready, and
+        // the Setup screen checks on its own — when it appears, on Re-check,
+        // after each step's button — so a launch that started not ready used
+        // to finish green with an empty Targets pane, until the next return
+        // to the foreground or a save. On a launch that is ready at once,
+        // this and `refresh` both read; the reads are idempotent.
+        setup.$reports
+            .map(SetupCoordinator.isReady)
+            .removeDuplicates()
+            .filter { $0 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // Unreported: a failure here is reported by the next
+                    // refresh, which every return to the foreground runs.
+                    Task { await self.readTargets(reportingErrors: false) }
+                }
+            }
+            .store(in: &cancellables)
+
+        // Views read setup through this model (`isReady`, the sidebar's
+        // spinner and "!"), and observe only this model. Without passing its
+        // changes on, they redrew when something here happened to change too.
+        setup.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
     @Published private(set) var targets: [TargetRecord] = []
+    /// Target reads under way: a whole `refresh`, its setup pass included —
+    /// at launch that pass is most of the wait — or a read after setup
+    /// turned ready. Counted, because they overlap.
+    @Published private var targetReadsInFlight = 0
+    var isLoadingTargets: Bool { targetReadsInFlight > 0 }
+    /// The list has been read at least once since launch. Until then an
+    /// empty `targets` means "not read yet", not "no targets".
+    @Published private(set) var hasReadTargets = false
+
+    /// Nothing to show on Targets *yet*: the list has not been read, and a
+    /// read — or the setup check before it — is under way or has not started.
+    /// The screen shows progress for this rather than "Finish setup first",
+    /// which would be a claim nobody has checked.
+    var isAwaitingFirstRead: Bool {
+        !hasReadTargets && (isLoadingTargets || setup.isWorking || setup.reports.isEmpty)
+    }
     @Published private(set) var sessions: [SessionInfo] = []
     /// Target ids with an operation in flight, so rows can show progress and
     /// refuse a second click without a modal.
@@ -139,14 +184,26 @@ final class AppModel: ObservableObject {
     /// seconds after login is expected there, not something to alert about.
     @discardableResult
     func refresh(reportingErrors: Bool = true) async -> Bool {
+        targetReadsInFlight += 1
+        defer { targetReadsInFlight -= 1 }
         loginItemStatus = LoginItem.status
         await setup.checkAll()
         guard setup.isReady else {
             sessions = []
             return false
         }
+        return await readTargets(reportingErrors: reportingErrors)
+    }
+
+    /// The daemon's half of `refresh`, for when setup is already known to be
+    /// ready: the targets, the sessions, and what is mounted.
+    @discardableResult
+    private func readTargets(reportingErrors: Bool) async -> Bool {
+        targetReadsInFlight += 1
+        defer { targetReadsInFlight -= 1 }
         do {
             targets = try await DaemonConnection.listTargets()
+            hasReadTargets = true
             sessions = try await DaemonConnection.sessions()
             await attachments.reconcile(targets: targets)
             for attachment in attachments.attachments where attachment.device != nil {

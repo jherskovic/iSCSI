@@ -29,6 +29,15 @@ enum StepState: Equatable {
 
     var isSatisfied: Bool { if case .satisfied = self { return true }; return false }
 
+    /// A check finished and found something for the user to do, or to know.
+    /// Not `.checking`: an unfinished check has found nothing yet.
+    var needsAttention: Bool {
+        switch self {
+        case .actionable, .blocked: return true
+        case .checking, .satisfied: return false
+        }
+    }
+
     var detail: String {
         switch self {
         case .checking:            return "checking…"
