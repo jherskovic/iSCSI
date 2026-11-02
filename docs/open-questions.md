@@ -482,8 +482,12 @@ Still open, in cost order:
   `:3260`, logged `refusing a second session … held by s5` after the 10 s
   wait and failed in `loadResource` with "already attached on this Mac".
   mount(8) itself prints only a generic failure; the words reach the user
-  only through the app's own pre-check. The second-account refusal is
-  untested.
+  only through the app's own pre-check. The second-account refusal passed the
+  same day, in the order that does not restart fskitd: with `another` holding
+  the disk, `herko`'s Attach was refused by the app's mount-table check before
+  anything was mounted. The first attempt, the other way round, was not a
+  test: `another`'s first Setup restarted fskitd (item 14), which took
+  `herko`'s volume down before `another` attached.
 - **Who may use the daemon** (an external audit's S-01, deferred). The daemon
   checks the calling app's signature, not the calling user, and the target
   list and secrets are machine-wide. On a Mac with more than one account any
