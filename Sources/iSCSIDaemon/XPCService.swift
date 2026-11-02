@@ -336,10 +336,13 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             do {
-                try await targets.delete(id: id)
                 // Both secret halves go with the target: an orphaned keychain
                 // item would be inherited by a later target reusing the id.
-                KeychainStore.deleteAllSecrets(for: id)
+                // Secrets first, so a refusal leaves the record in place and
+                // the removal can be retried; the other order lost the only
+                // pointer to an item the keychain would not delete.
+                try KeychainStore.deleteAllSecrets(for: id)
+                try await targets.delete(id: id)
                 box.value(nil)
             } catch {
                 box.value(ISCSIError.nsError(from: error, context: "Deleting the target"))
@@ -350,16 +353,34 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     // MARK: - Credentials
 
     public func setCHAPSecret(targetID: String, secret: String, reply: @escaping (Error?) -> Void) {
-        KeychainStore.setCHAPSecret(secret, for: targetID)
-        reply(KeychainStore.chapSecret(for: targetID) == nil
-              ? ISCSIError.nsError(from: KeychainStore.StoreFailure.notPersisted,
-                                   context: "Saving the CHAP secret")
-              : nil)
+        reply(Self.storeSecret(secret, for: targetID, kind: .initiator,
+                               context: "Saving the CHAP secret"))
     }
 
     public func deleteCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void) {
-        KeychainStore.deleteCHAPSecret(for: targetID)
-        reply(nil)
+        do {
+            try KeychainStore.deleteCHAPSecret(for: targetID)
+            reply(nil)
+        } catch {
+            reply(ISCSIError.nsError(from: error, context: "Removing the CHAP secret"))
+        }
+    }
+
+    /// Store, then read back and compare. Both halves matter: the store's
+    /// status is what says *why* a write was refused, and only an exact
+    /// read-back proves the new secret is the one in force — a non-nil
+    /// read-back was satisfied by the old secret surviving a failed rotation.
+    static func storeSecret(_ secret: String, for targetID: String,
+                            kind: KeychainStore.Kind, context: String) -> Error? {
+        do {
+            try KeychainStore.store(secret, for: targetID, kind: kind)
+        } catch {
+            return ISCSIError.nsError(from: error, context: context)
+        }
+        guard KeychainStore.chapSecret(for: targetID, kind: kind) == secret else {
+            return ISCSIError.nsError(from: KeychainStore.StoreFailure.notPersisted, context: context)
+        }
+        return nil
     }
 
     public func hasCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void) {
@@ -368,16 +389,17 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 
     public func setMutualCHAPSecret(targetID: String, secret: String,
                                     reply: @escaping (Error?) -> Void) {
-        KeychainStore.setCHAPSecret(secret, for: targetID, kind: .mutual)
-        reply(KeychainStore.chapSecret(for: targetID, kind: .mutual) == nil
-              ? ISCSIError.nsError(from: KeychainStore.StoreFailure.notPersisted,
-                                   context: "Saving the mutual CHAP secret")
-              : nil)
+        reply(Self.storeSecret(secret, for: targetID, kind: .mutual,
+                               context: "Saving the mutual CHAP secret"))
     }
 
     public func deleteMutualCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void) {
-        KeychainStore.deleteCHAPSecret(for: targetID, kind: .mutual)
-        reply(nil)
+        do {
+            try KeychainStore.deleteCHAPSecret(for: targetID, kind: .mutual)
+            reply(nil)
+        } catch {
+            reply(ISCSIError.nsError(from: error, context: "Removing the mutual CHAP secret"))
+        }
     }
 
     public func hasMutualCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void) {
@@ -529,9 +551,20 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             // Secrets first: the list of what to delete lives in the file we
-            // are about to remove.
+            // are about to remove — so the file stays while any secret does,
+            // and running this again can finish the job.
+            var refused: [String] = []
             for target in await targets.all() {
-                KeychainStore.deleteAllSecrets(for: target.id)
+                do { try KeychainStore.deleteAllSecrets(for: target.id) }
+                catch { refused.append("\(target.displayName): \(error.localizedDescription)") }
+            }
+            guard refused.isEmpty else {
+                DaemonLog.error("removeAllData: kept the target list; the keychain refused "
+                                + refused.joined(separator: "; "))
+                box.value(ISCSIError.nsError(
+                    from: KeychainStore.StoreFailure.notRemoved(refused),
+                    context: "Removing saved passwords"))
+                return
             }
             do {
                 let directory = TargetStore.defaultURL.deletingLastPathComponent()
