@@ -99,6 +99,9 @@ struct UninstallView: View {
                      ? "Some things could not be removed."
                      : "Everything has been removed.")
                     .font(.callout).foregroundStyle(.secondary)
+            } else if uninstaller.stoppedForVolumes {
+                Text("Stopped: nothing else is removed while a volume is in use.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
             Button("Close") { dismiss() }
@@ -123,6 +126,7 @@ struct UninstallView: View {
         case .running: ProgressView().controlSize(.small)
         case .done:    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .failed:  Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        case .skipped: Image(systemName: "minus.circle").foregroundStyle(.tertiary)
         }
     }
 
@@ -131,6 +135,7 @@ struct UninstallView: View {
         case .pending, .running: return nil
         case .done(let what):    return what
         case .failed(let why):   return why
+        case .skipped:           return "not run"
         }
     }
 

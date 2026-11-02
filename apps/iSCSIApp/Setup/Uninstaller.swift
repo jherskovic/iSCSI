@@ -23,6 +23,11 @@
 //  must not strand the user midway: the remaining steps still run, and the
 //  screen says exactly what was and was not removed.
 //
+//  Except step 1. A volume that will not detach stops everything: the steps
+//  after it delete the daemon serving that volume and the extension under its
+//  filesystem, which is exactly the data loss the order exists to prevent.
+//  The user closes whatever is using it and runs the removal again.
+//
 
 import AppKit
 import Foundation
@@ -43,13 +48,18 @@ final class Uninstaller: ObservableObject {
         case done(String)
         /// Not fatal — later steps still run, because a partial uninstall that
         /// stops at the first problem is worse than one that finishes and says
-        /// what it could not do.
+        /// what it could not do. The detach step is the exception.
         case failed(String)
+        /// Not run, because a volume did not detach.
+        case skipped
     }
 
     @Published private(set) var steps: [Step] = []
     @Published private(set) var isRunning = false
     @Published private(set) var finished = false
+    /// The run stopped at the detach step; nothing after it ran, and the
+    /// removal can be started again.
+    @Published private(set) var stoppedForVolumes = false
 
     private let model: AppModel
 
@@ -58,6 +68,7 @@ final class Uninstaller: ObservableObject {
     func run() async {
         isRunning = true
         finished = false
+        stoppedForVolumes = false
         // A login-time run still retrying would mount behind "Detach volumes".
         model.autoAttacher.cancelAll()
         steps = [
@@ -70,6 +81,12 @@ final class Uninstaller: ObservableObject {
         ]
 
         await step(0) { try await self.detachEverything() }
+        if case .failed = steps[0].outcome {
+            for index in steps.indices.dropFirst() { steps[index].outcome = .skipped }
+            stoppedForVolumes = true
+            isRunning = false
+            return
+        }
         await step(1) { try await self.removeDaemonData() }
         await step(2) { try await self.unregisterLoginItem() }
         await step(3) { try await self.unregisterDaemon() }
@@ -104,6 +121,7 @@ final class Uninstaller: ObservableObject {
         var busy: [String] = []
         for attachment in attached {
             do {
+                // Never forced (the default): see the file header.
                 try await model.attachments.detach(tag: attachment.tag)
                 detached += 1
             } catch {

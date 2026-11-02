@@ -24,20 +24,26 @@ final class AppModel: ObservableObject {
 
     init() {
         // Answered from live state: the window between "downloaded" and
-        // "installing" is exactly when someone attaches.
-        updates.isAnythingAttached = { [weak attachments] in
-            attachments?.attachments.contains(where: \.isFullyAttached) ?? false
+        // "installing" is exactly when someone attaches. *Anything* counts —
+        // a blank LUN attached as a raw device that Disk Utility is erasing,
+        // the FSKit volume alone, an attach or detach still in flight — not
+        // only a mounted filesystem: an update replaces the extension serving
+        // every one of them.
+        updates.isAnythingAttached = { [weak self] in
+            guard let self else { return false }
+            return !attachments.attachments.isEmpty || !busy.isEmpty
         }
         updates.attachedVolumeNames = { [weak self] in
-            self?.rows.filter(\.isAttached).map { row in
+            self?.rows.filter { $0.attachment != nil }.map { row in
                 row.volumePath.map { URL(fileURLWithPath: $0).lastPathComponent }
                     ?? row.target.displayName
             } ?? []
         }
         updates.detachEverything = { [weak self] in
             guard let self else { return }
-            for row in rows where row.isAttached {
-                // "Detach and Install" was the consent; asking again stalls.
+            for row in rows where row.attachment != nil {
+                // "Detach and Install" was the consent to eject; a volume
+                // something is still using is asked about on its own.
                 await detach(row.target, ejectingMounted: true)
             }
         }
@@ -46,7 +52,8 @@ final class AppModel: ObservableObject {
         // Finder ejects included. Deferred a runloop turn on purpose:
         // @Published fires on willSet, so a synchronous sink would see the old
         // list and leave the update stuck.
-        attachments.$attachments
+        attachments.$attachments.map { _ in () }
+            .merge(with: $busy.map { _ in () })
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated { self?.updates.installPendingUpdateIfReady() }
@@ -106,9 +113,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var busy: Set<String> = []
     @Published var lastError: PresentableError?
     /// Set when Detach was pressed while the volume is still mounted: the UI
-    /// asks first, because the layers below fall back to force-eject and a
-    /// mounted volume can have live writers. Explicitly-labelled eject paths
-    /// skip the question — their click is the consent.
+    /// asks first, because a mounted volume can have live writers.
+    /// Explicitly-labelled eject paths skip the question — their click is the
+    /// consent to eject. Neither is consent to *force*: a volume still in use
+    /// is asked about separately (`ForceEjectPrompt`).
     @Published var pendingDetach: TargetRecord?
     /// A request to show the main window. Set by the app delegate and the
     /// auto-attach run; `MenuBarLabel` opens the window and clears it.
@@ -290,9 +298,15 @@ final class AppModel: ObservableObject {
         autoAttacher.cancel(targetID: target.id)
         clearAutoAttachFailure(for: target.id)
         // Detach first, or the mounted volume outlives anything that can
-        // take it down.
+        // take it down — and stop if that fails: removing the record of a
+        // volume still in use leaves it with nothing that can detach it.
         if let attachment = attachments.attachments.first(where: { $0.targetID == target.id }) {
-            try? await attachments.detach(tag: attachment.tag)
+            do {
+                try await attachments.detach(tag: attachment.tag)
+            } catch {
+                present(error, doing: "Removing “\(target.displayName)”")
+                return
+            }
         }
         do {
             try await DaemonConnection.deleteTarget(id: target.id)
@@ -355,7 +369,18 @@ final class AppModel: ObservableObject {
         do {
             // Unmounting is what closes the session: the extension logs out
             // in deactivateVolume; the app owns no session of its own.
-            try await attachments.detach(tag: attachment.tag)
+            do {
+                try await attachments.detach(tag: attachment.tag)
+            } catch DetachError.inUse(let detail) {
+                // Finder's rule: a plain eject first, and forcing only on a
+                // second, explicit yes. Asked even when the click was already
+                // consent to eject — that was not consent to take the volume
+                // from an app that has files open on it.
+                let name = attachment.volumePaths.first
+                    .map { URL(fileURLWithPath: $0).lastPathComponent } ?? target.displayName
+                guard ForceEjectPrompt.confirm(volume: name, detail: detail) else { return }
+                try await attachments.detach(tag: attachment.tag, force: true)
+            }
             sessions = try await DaemonConnection.sessions()
             // No installPendingUpdateIfReady() here: the sink in init() covers
             // this path and Finder ejects with one mechanism.
@@ -391,4 +416,28 @@ struct PresentableError: Identifiable {
     let title: String
     let message: String
     let suggestion: String?
+}
+
+/// The question Finder asks about a disk something is still using. A modal
+/// alert rather than SwiftUI state, because the eject can start in the menu
+/// bar with no window open to hold one.
+@MainActor
+enum ForceEjectPrompt {
+    static func confirm(volume: String, detail: String) -> Bool {
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "“\(volume)” is in use and was not ejected"
+        alert.informativeText = """
+            \(detail)
+
+            Force Eject takes the volume away from whatever is using it. \
+            Anything those apps have not saved is lost, and a file being \
+            written at that moment can be left incomplete.
+            """
+        alert.addButton(withTitle: "Cancel")
+        let force = alert.addButton(withTitle: "Force Eject")
+        force.hasDestructiveAction = true
+        return alert.runModal() == .alertSecondButtonReturn
+    }
 }

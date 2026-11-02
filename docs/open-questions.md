@@ -438,6 +438,20 @@ Still open, in cost order:
   detach-and-install skip the question — their click is the consent, and the
   alert lives in a window those paths may not have open. Worth one manual
   pass: Detach with a VM running should ask; Cancel must leave it mounted.
+  **Changed 2026-11-02, also untested in the UI:** consent to eject is no
+  longer consent to force. Every detach is now plain first and verified
+  afterwards (the device and the FSKit mount actually gone); a refused one
+  throws instead of reporting success, and the attachment stays listed with
+  whatever is still up. From the Detach buttons, the menu bar and
+  "Detach and Install", a volume still in use gets Finder's question — a modal
+  "Force Eject?" that defaults to Cancel. Target removal and uninstall never
+  force; uninstall stops before deleting anything if a volume will not
+  detach. A Finder eject forces only the layers beneath filesystems Finder has
+  already unmounted (the wedged-image escape in docs/resilience.md). The
+  updater now waits on *any* attachment or attach/detach in flight, not just
+  a mounted filesystem. The manual pass: a Terminal `cd`'d into the volume
+  should produce the Force Eject question naming Terminal; Cancel must leave
+  the row attached; uninstall with it open must stop at step 1.
 
 - **Tailscale failure modes.** A `newfs_hfs` over Tailscale blocked ~4 minutes
   in uninterruptible wait. Explicitly parked. The wedge fixes in 0.3.6 —

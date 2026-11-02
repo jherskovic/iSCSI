@@ -78,9 +78,9 @@ struct TargetsView: View {
             TargetEditor(model: model, target: target)
         }
         // Detach on a target whose volume is mounted: offer to eject rather
-        // than refuse or rip. The layers below fall back to a force-eject, and
-        // a mounted volume can have live writers — a running VM, most likely —
-        // so the one thing that must not happen is doing that silently.
+        // than refuse or rip. A mounted volume can have live writers — a
+        // running VM, most likely. If one still has files open, the eject is
+        // refused and forcing it is a second question (`ForceEjectPrompt`).
         .alert(item: $model.pendingDetach) { target in
             Alert(
                 title: Text("Eject “\(target.displayName)”?"),
