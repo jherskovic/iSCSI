@@ -31,17 +31,13 @@ struct MenuBarContent: View {
 
             Divider()
 
-            if model.rows.contains(where: \.isAttached) {
+            if !model.attachments.attachments.isEmpty {
                 menuButton("Detach All", systemImage: "eject") {
-                    Task {
-                        for row in model.rows where row.isAttached {
-                            // Labelled with an eject icon and reachable only
-                            // deliberately: the click is the consent, and the
-                            // confirmation alert lives in a window that may
-                            // not even be open.
-                            await model.detach(row.target, ejectingMounted: true)
-                        }
-                    }
+                    // Labelled with an eject icon and reachable only
+                    // deliberately: the click is the consent, and the
+                    // confirmation alert lives in a window that may not even
+                    // be open. Orphans and half-attached disks included.
+                    Task { await model.detachAll() }
                 }
             }
             menuButton("iSCSI Initiator…", systemImage: "macwindow") {

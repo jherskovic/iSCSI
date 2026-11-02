@@ -453,6 +453,32 @@ Still open, in cost order:
   should produce the Force Eject question naming Terminal; Cancel must leave
   the row attached; uninstall with it open must stop at step 1.
 
+- **One disk, one writer** (built 2026-11-02, untested in the UI). Nothing
+  stopped a LUN from being attached twice — by a second account under fast
+  user switching (the login run checked; a manual Attach did not), or by the
+  same account after editing an attached target's address, name or LUN, which
+  moved its mount point and left the old mount running with no row to detach
+  it. Two attachments are two filesystems writing one disk. Now: every attach
+  checks the mount table for another mount of the same name and unit
+  (`AutoAttachRun.otherMount`); the daemon holds each unit for the life of
+  the extension's session and refuses a second (`DaemonCore.claimedUnits`,
+  waiting up to 10 s for a claim a detach is still releasing); the editor
+  locks address, port, name and unit while the target is attached or has a
+  session; and the mount check lists this user's orphaned mounts under Other
+  Attached Disks with an Eject button. Rows with only some layers up (a blank
+  LUN's device) now offer Detach rather than Attach. The manual pass: edit an
+  attached target and the fields should be locked; with a hand-made orphan
+  (`mount -F` at a stray tag directory) the orphan should be listed and eject.
+- **Who may use the daemon** (an external audit's S-01, deferred). The daemon
+  checks the calling app's signature, not the calling user, and the target
+  list and secrets are machine-wide. On a Mac with more than one account any
+  account can attach, edit or delete every target and use its saved secret.
+  The double-attach half is closed above; the rest needs a decision on
+  whether shared Macs are supported. If they are: an optional owner on each
+  record (old `targets.json` must still decode), the caller's UID from the
+  connection, admin authorization for configuration changes and
+  `removeAllData`, and a narrower interface for the extension.
+
 - **Tailscale failure modes.** A `newfs_hfs` over Tailscale blocked ~4 minutes
   in uninterruptible wait. Explicitly parked. The wedge fixes in 0.3.6 —
   cancellable sends, a deadline that survives uncancellable work, and the death

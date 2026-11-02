@@ -146,14 +146,49 @@ public struct AutoAttachRun: Sendable, Equatable {
         }
     }
 
-    /// The target name and LUN in an attach's mount source,
+    /// A mount of this unit anywhere but `mountPoint`, the one this attach
+    /// would use: another account's, or this user's own at a mount point the
+    /// record no longer derives — what editing a target's address, name or
+    /// unit while it was attached leaves behind (`MountpointTag` hashes all
+    /// three). Either is a second writer on one filesystem. Checked before
+    /// every attach, manual or at login; `isInUseElsewhere` answers the
+    /// narrower question the login run reports separately.
+    public static func otherMount(ofTarget name: String, lun: UInt64,
+                                  mounts: [MountTableEntry],
+                                  except mountPoint: String) -> MountTableEntry? {
+        mounts.first { entry in
+            guard entry.on != mountPoint, let mounted = mountedUnit(entry.from) else { return false }
+            return mounted.unit == lun && mounted.name.caseInsensitiveCompare(name) == .orderedSame
+        }
+    }
+
+    /// What an attach's mount source names. The FSKit mount's source is the
+    /// URL `mount -F` was given, so the mount table alone says which target a
+    /// mount serves, with no record needed.
+    public struct MountedUnit: Sendable, Equatable {
+        /// `host:port` as it appears in the URL.
+        public let portal: String
+        /// The IQN or NQN.
+        public let name: String
+        /// LUN or namespace ID.
+        public let unit: UInt64
+        public var isNVMe: Bool { IQN.isNQN(name) }
+    }
+
     /// `scheme://portal/<iqn-or-nqn>/<lun-or-nsid>`; nil for any other mount.
-    private static func mountedTarget(_ source: String) -> (name: String, lun: UInt64)? {
+    public static func mountedUnit(_ source: String) -> MountedUnit? {
         guard let url = URL(string: source), url.scheme == "iscsi" || url.scheme == "nvme"
         else { return nil }
         let parts = url.path.split(separator: "/")
-        guard parts.count == 2, let lun = UInt64(parts[1]) else { return nil }
-        return (String(parts[0]), lun)
+        guard parts.count == 2, let unit = UInt64(parts[1]) else { return nil }
+        let host = url.host ?? ""
+        let bracketed = host.contains(":") ? "[\(host)]" : host
+        return MountedUnit(portal: url.port.map { "\(bracketed):\($0)" } ?? bracketed,
+                           name: String(parts[0]), unit: unit)
+    }
+
+    private static func mountedTarget(_ source: String) -> (name: String, lun: UInt64)? {
+        mountedUnit(source).map { ($0.name, $0.unit) }
     }
 }
 

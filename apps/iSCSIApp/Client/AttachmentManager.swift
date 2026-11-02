@@ -36,8 +36,15 @@ struct Attachment: Identifiable, Equatable, Sendable {
     /// Where the user's data actually appears. Empty when the LUN is blank or
     /// carries a filesystem macOS will not mount.
     var volumePaths: [String]
+    /// The FSKit mount's source URL, kept for an orphan: with no record
+    /// behind it, this is the only thing that says what it is.
+    var mountSource: String? = nil
 
     var isFullyAttached: Bool { device != nil && !volumePaths.isEmpty }
+    /// Mounted by this app, but no record derives its mount point any more:
+    /// the target was edited while attached, or removed. `reconcile` finds
+    /// these so they can still be detached.
+    var isOrphan: Bool { targetID.isEmpty }
 
     /// What a detach found still up afterwards.
     struct Layers: Sendable {
@@ -90,6 +97,9 @@ enum AttachmentError: LocalizedError {
     case noImageServed(String)
     case imageAttachFailed(String)
     case blankLUN(device: String)
+    /// The same unit is mounted elsewhere already. `ownAccount`: by this
+    /// user, under a mount point the record no longer derives.
+    case alreadyAttached(at: String, ownAccount: Bool)
 
     var errorDescription: String? {
         switch self {
@@ -109,6 +119,10 @@ enum AttachmentError: LocalizedError {
             return "Could not attach the LUN as a disk: \(detail)"
         case .blankLUN(let device):
             return "The LUN attached as \(device) but has not been formatted yet."
+        case .alreadyAttached(_, let ownAccount):
+            return ownAccount
+                ? "This disk is already attached, under the settings the target had before it was edited."
+                : "Another account on this Mac has this disk attached."
         }
     }
 
@@ -134,6 +148,10 @@ enum AttachmentError: LocalizedError {
             return nil
         case .blankLUN:
             return "Use Disk Utility to erase and format it, then attach again."
+        case .alreadyAttached(_, let ownAccount):
+            return ownAccount
+                ? "Detach it under Other Attached Disks, then attach again."
+                : "Attaching it from two accounts at once would corrupt it. Detach it in that account first."
         }
     }
 }
@@ -204,10 +222,14 @@ final class AttachmentManager: ObservableObject {
     }
 
 
-    static func hiddenDirectory(tag: String) -> URL {
+    /// Where this user's FSKit mounts go, one directory per `MountpointTag`.
+    nonisolated static var cacheRoot: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Caches/me.herko.iSCSIInitiator")
-            .appendingPathComponent(tag)
+    }
+
+    nonisolated static func hiddenDirectory(tag: String) -> URL {
+        cacheRoot.appendingPathComponent(tag)
     }
 
     func attach(_ target: TargetRecordView) async throws -> Attachment {
@@ -233,6 +255,17 @@ final class AttachmentManager: ObservableObject {
         if engine == .diskImages2 { components?.queryItems = [ImageAttachEngine.mountQuery] }
         let url = components?.url?.absoluteString ?? base.absoluteString
         let targetID = target.id
+
+        // Before anything is mounted: another mount of this unit — another
+        // account's, or this account's own under an address the record has
+        // since changed — would make this a second writer on one filesystem.
+        // The daemon refuses that too (`DaemonCore.claimedUnits`), but only
+        // here can it be said in words the user can act on.
+        if let other = AutoAttachRun.otherMount(ofTarget: target.targetIQN, lun: target.lun,
+                                                mounts: Self.mountTable(), except: hiddenPath) {
+            throw AttachmentError.alreadyAttached(
+                at: other.on, ownAccount: other.on.hasPrefix(Self.cacheRoot.path + "/"))
+        }
 
         try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
 
@@ -433,23 +466,41 @@ final class AttachmentManager: ObservableObject {
         let generation = attachmentsGeneration
         struct Candidate: Sendable {
             let tag: String, targetID: String, hiddenPath: String, imagePath: String
+            var source: String? = nil
         }
-        let candidates: [Candidate] = targets.compactMap { target in
+        var recordMountPoints: Set<String> = []
+        var candidates: [Candidate] = targets.compactMap { target in
             let portal = MountpointTag.portal(host: target.host, port: target.port)
             let tag = MountpointTag.derive(portal: portal, targetIQN: target.targetIQN,
                                            lun: target.lun)
             let hidden = Self.hiddenDirectory(tag: tag)
+            recordMountPoints.insert(hidden.path)
             guard Self.isMounted(hidden.path) else { return nil }
             return Candidate(tag: tag, targetID: target.id, hiddenPath: hidden.path,
                              imagePath: hidden.appendingPathComponent("lun0.img").path)
         }
+        // Orphans: this app's FSKit mounts that no record derives any more —
+        // the target was edited while attached (its tag hashes the address,
+        // name and unit) or removed. Listed, so they can be detached; before,
+        // they stayed mounted with nothing in the app that could reach them.
+        let root = Self.cacheRoot.path + "/"
+        for entry in Self.mountTable() where entry.on.hasPrefix(root)
+            && !recordMountPoints.contains(entry.on)
+            && !entry.on.dropFirst(root.count).contains("/")
+            && AutoAttachRun.mountedUnit(entry.from) != nil {
+            candidates.append(Candidate(
+                tag: String(entry.on.dropFirst(root.count)), targetID: "",
+                hiddenPath: entry.on, imagePath: entry.on + "/lun0.img", source: entry.from))
+        }
+        let probes = candidates
         let found = await Task.detached { () -> [Attachment] in
-            candidates.map { candidate in
+            probes.map { candidate in
                 let device = Self.attachedDevice(forImage: candidate.imagePath)
                 return Attachment(
                     tag: candidate.tag, targetID: candidate.targetID,
                     hiddenPath: candidate.hiddenPath, device: device,
-                    volumePaths: device.map { Self.mountPoints(ofDevice: $0) } ?? [])
+                    volumePaths: device.map { Self.mountPoints(ofDevice: $0) } ?? [],
+                    mountSource: candidate.source)
             }
         }.value
         // Someone mutated the list while we were probing (a detach, an attach,
