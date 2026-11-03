@@ -16,7 +16,7 @@
 //                                  rest can still report.
 //    4. Unregister the daemon.     Only now, because steps 1 and 2 need it.
 //    5. Disable and unregister the filesystem extension, in the user's context.
-//    6. Remove the cache directory with rmdir.
+//    6. Empty and remove the cache directory, never deleting through a mount.
 //    7. Ask the user to move the app to the Trash.
 //
 //  Every step reports rather than throwing, because a failure partway through
@@ -200,28 +200,63 @@ final class Uninstaller: ObservableObject {
         return removed ? "disabled and unregistered" : "was not enabled"
     }
 
-    /// `rmdir`, never `rm -rf`.
+    /// Deletes what the cache directory holds, never through a mount.
     ///
-    /// Everything in this directory is a mount point, never storage. Anything
-    /// still inside means a volume did not come down, and recursively deleting
-    /// it would destroy the evidence — and potentially write through a live
-    /// mount into the user's LUN.
+    /// It holds a mount point per attach, and, being the directory named after
+    /// the bundle ID, URLSession's default disk cache too: `Cache.db`, its
+    /// `-shm` and `-wal`, and `fsCachedData`, from Sparkle's update checks. So
+    /// `rmdir` alone, which this once was, failed on every Mac that had
+    /// checked for an update, and blamed a mount point.
+    ///
+    /// Anything with a volume mounted at or beneath it is left alone: a
+    /// recursive delete that reaches a live mount deletes the files on the
+    /// disk itself. The mount table is matched against the path both as built
+    /// and as resolved, since the kernel records a mount point resolved, and
+    /// an entry on another device than the directory is a mount whatever the
+    /// table says. Step 1 detached everything, so either is a volume that came
+    /// back or never went.
     private func cleanCaches() async throws -> String {
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Caches/me.herko.iSCSIInitiator")
-        guard FileManager.default.fileExists(atPath: root.path) else {
+        let root = AttachmentManager.cacheRoot.path
+        guard FileManager.default.fileExists(atPath: root) else {
             return "nothing left behind"
         }
-        var stubborn: [String] = []
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        let mounts = AttachmentManager.mountTable()
+        let roots = Set([root, Self.resolved(root)].compactMap { $0 })
+        let rootDevice = Self.device(root)
+        var mounted: [String] = []
+        var undeletable: [String] = []
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []
         for name in contents {
-            let path = root.appendingPathComponent(name).path
-            if rmdir(path) != 0 { stubborn.append(name) }
+            let path = root + "/" + name
+            if roots.contains(where: { MountTableEntry.anyMounted(atOrBelow: $0 + "/" + name,
+                                                                  in: mounts) })
+                || Self.device(path).map({ $0 != rootDevice }) == true {
+                mounted.append(name)
+                continue
+            }
+            do { try FileManager.default.removeItem(atPath: path) } catch { undeletable.append(name) }
         }
-        if rmdir(root.path) != 0 && !contents.isEmpty {
-            throw UninstallError.cacheNotEmpty(stubborn)
+        if !mounted.isEmpty { throw UninstallError.cacheNotEmpty(mounted) }
+        if !undeletable.isEmpty { throw UninstallError.cacheUndeletable(undeletable) }
+        // Not empty after all: something wrote there since the listing, most
+        // likely this app's own URLSession cache, since the app is still
+        // running. Say what is there now.
+        if rmdir(root) != 0 && errno != ENOENT {
+            throw UninstallError.cacheUndeletable(
+                (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? [])
         }
         return "removed"
+    }
+
+    private nonisolated static func device(_ path: String) -> dev_t? {
+        var info = stat()
+        return lstat(path, &info) == 0 ? info.st_dev : nil
+    }
+
+    private nonisolated static func resolved(_ path: String) -> String? {
+        guard let real = realpath(path, nil) else { return nil }
+        defer { free(real) }
+        return String(cString: real)
     }
 
     func revealAppForTrashing() {
@@ -234,6 +269,7 @@ enum UninstallError: LocalizedError {
     case daemonStillRegistered(SMAppService.Status)
     case loginItemStillRegistered(SMAppService.Status)
     case cacheNotEmpty([String])
+    case cacheUndeletable([String])
 
     var errorDescription: String? {
         switch self {
@@ -243,7 +279,12 @@ enum UninstallError: LocalizedError {
              .loginItemStillRegistered(let status):
             return "the system still reports it as registered (status \(status.rawValue))"
         case .cacheNotEmpty(let names):
-            return "a mount point would not come down: \(names.joined(separator: ", "))"
+            return "a volume is still mounted there: \(names.joined(separator: ", "))"
+        case .cacheUndeletable(let names):
+            let folder = "~/Library/Caches/me.herko.iSCSIInitiator"
+            return names.isEmpty
+                ? "\(folder) could not be removed"
+                : "could not delete \(names.joined(separator: ", ")) in \(folder)"
         }
     }
 
@@ -259,6 +300,8 @@ enum UninstallError: LocalizedError {
                  + "General → Login Items & Extensions."
         case .cacheNotEmpty:
             return "Restarting will release it, after which the folder can be deleted."
+        case .cacheUndeletable:
+            return "Delete the folder in Finder once the app has quit."
         }
     }
 }

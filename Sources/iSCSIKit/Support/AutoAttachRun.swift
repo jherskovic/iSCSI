@@ -205,6 +205,14 @@ public struct MountTableEntry: Sendable, Equatable {
         self.on = on
         self.isFSKit = isFSKit
     }
+
+    /// Whether anything is mounted at `path` or anywhere beneath it. Uninstall
+    /// deletes from the cache directory only where this is false: a recursive
+    /// delete that reaches a live mount deletes the disk's own files.
+    public static func anyMounted(atOrBelow path: String, in mounts: [MountTableEntry]) -> Bool {
+        let path = path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
+        return mounts.contains { $0.on == path || $0.on.hasPrefix(path + "/") }
+    }
 }
 
 /// Restarting fskitd — Setup's way to enable the extension on macOS 26.x,

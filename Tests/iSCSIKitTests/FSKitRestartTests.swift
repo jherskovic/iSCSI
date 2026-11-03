@@ -36,3 +36,23 @@ struct FSKitRestartTests {
         #expect(refused.recoverySuggestion?.contains("restart this Mac") == true)
     }
 }
+
+/// Uninstall empties the cache directory, which holds URLSession's cache as
+/// well as mount points, and must never delete through a mount.
+@Suite("Mounted at or below a path")
+struct AnyMountedTests {
+    private let root = "/Users/herko/Library/Caches/me.herko.iSCSIInitiator"
+
+    @Test("a mount at the path or beneath it counts; a sibling sharing its prefix does not")
+    func atOrBelow() {
+        let mounts = [MountTableEntry(from: "iscsi://h/iqn.x/0", on: root + "/b23babc2ec98916d"),
+                      MountTableEntry(from: "/dev/disk9s1", on: root + "/debris/deeper/still")]
+        #expect(MountTableEntry.anyMounted(atOrBelow: root + "/b23babc2ec98916d", in: mounts))
+        #expect(MountTableEntry.anyMounted(atOrBelow: root + "/b23babc2ec98916d/", in: mounts))
+        #expect(MountTableEntry.anyMounted(atOrBelow: root + "/debris", in: mounts))
+        #expect(MountTableEntry.anyMounted(atOrBelow: root, in: mounts))
+        #expect(!MountTableEntry.anyMounted(atOrBelow: root + "/b23babc2ec98916", in: mounts))
+        #expect(!MountTableEntry.anyMounted(atOrBelow: root + "/Cache.db", in: mounts))
+        #expect(!MountTableEntry.anyMounted(atOrBelow: root + "/fsCachedData", in: []))
+    }
+}
