@@ -273,5 +273,8 @@ retracted conclusions on purpose. Read before planning:
 - `docs/backend-a-fskit-notes.md` — how the shipping backend behaves on both OS
   versions, including the macOS 26.x FSKit enablement-switch bug and the
   consented workaround.
+- `docs/security-review-2026-11.md` — an external review's findings: what was
+  fixed, what is still open, and two recommendations that were wrong (S-06,
+  S-15) and must not be applied.
 - `docs/daemon-registration.md`, `docs/resilience.md`, `docs/performance.md`,
   `docs/test-playbook.md`, `docs/releasing.md`.

@@ -488,7 +488,7 @@ Still open, in cost order:
   anything was mounted. The first attempt, the other way round, was not a
   test: `another`'s first Setup restarted fskitd (item 14), which took
   `herko`'s volume down before `another` attached.
-- **Who may use the daemon** (an external audit's S-01, deferred). The daemon
+- **Who may use the daemon** (S-01 in `docs/security-review-2026-11.md`, deferred). The daemon
   checks the calling app's signature, not the calling user, and the target
   list and secrets are machine-wide. On a Mac with more than one account any
   account can attach, edit or delete every target and use its saved secret.
