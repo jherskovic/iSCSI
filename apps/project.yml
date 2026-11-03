@@ -20,9 +20,14 @@ packages:
   # become a dependency of iSCSIKit, which the FSKit extension and the daemon
   # both link. An updater has no business inside a filesystem extension or a
   # root daemon.
+  # Exact, not `from:`: with no Package.resolved committed for the app, a
+  # range resolved to whatever 2.x was newest on the day of each release —
+  # code nobody had reviewed, built into a signed update with the Sparkle
+  # private key on the machine. 2.10.1 was the newest release, and what
+  # builds were resolving to, when this was pinned. Move it deliberately.
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    from: 2.9.5
+    exactVersion: 2.10.1
 
 settings:
   base:

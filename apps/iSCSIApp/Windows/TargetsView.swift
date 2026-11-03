@@ -44,6 +44,10 @@ struct TargetsView: View {
                     ForEach(TargetKind.allCases) { kind in
                         section(kind, rows: rows.filter { $0.target.isNVMe == kind.isNVMe })
                     }
+                    let orphans = model.orphans
+                    if !orphans.isEmpty {
+                        orphanSection(orphans)
+                    }
                 }
                 .formStyle(.grouped)
                 .alert(removing.map { "Remove “\($0.displayName)”?" } ?? "",
@@ -78,9 +82,9 @@ struct TargetsView: View {
             TargetEditor(model: model, target: target)
         }
         // Detach on a target whose volume is mounted: offer to eject rather
-        // than refuse or rip. The layers below fall back to a force-eject, and
-        // a mounted volume can have live writers — a running VM, most likely —
-        // so the one thing that must not happen is doing that silently.
+        // than refuse or rip. A mounted volume can have live writers — a
+        // running VM, most likely. If one still has files open, the eject is
+        // refused and forcing it is a second question (`ForceEjectPrompt`).
         .alert(item: $model.pendingDetach) { target in
             Alert(
                 title: Text("Eject “\(target.displayName)”?"),
@@ -114,6 +118,54 @@ struct TargetsView: View {
             }
             addRemoveBar(kind, selected: rows.first { $0.id == selection })
         }
+    }
+
+    /// Disks this app attached that no target accounts for any more: the
+    /// target was edited while attached, or removed. Shown only when there
+    /// are some, so they can be ejected — before, they stayed mounted with
+    /// nothing in the app that could reach them.
+    private func orphanSection(_ orphans: [Attachment]) -> some View {
+        Section {
+            ForEach(orphans) { orphan in
+                HStack(spacing: 10) {
+                    Image(systemName: "externaldrive.badge.questionmark")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.white)
+                        .frame(width: 26, height: 26)
+                        .background(Color.orange.gradient,
+                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(AppModel.orphanTitle(orphan))
+                        Text(orphanSubtitle(orphan))
+                            .font(.callout).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer()
+                    if model.busy.contains(orphan.tag) {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Eject") { Task { await model.detachOrphan(orphan) } }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        } header: {
+            Text("Other Attached Disks")
+        } footer: {
+            Text("Attached under a target's earlier address, name or LUN, or for a "
+                 + "target that has since been removed.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func orphanSubtitle(_ orphan: Attachment) -> String {
+        guard let unit = orphan.mountSource.flatMap(AutoAttachRun.mountedUnit) else {
+            return orphan.hiddenPath
+        }
+        let what = orphan.volumePaths.isEmpty
+            ? "\(unit.name) \(unit.isNVMe ? "namespace" : "LUN") \(unit.unit)"
+            : orphan.volumePaths.joined(separator: ", ")
+        return "\(what) — \(unit.portal)"
     }
 
     /// + and −, at the foot of the group as in System Settings. − removes the
@@ -261,9 +313,13 @@ private struct TargetRow: View {
 
             if row.isBusy {
                 ProgressView().controlSize(.small)
-            } else if row.isAttached {
-                Button("Reveal") { model.reveal(row) }
-                    .buttonStyle(.link)
+            } else if row.attachment != nil {
+                // Any layer up is something to detach: a blank LUN's raw
+                // device, or what a refused detach left listed.
+                if row.isAttached {
+                    Button("Reveal") { model.reveal(row) }
+                        .buttonStyle(.link)
+                }
                 Button("Detach") { Task { await model.detach(row.target) } }
             } else {
                 Button("Attach") { Task { await model.attach(row.target) } }
@@ -430,6 +486,28 @@ struct TargetEditor: View {
     /// followed.
     private var isNVMe: Bool { existing?.isNVMe ?? IQN.isNQN(targetIQN) }
 
+    /// Address, port, name and unit are what a mounted volume is found by
+    /// (`MountpointTag`): changed under an attached target, the app loses the
+    /// volume, and the next attach is a second writer on the same disk. So
+    /// they are fixed while this target is attached here or has a session —
+    /// another account's attach, which an edit here would orphan just the
+    /// same. `AppModel.save` enforces the same rule.
+    private var identityLocked: Bool {
+        guard let existing, let row = model.rows.first(where: { $0.id == existing.id }) else {
+            return false
+        }
+        return row.attachment != nil || row.session != nil
+    }
+
+    private var identityLockNote: String? {
+        guard identityLocked, let existing,
+              let row = model.rows.first(where: { $0.id == existing.id }) else { return nil }
+        return row.attachment != nil
+            ? "Detach to change the address, port, name or \(isNVMe ? "namespace" : "LUN")."
+            : "Connected — attached in another account, or still connecting — so the "
+              + "address, port, name and \(isNVMe ? "namespace" : "LUN") can't change."
+    }
+
     /// The name this Mac presents for the protocol being edited.
     private var hostIdentity: String? { isNVMe ? hostNQN : initiatorName }
 
@@ -469,11 +547,14 @@ struct TargetEditor: View {
                         }
                     }
                     TextField("Name", text: $displayName, prompt: Text("Photos archive"))
-                    TextField("Address", text: $host, prompt: Text("nas.local"))
-                    TextField("Port", text: $port)
-                    TextField(isNVMe ? "Subsystem NQN" : "Target", text: $targetIQN,
-                              prompt: Text(isNVMe ? "nqn.2011-06.com.truenas:uuid:…:disk0"
-                                                  : "iqn.2026-08.com.example:disk0"))
+                    Group {
+                        TextField("Address", text: $host, prompt: Text("nas.local"))
+                        TextField("Port", text: $port)
+                        TextField(isNVMe ? "Subsystem NQN" : "Target", text: $targetIQN,
+                                  prompt: Text(isNVMe ? "nqn.2011-06.com.truenas:uuid:…:disk0"
+                                                      : "iqn.2026-08.com.example:disk0"))
+                    }
+                    .disabled(identityLocked)
                     if protocolChanged {
                         Text(isNVMe
                              ? "An NVMe/TCP subsystem name starts with “nqn.”. "
@@ -483,8 +564,14 @@ struct TargetEditor: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
+                    if let lockNote = identityLockNote {
+                        Text(lockNote)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     HStack {
                         TextField(isNVMe ? "Namespace ID" : "LUN", text: $lun)
+                            .disabled(identityLocked)
                         if let foundUnits, !foundUnits.isEmpty {
                             Menu("Choose") {
                                 ForEach(foundUnits, id: \.lun) { unit in
@@ -492,9 +579,10 @@ struct TargetEditor: View {
                                 }
                             }
                             .fixedSize()
+                            .disabled(identityLocked)
                         }
                         Button("Find") { findUnits() }
-                            .disabled(findingUnits || !canFindUnits)
+                            .disabled(findingUnits || !canFindUnits || identityLocked)
                             .help(credentialIncomplete
                                   ? "Enter the CHAP secret first."
                                   : "Ask the target which \(isNVMe ? "namespaces" : "LUNs") it has.")
@@ -674,6 +762,9 @@ struct TargetEditor: View {
         }
         .frame(width: 460)
         .task {
+            // Fresh, for `identityLocked`: a session from a detach a moment
+            // ago may still be in the list.
+            if existing != nil { await model.refreshSessions() }
             if let id = existing?.id {
                 hasStoredSecret = (try? await DaemonConnection.hasCHAPSecret(targetID: id)) ?? false
                 hasStoredMutualSecret =

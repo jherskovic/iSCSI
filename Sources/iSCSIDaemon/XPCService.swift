@@ -126,11 +126,14 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value)
                 presented = self.identity(targetIQN: targetIQN, chap: chap)
+                // The filesystem's session: it holds the unit for its life.
+                // `testConnection` below is a read-only probe and does not.
                 let handle = try await core.login(
                     host: host, port: port.uint16Value,
                     targetIQN: targetIQN, lun: lun.uint64Value, chap: chap,
                     flushPolicy: FlushPolicy(intervalSeconds: record.flushIntervalSeconds),
-                    binding: record.interfaceBinding
+                    binding: record.interfaceBinding,
+                    claimingUnit: true
                 )
                 self.claim(handle, budgets: SessionBudgets(
                     readahead: WorkloadProfile.pinnedBudgetBytes(stored: record.workloadProfile) ?? 0,
@@ -282,7 +285,10 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
     }
 
-    public func refreshFSKitEnablement(reply: @escaping (Error?) -> Void) {
+    /// The mount table and the restart, swapped by tests so that no test can
+    /// read this Mac's mounts as empty and then really kill fskitd.
+    nonisolated(unsafe) static var mountTable: () -> [MountTableEntry] = { MountTable.read() }
+    nonisolated(unsafe) static var restartFSKit: () throws -> Int32 = {
         // killall, not `launchctl kickstart -k`: SIP forbids launchctl job
         // control on Apple's daemons, while signalling as root is allowed and
         // launchd respawns on demand (docs/backend-a-fskit-notes.md). The
@@ -290,13 +296,32 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let killall = Process()
         killall.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
         killall.arguments = ["fskitd"]
+        try killall.run()
+        killall.waitUntilExit()
+        return killall.terminationStatus
+    }
+
+    public func refreshFSKitEnablement(reply: @escaping (Error?) -> Void) {
+        // Killing fskitd kills every FSKit extension instance on the Mac, in
+        // every account, and their volumes go down mid-write
+        // (docs/open-questions.md item 14: seen 2026-10-22 and again
+        // 2026-11-02, a second account's first Setup taking the first
+        // account's attached volume with it). Root sees every account's
+        // mounts, so the refusal belongs here, where the kill is; Setup
+        // checks first only to say it in its own words.
+        let mounted = FSKitRestart.mountsItWouldDisconnect(Self.mountTable())
+        guard mounted.isEmpty else {
+            let refused = FSKitRestart.Refused(mounted: mounted)
+            DaemonLog.error("refreshFSKitEnablement refused: would disconnect "
+                            + refused.mounted.joined(separator: "; "))
+            reply(ISCSIError.nsError(from: refused, context: "Turning on the filesystem extension"))
+            return
+        }
         do {
-            try killall.run()
-            killall.waitUntilExit()
+            let status = try Self.restartFSKit()
             // Exit 1 (nothing matched) is fine: fskitd is on-demand, and the
             // next mount starts a fresh one that reads the new file.
-            DaemonLog.lifecycle("refreshFSKitEnablement: killall fskitd exited "
-                                + "\(killall.terminationStatus)")
+            DaemonLog.lifecycle("refreshFSKitEnablement: killall fskitd exited \(status)")
             reply(nil)
         } catch {
             DaemonLog.error("refreshFSKitEnablement failed: \(error)")
@@ -336,10 +361,13 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             do {
-                try await targets.delete(id: id)
                 // Both secret halves go with the target: an orphaned keychain
                 // item would be inherited by a later target reusing the id.
-                KeychainStore.deleteAllSecrets(for: id)
+                // Secrets first, so a refusal leaves the record in place and
+                // the removal can be retried; the other order lost the only
+                // pointer to an item the keychain would not delete.
+                try KeychainStore.deleteAllSecrets(for: id)
+                try await targets.delete(id: id)
                 box.value(nil)
             } catch {
                 box.value(ISCSIError.nsError(from: error, context: "Deleting the target"))
@@ -350,16 +378,34 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     // MARK: - Credentials
 
     public func setCHAPSecret(targetID: String, secret: String, reply: @escaping (Error?) -> Void) {
-        KeychainStore.setCHAPSecret(secret, for: targetID)
-        reply(KeychainStore.chapSecret(for: targetID) == nil
-              ? ISCSIError.nsError(from: KeychainStore.StoreFailure.notPersisted,
-                                   context: "Saving the CHAP secret")
-              : nil)
+        reply(Self.storeSecret(secret, for: targetID, kind: .initiator,
+                               context: "Saving the CHAP secret"))
     }
 
     public func deleteCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void) {
-        KeychainStore.deleteCHAPSecret(for: targetID)
-        reply(nil)
+        do {
+            try KeychainStore.deleteCHAPSecret(for: targetID)
+            reply(nil)
+        } catch {
+            reply(ISCSIError.nsError(from: error, context: "Removing the CHAP secret"))
+        }
+    }
+
+    /// Store, then read back and compare. Both halves matter: the store's
+    /// status is what says *why* a write was refused, and only an exact
+    /// read-back proves the new secret is the one in force — a non-nil
+    /// read-back was satisfied by the old secret surviving a failed rotation.
+    static func storeSecret(_ secret: String, for targetID: String,
+                            kind: KeychainStore.Kind, context: String) -> Error? {
+        do {
+            try KeychainStore.store(secret, for: targetID, kind: kind)
+        } catch {
+            return ISCSIError.nsError(from: error, context: context)
+        }
+        guard KeychainStore.chapSecret(for: targetID, kind: kind) == secret else {
+            return ISCSIError.nsError(from: KeychainStore.StoreFailure.notPersisted, context: context)
+        }
+        return nil
     }
 
     public func hasCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void) {
@@ -368,16 +414,17 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 
     public func setMutualCHAPSecret(targetID: String, secret: String,
                                     reply: @escaping (Error?) -> Void) {
-        KeychainStore.setCHAPSecret(secret, for: targetID, kind: .mutual)
-        reply(KeychainStore.chapSecret(for: targetID, kind: .mutual) == nil
-              ? ISCSIError.nsError(from: KeychainStore.StoreFailure.notPersisted,
-                                   context: "Saving the mutual CHAP secret")
-              : nil)
+        reply(Self.storeSecret(secret, for: targetID, kind: .mutual,
+                               context: "Saving the mutual CHAP secret"))
     }
 
     public func deleteMutualCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void) {
-        KeychainStore.deleteCHAPSecret(for: targetID, kind: .mutual)
-        reply(nil)
+        do {
+            try KeychainStore.deleteCHAPSecret(for: targetID, kind: .mutual)
+            reply(nil)
+        } catch {
+            reply(ISCSIError.nsError(from: error, context: "Removing the mutual CHAP secret"))
+        }
     }
 
     public func hasMutualCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void) {
@@ -529,9 +576,20 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             // Secrets first: the list of what to delete lives in the file we
-            // are about to remove.
+            // are about to remove — so the file stays while any secret does,
+            // and running this again can finish the job.
+            var refused: [String] = []
             for target in await targets.all() {
-                KeychainStore.deleteAllSecrets(for: target.id)
+                do { try KeychainStore.deleteAllSecrets(for: target.id) }
+                catch { refused.append("\(target.displayName): \(error.localizedDescription)") }
+            }
+            guard refused.isEmpty else {
+                DaemonLog.error("removeAllData: kept the target list; the keychain refused "
+                                + refused.joined(separator: "; "))
+                box.value(ISCSIError.nsError(
+                    from: KeychainStore.StoreFailure.notRemoved(refused),
+                    context: "Removing saved passwords"))
+                return
             }
             do {
                 let directory = TargetStore.defaultURL.deletingLastPathComponent()

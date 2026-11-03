@@ -438,6 +438,65 @@ Still open, in cost order:
   detach-and-install skip the question — their click is the consent, and the
   alert lives in a window those paths may not have open. Worth one manual
   pass: Detach with a VM running should ask; Cancel must leave it mounted.
+  **Changed 2026-11-02, also untested in the UI:** consent to eject is no
+  longer consent to force. Every detach is now plain first and verified
+  afterwards (the device and the FSKit mount actually gone); a refused one
+  throws instead of reporting success, and the attachment stays listed with
+  whatever is still up. From the Detach buttons, the menu bar and
+  "Detach and Install", a volume still in use gets Finder's question — a modal
+  "Force Eject?" that defaults to Cancel. Target removal and uninstall never
+  force; uninstall stops before deleting anything if a volume will not
+  detach. A Finder eject forces only the layers beneath filesystems Finder has
+  already unmounted (the wedged-image escape in docs/resilience.md). The
+  updater now waits on *any* attachment or attach/detach in flight, not just
+  a mounted filesystem. The manual pass: a Terminal `cd`'d into the volume
+  should produce the Force Eject question naming Terminal; Cancel must leave
+  the row attached; uninstall with it open must stop at step 1.
+  **Passed 2026-11-02 on the macOS 27.2 VM (build 52.5):** the Force Eject
+  question for a Terminal `cd`'d into the volume, Cancel leaving it attached,
+  and uninstall stopping at step 1. On the macOS 26.7.2 VM (build 52.5) the
+  Force Eject question, Cancel, and uninstall stopping at step 1 all passed
+  the same day.
+
+- **One disk, one writer** (built 2026-11-02, untested in the UI). Nothing
+  stopped a LUN from being attached twice — by a second account under fast
+  user switching (the login run checked; a manual Attach did not), or by the
+  same account after editing an attached target's address, name or LUN, which
+  moved its mount point and left the old mount running with no row to detach
+  it. Two attachments are two filesystems writing one disk. Now: every attach
+  checks the mount table for another mount of the same name and unit
+  (`AutoAttachRun.otherMount`); the daemon holds each unit for the life of
+  the extension's session and refuses a second (`DaemonCore.claimedUnits`,
+  waiting up to 10 s for a claim a detach is still releasing); the editor
+  locks address, port, name and unit while the target is attached or has a
+  session; and the mount check lists this user's orphaned mounts under Other
+  Attached Disks with an Eject button. Rows with only some layers up (a blank
+  LUN's device) now offer Detach rather than Attach. The manual pass: edit an
+  attached target and the fields should be locked; with a hand-made orphan
+  (`mount -F` at a stray tag directory) the orphan should be listed and eject.
+  **The editor lock passed 2026-11-02 on the macOS 27.2 and 26.7.2 VMs (build
+  52.5), and the orphan listing on the 26.7.2 VM:** a hand-made `mount -F` at a
+  stray tag directory was listed under Other Attached Disks and ejected. The
+  daemon's claim held on the same VM: a hand `mount -F` of a LUN the app had
+  attached (`iscsi://192.168.20.1/…/0`, session s5), spelled with an explicit
+  `:3260`, logged `refusing a second session … held by s5` after the 10 s
+  wait and failed in `loadResource` with "already attached on this Mac".
+  mount(8) itself prints only a generic failure; the words reach the user
+  only through the app's own pre-check. The second-account refusal passed the
+  same day, in the order that does not restart fskitd: with `another` holding
+  the disk, `herko`'s Attach was refused by the app's mount-table check before
+  anything was mounted. The first attempt, the other way round, was not a
+  test: `another`'s first Setup restarted fskitd (item 14), which took
+  `herko`'s volume down before `another` attached.
+- **Who may use the daemon** (S-01 in `docs/security-review-2026-11.md`, deferred). The daemon
+  checks the calling app's signature, not the calling user, and the target
+  list and secrets are machine-wide. On a Mac with more than one account any
+  account can attach, edit or delete every target and use its saved secret.
+  The double-attach half is closed above; the rest needs a decision on
+  whether shared Macs are supported. If they are: an optional owner on each
+  record (old `targets.json` must still decode), the caller's UID from the
+  connection, admin authorization for configuration changes and
+  `removeAllData`, and a narrower interface for the extension.
 
 - **Tailscale failure modes.** A `newfs_hfs` over Tailscale blocked ~4 minutes
   in uninterruptible wait. Explicitly parked. The wedge fixes in 0.3.6 —
@@ -660,10 +719,31 @@ One account is safe in practice: the extension cannot have mounted anything
 while it was disabled for that account. The hazard is a Mac with several
 accounts, which attach at login now makes ordinary.
 
-To fix, in its own branch: before asking for the restart, read the mount table
-(`AttachmentManager.mountTable()`) and refuse, with an explanation, while any
-FSKit volume of any account is mounted. Also warn in the consent prompt.
-Restarting the Mac remains the safe way.
+Seen again 2026-11-02 on the 26.7.2 VM: a second account's first Setup
+restarted fskitd at 15:18:25, RunningBoard terminated the first account's
+extension, and its attached volume went with it.
+
+**Fixed 2026-11-02, and passed on the 26.7.2 VM with build 52.7.** `refreshFSKitEnablement`
+reads the mount table as root, which sees every account, and refuses while
+anything FSKit serves is mounted: any `MNT_EXT_FSKIT` mount, and every
+`iscsi://` or `nvme://` mount whether flagged or not (`FSKitRestart`). Setup
+checks the same table first so it can say what to detach. It still writes the
+enablement entry, so restarting the Mac turns the extension on without
+disconnecting anything. The consent prompt now says the restart disconnects
+every account's FSKit volumes, FAT and exFAT drives included on 26.x. The
+manual pass, run that day: with `herko`'s volume attached, a new account's
+Setup named it before anything was clicked, offered Enable at Next Restart,
+said in its confirmation that nothing would be restarted, kept its
+explanation on screen afterwards, and `herko`'s volume stayed up. (52.6
+refused correctly but its message was replaced at once by the re-check every
+action triggers; 52.7 moved all of the step's text into `check()`.)
+
+What "next restart" means in practice: the entry takes effect the next time
+fskitd restarts for any reason, not only at a Mac restart. An account whose
+Enable was deferred came up enabled when another account's Enable restarted
+fskitd with nothing mounted. Installing a new build also needs every account
+to enable the extension again, so on a Mac with several accounts each
+re-enable waits until nobody has a volume mounted.
 
 ## 15. LIO's placeholder LUN 0, when nothing at all is mapped
 

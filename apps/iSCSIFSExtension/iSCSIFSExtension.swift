@@ -338,7 +338,11 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
 
     func unmount(replyHandler reply: @escaping () -> Void) {
         fsLog.log("unmount — \(self.store.summary, privacy: .public)")
-        try? store.flush()
+        // This callback has no error to return, so a failure can only be said
+        // loudly: acknowledged writes may still be in the target's cache.
+        do { try store.flush() } catch {
+            fsLog.fault("FLUSH FAILED at unmount — writes acknowledged earlier may not be on the target's media: \(String(describing: error), privacy: .public)")
+        }
         // The local cache's space comes back now, not whenever FSKit lets go
         // of this volume.
         store.releaseLocalCache()
@@ -439,7 +443,18 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
         if !traceEnabled {
             fsLog.log("CLOSE keeping=\(modes.rawValue) — \(self.store.summary, privacy: .public)")
         }
-        if modes.isEmpty { try? store.flush() }
+        if modes.isEmpty {
+            do {
+                try store.flush()
+            } catch {
+                // The one close path that can say so: an unreported failure
+                // here was a success to the caller while acknowledged writes
+                // sat in a volatile target cache.
+                fsLog.fault("FLUSH FAILED at final close: \(String(describing: error), privacy: .public)")
+                reply(fs_errorForPOSIXError(EIO))
+                return
+            }
+        }
         reply(nil)
     }
 
@@ -590,7 +605,10 @@ extension ProtoVolume: FSVolume.DataCacheHandler {
     /// the item's cache — the same "last chance" `closeItem` flushed on.
     func close(_ item: FSItem, context: FSContext, replyHandler reply: @escaping () -> Void) {
         fsLog.log("CLOSE (data cache) — \(self.store.summary, privacy: .public)")
-        try? store.flush()
+        // No error to return here either; see `unmount`.
+        do { try store.flush() } catch {
+            fsLog.fault("FLUSH FAILED at close (data cache) — writes acknowledged earlier may not be on the target's media: \(String(describing: error), privacy: .public)")
+        }
         reply()
     }
 

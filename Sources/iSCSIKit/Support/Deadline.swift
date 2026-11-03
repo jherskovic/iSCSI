@@ -83,3 +83,22 @@ public func withDeadline<T: Sendable>(
         gate.finish(.failure(CancellationError()))
     }
 }
+
+/// `withDeadline` for a step that only a closed connection can stop: a login,
+/// or an NVMe/TCP queue's bring-up, parked on a socket read. Cancellation does
+/// not reach that read, so on timeout `abandon` runs — it closes the
+/// connection, which is what ends the read and lets the abandoned operation
+/// unwind instead of holding a socket open for as long as the peer likes.
+/// Throws `DeadlineError.timedOut` once `abandon` has finished.
+public func withDeadline<T: Sendable>(
+    _ duration: Duration?,
+    onTimeout abandon: @Sendable () async -> Void,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    do {
+        return try await withDeadline(duration, operation: operation)
+    } catch let error as DeadlineError {
+        await abandon()
+        throw error
+    }
+}

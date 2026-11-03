@@ -16,12 +16,18 @@
 //                                  rest can still report.
 //    4. Unregister the daemon.     Only now, because steps 1 and 2 need it.
 //    5. Disable and unregister the filesystem extension, in the user's context.
-//    6. Remove the cache directory with rmdir.
-//    7. Ask the user to move the app to the Trash.
+//    6. Empty and remove the cache directory, never deleting through a mount.
+//    7. Move the app to the Trash, close the sheet, and quit, when the user
+//       says so. AppKit will not terminate an app while a sheet is open.
 //
 //  Every step reports rather than throwing, because a failure partway through
 //  must not strand the user midway: the remaining steps still run, and the
 //  screen says exactly what was and was not removed.
+//
+//  Except step 1. A volume that will not detach stops everything: the steps
+//  after it delete the daemon serving that volume and the extension under its
+//  filesystem, which is exactly the data loss the order exists to prevent.
+//  The user closes whatever is using it and runs the removal again.
 //
 
 import AppKit
@@ -43,13 +49,18 @@ final class Uninstaller: ObservableObject {
         case done(String)
         /// Not fatal — later steps still run, because a partial uninstall that
         /// stops at the first problem is worse than one that finishes and says
-        /// what it could not do.
+        /// what it could not do. The detach step is the exception.
         case failed(String)
+        /// Not run, because a volume did not detach.
+        case skipped
     }
 
     @Published private(set) var steps: [Step] = []
     @Published private(set) var isRunning = false
     @Published private(set) var finished = false
+    /// The run stopped at the detach step; nothing after it ran, and the
+    /// removal can be started again.
+    @Published private(set) var stoppedForVolumes = false
 
     private let model: AppModel
 
@@ -58,6 +69,7 @@ final class Uninstaller: ObservableObject {
     func run() async {
         isRunning = true
         finished = false
+        stoppedForVolumes = false
         // A login-time run still retrying would mount behind "Detach volumes".
         model.autoAttacher.cancelAll()
         steps = [
@@ -70,6 +82,12 @@ final class Uninstaller: ObservableObject {
         ]
 
         await step(0) { try await self.detachEverything() }
+        if case .failed = steps[0].outcome {
+            for index in steps.indices.dropFirst() { steps[index].outcome = .skipped }
+            stoppedForVolumes = true
+            isRunning = false
+            return
+        }
         await step(1) { try await self.removeDaemonData() }
         await step(2) { try await self.unregisterLoginItem() }
         await step(3) { try await self.unregisterDaemon() }
@@ -104,6 +122,7 @@ final class Uninstaller: ObservableObject {
         var busy: [String] = []
         for attachment in attached {
             do {
+                // Never forced (the default): see the file header.
                 try await model.attachments.detach(tag: attachment.tag)
                 detached += 1
             } catch {
@@ -182,32 +201,102 @@ final class Uninstaller: ObservableObject {
         return removed ? "disabled and unregistered" : "was not enabled"
     }
 
-    /// `rmdir`, never `rm -rf`.
+    /// Deletes what the cache directory holds, never through a mount.
     ///
-    /// Everything in this directory is a mount point, never storage. Anything
-    /// still inside means a volume did not come down, and recursively deleting
-    /// it would destroy the evidence — and potentially write through a live
-    /// mount into the user's LUN.
+    /// It holds a mount point per attach, and, being the directory named after
+    /// the bundle ID, URLSession's default disk cache too: `Cache.db`, its
+    /// `-shm` and `-wal`, and `fsCachedData`, from Sparkle's update checks. So
+    /// `rmdir` alone, which this once was, failed on every Mac that had
+    /// checked for an update, and blamed a mount point.
+    ///
+    /// Anything with a volume mounted at or beneath it is left alone: a
+    /// recursive delete that reaches a live mount deletes the files on the
+    /// disk itself. The mount table is matched against the path both as built
+    /// and as resolved, since the kernel records a mount point resolved, and
+    /// an entry on another device than the directory is a mount whatever the
+    /// table says. Step 1 detached everything, so either is a volume that came
+    /// back or never went.
     private func cleanCaches() async throws -> String {
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Caches/me.herko.iSCSIInitiator")
-        guard FileManager.default.fileExists(atPath: root.path) else {
+        let root = AttachmentManager.cacheRoot.path
+        guard FileManager.default.fileExists(atPath: root) else {
             return "nothing left behind"
         }
-        var stubborn: [String] = []
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        let mounts = AttachmentManager.mountTable()
+        let roots = Set([root, Self.resolved(root)].compactMap { $0 })
+        let rootDevice = Self.device(root)
+        var mounted: [String] = []
+        var undeletable: [String] = []
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []
         for name in contents {
-            let path = root.appendingPathComponent(name).path
-            if rmdir(path) != 0 { stubborn.append(name) }
+            let path = root + "/" + name
+            if roots.contains(where: { MountTableEntry.anyMounted(atOrBelow: $0 + "/" + name,
+                                                                  in: mounts) })
+                || Self.device(path).map({ $0 != rootDevice }) == true {
+                mounted.append(name)
+                continue
+            }
+            do { try FileManager.default.removeItem(atPath: path) } catch { undeletable.append(name) }
         }
-        if rmdir(root.path) != 0 && !contents.isEmpty {
-            throw UninstallError.cacheNotEmpty(stubborn)
+        if !mounted.isEmpty { throw UninstallError.cacheNotEmpty(mounted) }
+        if !undeletable.isEmpty { throw UninstallError.cacheUndeletable(undeletable) }
+        // Not empty after all: something wrote there since the listing, most
+        // likely this app's own URLSession cache, since the app is still
+        // running. Say what is there now.
+        if rmdir(root) != 0 && errno != ENOENT {
+            throw UninstallError.cacheUndeletable(
+                (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? [])
         }
         return "removed"
     }
 
-    func revealAppForTrashing() {
-        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    private nonisolated static func device(_ path: String) -> dev_t? {
+        var info = stat()
+        return lstat(path, &info) == 0 ? info.st_dev : nil
+    }
+
+    private nonisolated static func resolved(_ path: String) -> String? {
+        guard let real = realpath(path, nil) else { return nil }
+        defer { free(real) }
+        return String(cString: real)
+    }
+
+    /// Why the app could not move itself to the Trash, once it has tried.
+    @Published private(set) var trashFailure: String?
+    @Published private(set) var trashing = false
+
+    /// The last step: the app moves its own bundle to the Trash. True when it
+    /// is gone from where it was; the caller then closes the uninstall sheet
+    /// and quits, in that order, since AppKit will not terminate an app with
+    /// a sheet open (seen on the 26.7.2 VM: "App termination blocked by
+    /// modal sheet").
+    ///
+    /// macOS lets a running app's bundle be moved, and by now nothing else
+    /// runs from it: the daemon and the login item are unregistered and the
+    /// extension is removed. This button once only revealed the app in
+    /// Finder, under a label that said it moved it. Where the move is refused
+    /// — a standard account cannot write /Applications — Finder is opened on
+    /// the app instead, for a drag that can ask for an administrator.
+    ///
+    /// `FileManager.trashItem`, not `NSWorkspace.recycle`: on the 26.7.2 VM,
+    /// 2026-11-03, `recycle` moved the bundle and never called back, so the
+    /// app did not quit, and a second click reported the bundle it had just
+    /// moved as unmovable. What decides success is whether the bundle is
+    /// still where it was.
+    func moveAppToTrash() async -> Bool {
+        guard !trashing else { return false }
+        trashing = true
+        defer { trashing = false }
+        trashFailure = nil
+        let app = Bundle.main.bundleURL
+        let moved = await Task.detached {
+            Result { try FileManager.default.trashItem(at: app, resultingItemURL: nil) }
+        }.value
+        if case .failure(let error) = moved, FileManager.default.fileExists(atPath: app.path) {
+            trashFailure = error.localizedDescription
+            NSWorkspace.shared.activateFileViewerSelecting([app])
+            return false
+        }
+        return true
     }
 }
 
@@ -216,6 +305,7 @@ enum UninstallError: LocalizedError {
     case daemonStillRegistered(SMAppService.Status)
     case loginItemStillRegistered(SMAppService.Status)
     case cacheNotEmpty([String])
+    case cacheUndeletable([String])
 
     var errorDescription: String? {
         switch self {
@@ -225,7 +315,12 @@ enum UninstallError: LocalizedError {
              .loginItemStillRegistered(let status):
             return "the system still reports it as registered (status \(status.rawValue))"
         case .cacheNotEmpty(let names):
-            return "a mount point would not come down: \(names.joined(separator: ", "))"
+            return "a volume is still mounted there: \(names.joined(separator: ", "))"
+        case .cacheUndeletable(let names):
+            let folder = "~/Library/Caches/me.herko.iSCSIInitiator"
+            return names.isEmpty
+                ? "\(folder) could not be removed"
+                : "could not delete \(names.joined(separator: ", ")) in \(folder)"
         }
     }
 
@@ -241,6 +336,8 @@ enum UninstallError: LocalizedError {
                  + "General → Login Items & Extensions."
         case .cacheNotEmpty:
             return "Restarting will release it, after which the folder can be deleted."
+        case .cacheUndeletable:
+            return "Delete the folder in Finder once the app has quit."
         }
     }
 }

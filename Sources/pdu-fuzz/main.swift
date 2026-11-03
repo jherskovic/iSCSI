@@ -71,6 +71,18 @@ private func nvmeStateless(_ data: Data) {
         }
     }
     _ = try? IdentifyController(data: data)
+    // The parse alone never reached the trap this harness missed: MDTS turned
+    // into bytes, which overflowed from MDTS 51 and killed the daemon. Padded
+    // to full size so short inputs get there, with the first byte as MDTS,
+    // against every page size CAP.MPSMIN can name and the one CAP here names.
+    var identify = Data(count: IdentifyController.size)
+    identify.replaceSubrange(0 ..< min(data.count, identify.count), with: data.prefix(identify.count))
+    if let mdts = data.first { identify[77] = mdts }
+    if let id = try? IdentifyController(data: identify) {
+        for mpsmin in 0 ... 15 { _ = id.maxTransferBytes(pageBytes: 1 << (12 + mpsmin)) }
+        let cap = data.prefix(8).reversed().reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+        _ = id.maxTransferBytes(pageBytes: ControllerCapabilities(raw: cap).minPageBytes)
+    }
     _ = try? IdentifyNamespace.geometry(from: data)
     _ = ActiveNamespaceList.parse(data)
     _ = try? DiscoveryLogPage.parse(data)

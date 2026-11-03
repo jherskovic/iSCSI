@@ -48,6 +48,28 @@ struct IdentifyParsingTests {
         #expect(try IdentifyController(data: buf).maxTransferBytes(pageBytes: 4096) == nil)
     }
 
+    /// Every MDTS a controller can send, at every page size CAP.MPSMIN can
+    /// name: no trap, and never a limit that shrinks as MDTS grows. MDTS 51 at
+    /// 4 KiB pages is the value that used to overflow and kill the daemon.
+    @Test func everyMDTSAtEveryPageSizeSaturatesInsteadOfTrapping() throws {
+        var buf = controllerBuffer()
+        for mpsmin in 0 ... 15 {
+            let pageBytes = 1 << (12 + mpsmin)
+            var previous = 0
+            for mdts in 1 ... 255 {
+                buf.setU8(UInt8(mdts), 77)
+                let bytes = try #require(try IdentifyController(data: buf).maxTransferBytes(pageBytes: pageBytes))
+                #expect(bytes >= previous, "MDTS \(mdts) at \(pageBytes)-byte pages")
+                previous = bytes
+            }
+            #expect(previous == Int.max)
+        }
+        buf.setU8(51, 77)
+        #expect(try IdentifyController(data: buf).maxTransferBytes(pageBytes: 4096) == Int.max)
+        buf.setU8(50, 77)
+        #expect(try IdentifyController(data: buf).maxTransferBytes(pageBytes: 4096) == 1 << 62)
+    }
+
     func namespaceBuffer(nsze: UInt64 = 1000, formats: [(ms: UInt16, ds: UInt8)] = [(0, 9), (0, 12)],
                          flbas: UInt8 = 1) -> Data {
         var d = Data(count: 4096)

@@ -81,6 +81,23 @@ caller is now unblocked first and the abort sent best-effort under its own 5 s
 bound. Confirmed by reverting the fix and watching the test hang until it was
 killed.
 
+**And `taskTimeout` never covered logging in (fixed 2026-11-02).** It wraps
+I/O on an established connection; `execute` calls `ensureActive()` before the
+deadline starts. The iSCSI login exchange and the NVMe/TCP ICReq, Fabrics
+Connect and admin bring-up had only a round-count bound and the TCP connect's
+10 s, so a target that accepted TCP and then went quiet — a wedged target
+daemon, a failover half done — hung the attach, and every recovery attempt
+behind it, indefinitely. `SessionPolicy.loginTimeout` (15 s, open-iscsi's
+default) now bounds each connection's login and each NVMe bring-up step, and
+discovery on both protocols; the CSTS.RDY wait keeps its own CAP.TO deadline,
+which a controller may set past 15 s. On expiry the connection is closed — the
+abandoned login is parked on a socket read cancellation cannot reach, and only
+a close ends it — and `DeadlineError.timedOut` reads as "the target did not
+answer in time". Logout had the same gap and the extension logs out on unmount,
+so `SessionPolicy.logoutTimeout` (5 s) closes the connection anyway. Found by an
+external security audit; `LoginDeadlineTests` covers each stage against a
+peer that never answers.
+
 ## The scenario matrix
 
 `scripts/vm-resilience.sh`, run on the VM as root, drives the whole Backend A

@@ -235,6 +235,20 @@ final class ModuleEnablement: SetupStep {
         return false
     }
 
+    /// What restarting fskitd would disconnect, as of the last check: every
+    /// FSKit volume on the Mac, in every account (docs/open-questions.md item
+    /// 14). Non-empty means Enable must not restart it.
+    private var inTheWay: [MountTableEntry] = []
+    /// This app session put the extension on macOS's list but left fskitd
+    /// alone because something was mounted, so a restart of the Mac finishes
+    /// the job. Remembered rather than read back: the list lives in another
+    /// app's container, and reading it is what the consent dialog is for.
+    private var waitingForMacRestart = false
+    /// Why the last Enable could not restart fskitd, kept until the next one:
+    /// the coordinator re-checks every step as soon as an action returns, and
+    /// a failure set only in `perform` was replaced before anyone could read it.
+    private var lastRestartFailure: String?
+
     func check() async {
         do {
             let modules = try await installedFSModules()
@@ -244,10 +258,10 @@ final class ModuleEnablement: SetupStep {
                 // Off FSKit's list: a local test mount says what the list cannot.
                 switch await probe.outcome() {
                 case .mounts:
-                    state = .satisfied("enabled (checked with a local test mount; macOS's "
-                                       + "list of extensions leaves it out)")
+                    enabled("enabled (checked with a local test mount; macOS's "
+                            + "list of extensions leaves it out)")
                 case .disabled:
-                    state = Self.notEnabled
+                    state = notEnabled()
                 case .notFound:
                     state = .blocked("the extension is not registered yet — "
                                      + "that step has to pass first")
@@ -257,18 +271,52 @@ final class ModuleEnablement: SetupStep {
                 }
                 return
             }
-            state = mine.isEnabled ? .satisfied("enabled") : Self.notEnabled
+            if mine.isEnabled { enabled("enabled") } else { state = notEnabled() }
         } catch {
             state = .blocked("could not ask FSKit: \(error.localizedDescription)")
         }
     }
 
-    private static var notEnabled: StepState {
-        if switchWorks {
+    private func enabled(_ evidence: String) {
+        waitingForMacRestart = false
+        lastRestartFailure = nil
+        inTheWay = []
+        state = .satisfied(evidence)
+    }
+
+    /// Every line this step shows while the extension is off. All of it comes
+    /// from here, because `check()` runs after every action and is the only
+    /// text that stays on screen.
+    private func notEnabled() -> StepState {
+        if Self.switchWorks {
             return .actionable(
                 "macOS needs your permission to run the filesystem "
                 + "extension. Turn on “iSCSI Initiator” under File System "
                 + "Extensions.")
+        }
+        inTheWay = FSKitRestart.mountsItWouldDisconnect(AttachmentManager.mountTable())
+        if !inTheWay.isEmpty {
+            let what = inTheWay.map(FSKitRestart.describe).joined(separator: "; ")
+            if waitingForMacRestart {
+                return .blocked(
+                    "It is on macOS's list of enabled extensions, and turns on the next "
+                    + "time the system service that reads the list restarts — at the latest "
+                    + "when this Mac restarts. Turning it on now would restart that service and "
+                    + "disconnect what is mounted through it, in every account: \(what). "
+                    + "To turn it on without restarting the Mac, detach those, then "
+                    + "choose Re-check.")
+            }
+            return .actionable(
+                "Turning it on means restarting a system service, which would disconnect "
+                + "what is mounted through it on this Mac, in every account: \(what). "
+                + "Detach those, then choose Re-check — or choose Enable at Next Restart "
+                + "and restart this Mac.")
+        }
+        if let lastRestartFailure {
+            return .actionable(
+                "It is on macOS's list, but the system service that reads the list could "
+                + "not be restarted: \(lastRestartFailure). Choose Enable to try again, "
+                + "or restart this Mac.")
         }
         return .actionable(
             "macOS \(ProcessInfo.processInfo.operatingSystemVersionString) "
@@ -279,13 +327,31 @@ final class ModuleEnablement: SetupStep {
 
     var actionLabel: String? {
         guard !state.isSatisfied else { return nil }
-        return Self.switchWorks ? "Open System Settings" : "Enable"
+        if Self.switchWorks { return "Open System Settings" }
+        if inTheWay.isEmpty { return "Enable" }
+        return waitingForMacRestart ? nil : "Enable at Next Restart"
     }
 
     var consentTitle: String? { "Enable the filesystem extension?" }
 
     var consentPrompt: String? {
         guard !state.isSatisfied, !Self.switchWorks else { return nil }
+        if !inTheWay.isEmpty {
+            return """
+                iSCSI Initiator will add its filesystem extension to the list macOS \
+                keeps of enabled extensions, at
+
+                ~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist
+
+                Nothing else on that list is changed, and nothing is restarted now, \
+                so nothing mounted is disconnected. The extension turns on the next \
+                time the service that reads the list restarts — at the latest when \
+                this Mac restarts.
+
+                This is normally done by the switch in System Settings, but that \
+                switch does not work on this version of macOS.
+                """
+        }
         return """
             iSCSI Initiator will add its filesystem extension to the list macOS \
             keeps of enabled extensions, at
@@ -294,6 +360,12 @@ final class ModuleEnablement: SetupStep {
 
             and then restart the system service that reads it. Nothing else on \
             that list is changed.
+
+            Restarting that service disconnects everything mounted through it, \
+            in every account on this Mac — this app's volumes, and on this \
+            version of macOS also FAT and exFAT drives. Nothing like that is \
+            mounted right now; if something is by the time you confirm, the \
+            restart is skipped and you will be told what is in the way.
 
             This is normally done by the switch in System Settings, but that \
             switch does not work on this version of macOS.
@@ -308,6 +380,7 @@ final class ModuleEnablement: SetupStep {
 
         state = .checking
         probe.invalidate()
+        lastRestartFailure = nil
         let report = await Task.detached { FSKitEnablement.enableModule() }.value
         guard report.succeeded else {
             state = .blocked("could not enable it: \(report.failure ?? "unknown"). "
@@ -319,14 +392,24 @@ final class ModuleEnablement: SetupStep {
         // that needs root — hence the daemon. If the daemon is not up yet this
         // fails, which is why the coordinator orders the daemon step before
         // this one.
+        //
+        // Not while anything FSKit serves is mounted, in any account: the
+        // restart takes every such volume down mid-write (docs/open-questions.md
+        // item 14). Read again here, not trusted from the last check — the
+        // consent dialog may have sat open while something attached. The
+        // daemon refuses too. The entry stays written, so restarting the Mac
+        // turns the extension on without disconnecting anything.
+        if !FSKitRestart.mountsItWouldDisconnect(AttachmentManager.mountTable()).isEmpty {
+            waitingForMacRestart = true
+            await check()
+            return
+        }
         do {
             try await DaemonConnection.refreshFSKitEnablement()
         } catch {
-            state = .blocked(
-                "the extension is on the list, but the system service could not "
-                + "be restarted to notice: \(error.localizedDescription). "
-                + "Restarting your Mac will also do it.")
-            return
+            let ns = error as NSError
+            lastRestartFailure = [ns.localizedDescription, ns.localizedRecoverySuggestion]
+                .compactMap { $0 }.joined(separator: " ")
         }
         await check()
     }

@@ -20,6 +20,8 @@ public enum KeychainStore {
         /// The System keychain would not open: there is nowhere to write *to*,
         /// and retrying or re-entering the secret will not change that.
         case noSystemKeychain
+        /// Secrets the keychain would not delete, by target, with why.
+        case notRemoved([String])
 
         public var errorDescription: String? {
             switch self {
@@ -27,11 +29,21 @@ public enum KeychainStore {
                 let text = SecCopyErrorMessageString(status, nil) as String?
                 return "The keychain refused the request: \(text ?? "OSStatus \(status)")"
             case .notPersisted:
-                return "The secret was saved but could not be read back."
+                return "The secret was saved but does not read back as written."
             case .noSystemKeychain:
                 return "The System keychain could not be opened, so there is "
                      + "nowhere to save the secret."
+            case .notRemoved(let which):
+                return "Some saved passwords could not be removed: "
+                     + which.joined(separator: "; ")
             }
+        }
+
+        public var recoverySuggestion: String? {
+            guard case .notRemoved = self else { return nil }
+            return "The list of saved targets was kept so this can be run again. "
+                 + "The items can also be deleted by hand in Keychain Access → System, "
+                 + "service “me.herko.iSCSIInitiator.chap”."
         }
     }
 
@@ -106,6 +118,15 @@ public enum KeychainStore {
             guard let keychain = KeychainStore.systemKeychain() else { return errSecNotAvailable }
             let deleted = SecItemDelete(
                 Self.searchQuery(account: account, service: service, keychain: keychain) as CFDictionary)
+            // Delete-then-add rather than SecItemUpdate, so the item's access
+            // list is the current daemon's. But only over a delete that worked:
+            // adding after a refused one fails as a duplicate at best, and the
+            // refusal is the status worth reporting.
+            guard deleted == errSecSuccess || deleted == errSecItemNotFound else {
+                DaemonLog.auth("keychain write \(account): SecItemDelete "
+                               + "\(KeychainStore.describe(deleted)); not replacing the item")
+                return deleted
+            }
             var q = Self.writeQuery(account: account, service: service,
                                     label: label, keychain: keychain)
             q[kSecValueData as String] = secret
@@ -157,13 +178,10 @@ public enum KeychainStore {
         }
     }
 
-    public static func setCHAPSecret(_ secret: String, for targetID: String,
-                                     kind: Kind = .initiator) {
-        try? store(secret, for: targetID, kind: kind)
-    }
-
-    /// Throwing variant: a discarded `SecItemAdd` status makes a refused write
-    /// indistinguishable from an accepted one.
+    /// Throws with the status that refused the write. There is deliberately no
+    /// non-throwing variant: a discarded `SecItemAdd` status makes a refused
+    /// write indistinguishable from an accepted one, and the XPC setter used
+    /// to report success off a read-back that found the *old* secret.
     public static func store(_ secret: String, for targetID: String,
                              kind: Kind = .initiator) throws {
         let status = backend.store(account: kind.account(for: targetID),
@@ -195,29 +213,34 @@ public enum KeychainStore {
         return String(data: data, encoding: .utf8)
     }
 
-    public static func deleteCHAPSecret(for targetID: String, kind: Kind = .initiator) {
+    /// Throws when the keychain refuses; an absent item is not an error. A
+    /// delete that only logged its failure let target removal and uninstall
+    /// report success over a secret that was still there.
+    public static func deleteCHAPSecret(for targetID: String, kind: Kind = .initiator) throws {
         let status = backend.remove(account: kind.account(for: targetID), service: service)
-        if status != errSecSuccess && status != errSecItemNotFound {
+        guard status == errSecSuccess || status == errSecItemNotFound else {
             DaemonLog.auth("keychain delete \(kind) for \(targetID): \(describe(status))")
+            if status == errSecNotAvailable { throw StoreFailure.noSystemKeychain }
+            throw StoreFailure.osStatus(status)
         }
     }
 
-    /// Both halves, for deleting a target outright. Neither absence is an error.
-    public static func deleteAllSecrets(for targetID: String) {
-        deleteCHAPSecret(for: targetID, kind: .initiator)
-        deleteCHAPSecret(for: targetID, kind: .mutual)
+    /// Both halves, for deleting a target outright. Neither absence is an
+    /// error; both halves are attempted even when the first is refused.
+    public static func deleteAllSecrets(for targetID: String) throws {
+        let initiator = Result { try deleteCHAPSecret(for: targetID, kind: .initiator) }
+        try deleteCHAPSecret(for: targetID, kind: .mutual)
+        try initiator.get()
     }
 }
 #else
 public enum KeychainStore {
-    public enum StoreFailure: Error { case osStatus(Int32), notPersisted }
+    public enum StoreFailure: Error { case osStatus(Int32), notPersisted, notRemoved([String]) }
     public enum Kind: Sendable { case initiator, mutual }
-    public static func setCHAPSecret(_ secret: String, for targetID: String,
-                                     kind: Kind = .initiator) {}
     public static func store(_ secret: String, for targetID: String,
                              kind: Kind = .initiator) throws {}
     public static func chapSecret(for targetID: String, kind: Kind = .initiator) -> String? { nil }
-    public static func deleteCHAPSecret(for targetID: String, kind: Kind = .initiator) {}
-    public static func deleteAllSecrets(for targetID: String) {}
+    public static func deleteCHAPSecret(for targetID: String, kind: Kind = .initiator) throws {}
+    public static func deleteAllSecrets(for targetID: String) throws {}
 }
 #endif

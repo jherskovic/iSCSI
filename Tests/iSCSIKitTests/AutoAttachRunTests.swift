@@ -170,6 +170,57 @@ struct AutoAttachRunTests {
         #expect(!AutoAttachRun.isInUseElsewhere(record("t1", lun: 0), mounts: mounts, home: home))
     }
 
+    // MARK: - Another mount of the same unit, before any attach
+
+    private let ownMountPoint = "/Users/herko/Library/Caches/me.herko.iSCSIInitiator/e7cf144d2c2ee621"
+
+    @Test("this attach's own mount point is not another mount")
+    func ownMountPointIsNotAnotherMount() {
+        let mounts = [MountTableEntry(from: "iscsi://192.168.20.1:3260/iqn.2026-08.me.herko:disk0/0",
+                                      on: ownMountPoint)]
+        #expect(AutoAttachRun.otherMount(ofTarget: "iqn.2026-08.me.herko:disk0", lun: 0,
+                                         mounts: mounts, except: ownMountPoint) == nil)
+    }
+
+    /// The S-08 orphan: the record's address changed while attached, so its
+    /// mount point moved and the old mount is still serving the same LUN.
+    @Test("this user's mount of the unit under an old mount point is another mount")
+    func ownOrphanIsAnotherMount() {
+        let orphan = MountTableEntry(from: "iscsi://192.168.20.1:3260/iqn.2026-08.me.herko:disk0/0",
+                                     on: "/Users/herko/Library/Caches/me.herko.iSCSIInitiator/0123456789abcdef")
+        #expect(AutoAttachRun.otherMount(ofTarget: "iqn.2026-08.me.herko:disk0", lun: 0,
+                                         mounts: [orphan], except: ownMountPoint) == orphan)
+    }
+
+    @Test("another account's mount of the unit, through any portal and any case, is another mount")
+    func otherAccountsMountIsAnotherMount() {
+        let theirs = MountTableEntry(from: "iscsi://nas.local:3270/IQN.2026-08.me.herko:disk0/0",
+                                     on: "/Users/other/Library/Caches/me.herko.iSCSIInitiator/e7cf144d2c2ee621")
+        #expect(AutoAttachRun.otherMount(ofTarget: "iqn.2026-08.me.herko:disk0", lun: 0,
+                                         mounts: [theirs], except: ownMountPoint) == theirs)
+    }
+
+    @Test("another unit of the same target, or anything else mounted, is not another mount")
+    func otherUnitIsNotAnotherMount() {
+        let mounts = [MountTableEntry(from: "iscsi://192.168.20.1:3260/iqn.2026-08.me.herko:disk0/1",
+                                      on: "/Users/other/x"),
+                      MountTableEntry(from: "/dev/disk3s1", on: "/Volumes/Data")]
+        #expect(AutoAttachRun.otherMount(ofTarget: "iqn.2026-08.me.herko:disk0", lun: 0,
+                                         mounts: mounts, except: ownMountPoint) == nil)
+    }
+
+    @Test("a mount source reads back as its portal, name and unit")
+    func mountSourceParses() {
+        let iscsi = AutoAttachRun.mountedUnit("iscsi://192.168.20.1:3260/iqn.2026-08.me.herko:disk0/0")
+        #expect(iscsi == AutoAttachRun.MountedUnit(portal: "192.168.20.1:3260",
+                                                   name: "iqn.2026-08.me.herko:disk0", unit: 0))
+        let nvme = AutoAttachRun.mountedUnit("nvme://[fd00::5]:4420/nqn.2011-06.com.truenas:uuid:1:disk/1?engine=diskimages2")
+        #expect(nvme?.portal == "[fd00::5]:4420")
+        #expect(nvme?.isNVMe == true && nvme?.unit == 1)
+        #expect(AutoAttachRun.mountedUnit("/dev/disk3s1") == nil)
+        #expect(AutoAttachRun.mountedUnit("map auto_home") == nil)
+    }
+
     @Test("a target the user took over before the run began is not pending")
     func targetTakenOverBeforeRunIsNotPending() {
         let targets = [record("t1"), record("t2")]

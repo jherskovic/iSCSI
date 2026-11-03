@@ -36,8 +36,59 @@ struct Attachment: Identifiable, Equatable, Sendable {
     /// Where the user's data actually appears. Empty when the LUN is blank or
     /// carries a filesystem macOS will not mount.
     var volumePaths: [String]
+    /// The FSKit mount's source URL, kept for an orphan: with no record
+    /// behind it, this is the only thing that says what it is.
+    var mountSource: String? = nil
 
     var isFullyAttached: Bool { device != nil && !volumePaths.isEmpty }
+    /// Mounted by this app, but no record derives its mount point any more:
+    /// the target was edited while attached, or removed. `reconcile` finds
+    /// these so they can still be detached.
+    var isOrphan: Bool { targetID.isEmpty }
+
+    /// What a detach found still up afterwards.
+    struct Layers: Sendable {
+        let device: String?
+        let volumePaths: [String]
+        let fskitMountPoint: String?
+
+        var description: String {
+            var parts: [String] = []
+            if !volumePaths.isEmpty { parts.append(volumePaths.joined(separator: ", ")) }
+            if let device { parts.append(device) }
+            if fskitMountPoint != nil { parts.append("the volume serving the LUN") }
+            return ListFormatter.localizedString(byJoining: parts)
+        }
+    }
+}
+
+enum DetachError: LocalizedError, Equatable {
+    /// A plain unmount or detach was refused — nearly always because
+    /// something has a file open on the volume. Carries the tool's own words,
+    /// which name the process when `diskutil` knows it.
+    case inUse(String)
+    /// Teardown ran and something is still up.
+    case incomplete(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .inUse(let detail):
+            return "The volume is in use, so it was not ejected. \(detail)"
+        case .incomplete(let left):
+            return "Detaching did not finish: \(left) is still attached."
+        }
+    }
+
+    var recoverySuggestion: String? {
+        switch self {
+        case .inUse:
+            return "Quit the apps using files on it — Finder windows and Terminal "
+                 + "sessions inside it count — and detach again."
+        case .incomplete:
+            return "Detach again. If the storage device is unreachable, detaching "
+                 + "waits for it to answer."
+        }
+    }
 }
 
 enum AttachmentError: LocalizedError {
@@ -46,6 +97,9 @@ enum AttachmentError: LocalizedError {
     case noImageServed(String)
     case imageAttachFailed(String)
     case blankLUN(device: String)
+    /// The same unit is mounted elsewhere already. `ownAccount`: by this
+    /// user, under a mount point the record no longer derives.
+    case alreadyAttached(at: String, ownAccount: Bool)
 
     var errorDescription: String? {
         switch self {
@@ -65,6 +119,10 @@ enum AttachmentError: LocalizedError {
             return "Could not attach the LUN as a disk: \(detail)"
         case .blankLUN(let device):
             return "The LUN attached as \(device) but has not been formatted yet."
+        case .alreadyAttached(_, let ownAccount):
+            return ownAccount
+                ? "This disk is already attached, under the settings the target had before it was edited."
+                : "Another account on this Mac has this disk attached."
         }
     }
 
@@ -90,6 +148,10 @@ enum AttachmentError: LocalizedError {
             return nil
         case .blankLUN:
             return "Use Disk Utility to erase and format it, then attach again."
+        case .alreadyAttached(_, let ownAccount):
+            return ownAccount
+                ? "Detach it under Other Attached Disks, then attach again."
+                : "Attaching it from two accounts at once would corrupt it. Detach it in that account first."
         }
     }
 }
@@ -137,15 +199,37 @@ final class AttachmentManager: ObservableObject {
         Task {
             // detach() tolerates layers already gone, so one path handles both
             // Finder ejects and the Detach button.
-            try? await detach(tag: orphan.tag)
+            do {
+                try await detach(tag: orphan.tag)
+            } catch DetachError.inUse {
+                // Forced only once Finder has taken every filesystem on the
+                // device down: what refused is the image or the FSKit volume
+                // beneath them, which nothing can have a file open on any more.
+                // That is the wedged-image case (docs/resilience.md), where a
+                // forced detach is the only thing that frees DiskArbitration —
+                // and every disk client on the Mac with it.
+                guard let left = attachments.first(where: { $0.tag == orphan.tag }),
+                      left.volumePaths.isEmpty else { return }
+                attachLog.notice("after a Finder eject of \(path, privacy: .public): forcing the layers beneath it")
+                do { try await detach(tag: orphan.tag, force: true) } catch {
+                    attachLog.error("after a Finder eject of \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                }
+            } catch {
+                // Left listed, for the Detach button to try again.
+                attachLog.error("after a Finder eject of \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
 
-    static func hiddenDirectory(tag: String) -> URL {
+    /// Where this user's FSKit mounts go, one directory per `MountpointTag`.
+    nonisolated static var cacheRoot: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Caches/me.herko.iSCSIInitiator")
-            .appendingPathComponent(tag)
+    }
+
+    nonisolated static func hiddenDirectory(tag: String) -> URL {
+        cacheRoot.appendingPathComponent(tag)
     }
 
     func attach(_ target: TargetRecordView) async throws -> Attachment {
@@ -171,6 +255,17 @@ final class AttachmentManager: ObservableObject {
         if engine == .diskImages2 { components?.queryItems = [ImageAttachEngine.mountQuery] }
         let url = components?.url?.absoluteString ?? base.absoluteString
         let targetID = target.id
+
+        // Before anything is mounted: another mount of this unit — another
+        // account's, or this account's own under an address the record has
+        // since changed — would make this a second writer on one filesystem.
+        // The daemon refuses that too (`DaemonCore.claimedUnits`), but only
+        // here can it be said in words the user can act on.
+        if let other = AutoAttachRun.otherMount(ofTarget: target.targetIQN, lun: target.lun,
+                                                mounts: Self.mountTable(), except: hiddenPath) {
+            throw AttachmentError.alreadyAttached(
+                at: other.on, ownAccount: other.on.hasPrefix(Self.cacheRoot.path + "/"))
+        }
 
         try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
 
@@ -263,7 +358,19 @@ final class AttachmentManager: ObservableObject {
     /// volume that was serving the file underneath it. Detaching the outer
     /// layer while the inner one is live is how a volume gets ripped out from
     /// under a writer.
-    func detach(tag: String) async throws {
+    ///
+    /// Throws unless every layer is verifiably gone, and the list then shows
+    /// what is still there rather than what was asked for. This used to
+    /// discard every result and always report success, so a volume something
+    /// still had open vanished from the app while staying mounted — and target
+    /// removal, uninstall and Sparkle, each of which waits on a detach, went
+    /// ahead over it.
+    ///
+    /// - Parameter force: when a plain unmount or detach is refused, force
+    ///   it. Forcing takes the volume from whatever has files open on it, so
+    ///   only a second, explicit "Force Eject" passes true (`AppModel.detach`);
+    ///   everything else stops at `DetachError.inUse`.
+    func detach(tag: String, force: Bool = false) async throws {
         let hidden = Self.hiddenDirectory(tag: tag)
         let hiddenPath = hidden.path
         let imagePath = hidden.appendingPathComponent("lun0.img").path
@@ -274,29 +381,66 @@ final class AttachmentManager: ObservableObject {
         // actually beach-balls the app — a Detach tap, or a Finder eject routed
         // through `volumeDisappeared`, on a wedged mount — so it runs on a
         // detached task and only the list mutation happens back on the actor.
-        await Task.detached {
-            // Ask hdiutil which device is backed by *this* image: disk numbers
-            // are reused, and detaching a stale one ejects somebody else's disk.
-            if let device = Self.attachedDevice(forImage: imagePath) {
-                _ = try? Self.run("/usr/sbin/diskutil", ["unmountDisk", device])
-                let detached = try? Self.run("/usr/bin/hdiutil", ["detach", device])
-                if detached?.status != 0 {
-                    _ = try? Self.run("/usr/bin/hdiutil", ["detach", device, "-force"])
-                }
-            }
-            if Self.isMounted(hiddenPath) {
-                let unmounted = try? Self.run("/sbin/umount", [hiddenPath])
-                if unmounted?.status != 0 {
-                    _ = try? Self.run("/sbin/umount", ["-f", hiddenPath])
-                }
-            }
-            // The directory is a mount point, never storage; it should be empty
-            // by the time it is removed.
-            try? FileManager.default.removeItem(atPath: hiddenPath)
+        let (failure, left) = await Task.detached { () -> (DetachError?, Attachment.Layers?) in
+            let failure = Self.tearDown(image: imagePath, mountPoint: hiddenPath, force: force)
+            return (failure, Self.layers(image: imagePath, mountPoint: hiddenPath))
         }.value
 
-        attachments.removeAll { $0.tag == tag }
+        if let left {
+            // Something is still up: keep it listed — and detachable — as it is.
+            if let index = attachments.firstIndex(where: { $0.tag == tag }) {
+                attachments[index].device = left.device
+                attachments[index].volumePaths = left.volumePaths
+            }
+        } else {
+            attachments.removeAll { $0.tag == tag }
+        }
         attachmentsGeneration &+= 1
+
+        if let failure { throw failure }
+        if let left { throw DetachError.incomplete(left.description) }
+    }
+
+    /// The teardown itself, each step checked. A step that fails is re-asked
+    /// before it counts: the layer may have gone anyway — a Finder eject
+    /// racing ours — and that is success, not refusal.
+    nonisolated private static func tearDown(image: String, mountPoint: String,
+                                             force: Bool) -> DetachError? {
+        // Ask hdiutil which device is backed by *this* image: disk numbers
+        // are reused, and detaching a stale one ejects somebody else's disk.
+        if let device = attachedDevice(forImage: image) {
+            let unmounted = try? run("/usr/sbin/diskutil", ["unmountDisk", device])
+            if unmounted?.status != 0, !force, attachedDevice(forImage: image) != nil {
+                return .inUse(unmounted?.combined ?? "diskutil did not run")
+            }
+            let detached = try? run("/usr/bin/hdiutil", ["detach", device])
+            if detached?.status != 0, attachedDevice(forImage: image) != nil {
+                guard force else { return .inUse(detached?.combined ?? "hdiutil did not run") }
+                _ = try? run("/usr/bin/hdiutil", ["detach", device, "-force"])
+            }
+        }
+        if isMounted(mountPoint) {
+            let unmounted = try? run("/sbin/umount", [mountPoint])
+            if unmounted?.status != 0, isMounted(mountPoint) {
+                guard force else { return .inUse(unmounted?.combined ?? "umount did not run") }
+                _ = try? run("/sbin/umount", ["-f", mountPoint])
+            }
+        }
+        // `rmdir`, never `removeItem`: that recurses, and through a mount
+        // point still up it would be deleting inside the LUN. An empty
+        // directory is all that should be left; anything else stays.
+        if !isMounted(mountPoint) { rmdir(mountPoint) }
+        return nil
+    }
+
+    /// What of an attachment is still up, or nil when nothing is.
+    nonisolated private static func layers(image: String, mountPoint: String) -> Attachment.Layers? {
+        let device = attachedDevice(forImage: image)
+        let fskitMounted = isMounted(mountPoint)
+        guard device != nil || fskitMounted else { return nil }
+        return Attachment.Layers(device: device,
+                                 volumePaths: device.map { mountPoints(ofDevice: $0) } ?? [],
+                                 fskitMountPoint: fskitMounted ? mountPoint : nil)
     }
 
     /// Rebuild the list from what is actually mounted.
@@ -322,23 +466,41 @@ final class AttachmentManager: ObservableObject {
         let generation = attachmentsGeneration
         struct Candidate: Sendable {
             let tag: String, targetID: String, hiddenPath: String, imagePath: String
+            var source: String? = nil
         }
-        let candidates: [Candidate] = targets.compactMap { target in
+        var recordMountPoints: Set<String> = []
+        var candidates: [Candidate] = targets.compactMap { target in
             let portal = MountpointTag.portal(host: target.host, port: target.port)
             let tag = MountpointTag.derive(portal: portal, targetIQN: target.targetIQN,
                                            lun: target.lun)
             let hidden = Self.hiddenDirectory(tag: tag)
+            recordMountPoints.insert(hidden.path)
             guard Self.isMounted(hidden.path) else { return nil }
             return Candidate(tag: tag, targetID: target.id, hiddenPath: hidden.path,
                              imagePath: hidden.appendingPathComponent("lun0.img").path)
         }
+        // Orphans: this app's FSKit mounts that no record derives any more —
+        // the target was edited while attached (its tag hashes the address,
+        // name and unit) or removed. Listed, so they can be detached; before,
+        // they stayed mounted with nothing in the app that could reach them.
+        let root = Self.cacheRoot.path + "/"
+        for entry in Self.mountTable() where entry.on.hasPrefix(root)
+            && !recordMountPoints.contains(entry.on)
+            && !entry.on.dropFirst(root.count).contains("/")
+            && AutoAttachRun.mountedUnit(entry.from) != nil {
+            candidates.append(Candidate(
+                tag: String(entry.on.dropFirst(root.count)), targetID: "",
+                hiddenPath: entry.on, imagePath: entry.on + "/lun0.img", source: entry.from))
+        }
+        let probes = candidates
         let found = await Task.detached { () -> [Attachment] in
-            candidates.map { candidate in
+            probes.map { candidate in
                 let device = Self.attachedDevice(forImage: candidate.imagePath)
                 return Attachment(
                     tag: candidate.tag, targetID: candidate.targetID,
                     hiddenPath: candidate.hiddenPath, device: device,
-                    volumePaths: device.map { Self.mountPoints(ofDevice: $0) } ?? [])
+                    volumePaths: device.map { Self.mountPoints(ofDevice: $0) } ?? [],
+                    mountSource: candidate.source)
             }
         }.value
         // Someone mutated the list while we were probing (a detach, an attach,
@@ -502,7 +664,8 @@ final class AttachmentManager: ObservableObject {
         return (0..<Int(count)).map { index in
             var entry = buffer[index]
             return MountTableEntry(from: cString(&entry.f_mntfromname),
-                                   on: cString(&entry.f_mntonname))
+                                   on: cString(&entry.f_mntonname),
+                                   isFSKit: entry.f_flags_ext & UInt32(MNT_EXT_FSKIT) != 0)
         }
     }
 
