@@ -299,8 +299,9 @@ final class ModuleEnablement: SetupStep {
             let what = inTheWay.map(FSKitRestart.describe).joined(separator: "; ")
             if waitingForMacRestart {
                 return .blocked(
-                    "It is on macOS's list of enabled extensions and turns on when this "
-                    + "Mac restarts. Turning it on now would restart a system service and "
+                    "It is on macOS's list of enabled extensions, and turns on the next "
+                    + "time the system service that reads the list restarts — at the latest "
+                    + "when this Mac restarts. Turning it on now would restart that service and "
                     + "disconnect what is mounted through it, in every account: \(what). "
                     + "To turn it on without restarting the Mac, detach those, then "
                     + "choose Re-check.")
@@ -344,7 +345,8 @@ final class ModuleEnablement: SetupStep {
 
                 Nothing else on that list is changed, and nothing is restarted now, \
                 so nothing mounted is disconnected. The extension turns on the next \
-                time this Mac restarts.
+                time the service that reads the list restarts — at the latest when \
+                this Mac restarts.
 
                 This is normally done by the switch in System Settings, but that \
                 switch does not work on this version of macOS.
