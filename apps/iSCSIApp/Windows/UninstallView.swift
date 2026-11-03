@@ -11,12 +11,16 @@ import SwiftUI
 
 struct UninstallView: View {
     @ObservedObject var model: AppModel
+    /// The app has been moved to the Trash. The presenter quits the app once
+    /// this sheet is gone, which AppKit requires.
+    let movedToTrash: () -> Void
     @StateObject private var uninstaller: Uninstaller
     @State private var confirming = false
     @Environment(\.dismiss) private var dismiss
 
-    init(model: AppModel) {
+    init(model: AppModel, movedToTrash: @escaping () -> Void) {
         self.model = model
+        self.movedToTrash = movedToTrash
         _uninstaller = StateObject(wrappedValue: Uninstaller(model: model))
     }
 
@@ -29,6 +33,12 @@ struct UninstallView: View {
                 explanation
             } else {
                 stepList
+                if let failure = uninstaller.trashFailure {
+                    Text("The app could not move itself to the Trash: \(failure) "
+                         + "Finder is showing it — drag it to the Trash.")
+                        .font(.callout).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 0)
@@ -63,8 +73,8 @@ struct UninstallView: View {
             Label("**Nothing on the storage device itself is changed.** "
                   + "Your data stays where it is.", systemImage: "externaldrive")
                 .foregroundStyle(.primary)
-            Text("The app itself is the last step — you will be asked to move it "
-                 + "to the Trash.")
+            Text("The app itself goes last: when everything else is removed, "
+                 + "a button moves it to the Trash and quits.")
                 .font(.callout).foregroundStyle(.secondary)
         }
         .font(.callout)
@@ -106,10 +116,14 @@ struct UninstallView: View {
             Spacer()
             Button("Close") { dismiss() }
             if uninstaller.finished {
-                Button("Move App to Trash…") {
-                    uninstaller.revealAppForTrashing()
-                    dismiss()
+                Button("Move App to Trash") {
+                    Task {
+                        guard await uninstaller.moveAppToTrash() else { return }
+                        movedToTrash()
+                        dismiss()
+                    }
                 }
+                .disabled(uninstaller.trashing)
                 .buttonStyle(.borderedProminent)
             } else {
                 Button("Remove Everything…") { confirming = true }

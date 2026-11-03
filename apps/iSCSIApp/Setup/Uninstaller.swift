@@ -17,7 +17,8 @@
 //    4. Unregister the daemon.     Only now, because steps 1 and 2 need it.
 //    5. Disable and unregister the filesystem extension, in the user's context.
 //    6. Empty and remove the cache directory, never deleting through a mount.
-//    7. Ask the user to move the app to the Trash.
+//    7. Move the app to the Trash, close the sheet, and quit, when the user
+//       says so. AppKit will not terminate an app while a sheet is open.
 //
 //  Every step reports rather than throwing, because a failure partway through
 //  must not strand the user midway: the remaining steps still run, and the
@@ -259,8 +260,43 @@ final class Uninstaller: ObservableObject {
         return String(cString: real)
     }
 
-    func revealAppForTrashing() {
-        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    /// Why the app could not move itself to the Trash, once it has tried.
+    @Published private(set) var trashFailure: String?
+    @Published private(set) var trashing = false
+
+    /// The last step: the app moves its own bundle to the Trash. True when it
+    /// is gone from where it was; the caller then closes the uninstall sheet
+    /// and quits, in that order, since AppKit will not terminate an app with
+    /// a sheet open (seen on the 26.7.2 VM: "App termination blocked by
+    /// modal sheet").
+    ///
+    /// macOS lets a running app's bundle be moved, and by now nothing else
+    /// runs from it: the daemon and the login item are unregistered and the
+    /// extension is removed. This button once only revealed the app in
+    /// Finder, under a label that said it moved it. Where the move is refused
+    /// — a standard account cannot write /Applications — Finder is opened on
+    /// the app instead, for a drag that can ask for an administrator.
+    ///
+    /// `FileManager.trashItem`, not `NSWorkspace.recycle`: on the 26.7.2 VM,
+    /// 2026-11-03, `recycle` moved the bundle and never called back, so the
+    /// app did not quit, and a second click reported the bundle it had just
+    /// moved as unmovable. What decides success is whether the bundle is
+    /// still where it was.
+    func moveAppToTrash() async -> Bool {
+        guard !trashing else { return false }
+        trashing = true
+        defer { trashing = false }
+        trashFailure = nil
+        let app = Bundle.main.bundleURL
+        let moved = await Task.detached {
+            Result { try FileManager.default.trashItem(at: app, resultingItemURL: nil) }
+        }.value
+        if case .failure(let error) = moved, FileManager.default.fileExists(atPath: app.path) {
+            trashFailure = error.localizedDescription
+            NSWorkspace.shared.activateFileViewerSelecting([app])
+            return false
+        }
+        return true
     }
 }
 

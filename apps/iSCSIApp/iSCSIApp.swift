@@ -83,6 +83,10 @@ struct MainWindow: View {
     @ObservedObject var model: AppModel
     @State private var section: Section? = .targets
     @State private var isUninstalling = false
+    /// The uninstall sheet moved the app to the Trash. The app quits once
+    /// the sheet has closed: AppKit refuses to terminate an app with a
+    /// sheet open ("App termination blocked by modal sheet").
+    @State private var movedToTrash = false
     /// Auto-selection happens once per window, never again. 
     @State private var hasChosenLanding = false
 
@@ -191,8 +195,10 @@ struct MainWindow: View {
             for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await model.refresh() }
         }
-        .sheet(isPresented: $isUninstalling) {
-            UninstallView(model: model)
+        .sheet(isPresented: $isUninstalling, onDismiss: {
+            if movedToTrash { NSApp.terminate(nil) }
+        }) {
+            UninstallView(model: model) { movedToTrash = true }
         }
         .alert(item: $model.lastError) { error in
             Alert(title: Text(error.title),
