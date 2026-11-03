@@ -723,7 +723,7 @@ Seen again 2026-11-02 on the 26.7.2 VM: a second account's first Setup
 restarted fskitd at 15:18:25, RunningBoard terminated the first account's
 extension, and its attached volume went with it.
 
-**Fixed 2026-11-02 (build 52.6, untested on a VM yet).** `refreshFSKitEnablement`
+**Fixed 2026-11-02, and passed on the 26.7.2 VM with build 52.7.** `refreshFSKitEnablement`
 reads the mount table as root, which sees every account, and refuses while
 anything FSKit serves is mounted: any `MNT_EXT_FSKIT` mount, and every
 `iscsi://` or `nvme://` mount whether flagged or not (`FSKitRestart`). Setup
@@ -731,9 +731,19 @@ checks the same table first so it can say what to detach. It still writes the
 enablement entry, so restarting the Mac turns the extension on without
 disconnecting anything. The consent prompt now says the restart disconnects
 every account's FSKit volumes, FAT and exFAT drives included on 26.x. The
-manual pass: with one account's volume attached, a second account's first
-Setup must stop at the extension step and name that volume, and the first
-account's volume must stay up.
+manual pass, run that day: with `herko`'s volume attached, a new account's
+Setup named it before anything was clicked, offered Enable at Next Restart,
+said in its confirmation that nothing would be restarted, kept its
+explanation on screen afterwards, and `herko`'s volume stayed up. (52.6
+refused correctly but its message was replaced at once by the re-check every
+action triggers; 52.7 moved all of the step's text into `check()`.)
+
+What "next restart" means in practice: the entry takes effect the next time
+fskitd restarts for any reason, not only at a Mac restart. An account whose
+Enable was deferred came up enabled when another account's Enable restarted
+fskitd with nothing mounted. Installing a new build also needs every account
+to enable the extension again, so on a Mac with several accounts each
+re-enable waits until nobody has a volume mounted.
 
 ## 15. LIO's placeholder LUN 0, when nothing at all is mapped
 
