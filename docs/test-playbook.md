@@ -243,6 +243,28 @@ extension at uid 501. The item's access list names a code requirement for
 was replaced by hand, so a Sparkle update is not yet run, and neither is 53.1
 on 27.
 
+## The iscsictl link (2026-11-04)
+
+`CommandLineLinkTests` covers what setup may touch. The password prompt and the
+optional step need a real Mac. Use the SIP-on VM, which has no `/usr/local/bin`
+until something makes one.
+
+1. **Optional.** With no link, Setup reads "Ready", the sidebar has no "!", the
+   menu bar icon has no warning, and attach works. The row has a plain Add Link
+   button and a grey icon.
+2. **Cancel.** Add Link, then Cancel in the password dialog. Nothing changes and
+   no error appears.
+3. **Add.** Add Link and enter the password. The row turns green.
+   `/usr/local/bin` exists, 755 and `root:wheel`, and a new Terminal finds
+   `iscsictl`, in every account.
+4. **Someone else's.** Replace it with a link to anything else: the row says it
+   is left alone and offers nothing, and uninstall leaves it there.
+5. **Uninstall, cancelled.** With this app's link, Remove Everything asks for a
+   password. Cancel: that step fails, says how to remove the link by hand, and
+   the rest of the removal finishes.
+6. **Uninstall.** Enter the password instead: the link goes, and `/usr/local/bin`
+   stays, since nothing records who made it.
+
 ## Fuzzing
 
 `scripts/fuzz.sh [seconds]` builds `pdu-fuzz` with AddressSanitizer and runs a

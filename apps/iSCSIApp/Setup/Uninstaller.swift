@@ -18,8 +18,10 @@
 //                                  rest can still report.
 //    4. Unregister the daemon.     Only now, because steps 1 and 2 need it.
 //    5. Disable and unregister the filesystem extension, in the user's context.
-//    6. Empty and remove the cache directory, never deleting through a mount.
-//    7. Move the app to the Trash, close the sheet, and quit, when the user
+//    6. Remove the iscsictl link, if there is one and it is this app's. Asks
+//       for an administrator; cancelling that keeps the link and nothing else.
+//    7. Empty and remove the cache directory, never deleting through a mount.
+//    8. Move the app to the Trash, close the sheet, and quit, when the user
 //       says so. AppKit will not terminate an app while a sheet is open.
 //
 //  Every step reports rather than throwing, because a failure partway through
@@ -80,6 +82,7 @@ final class Uninstaller: ObservableObject {
             Step(label: "Remove the login item", outcome: .pending),
             Step(label: "Remove the background service", outcome: .pending),
             Step(label: "Turn off the filesystem extension", outcome: .pending),
+            Step(label: "Remove the iscsictl link", outcome: .pending),
             Step(label: "Clean up", outcome: .pending),
         ]
 
@@ -94,7 +97,8 @@ final class Uninstaller: ObservableObject {
         await step(2) { try await self.unregisterLoginItem() }
         await step(3) { try await self.unregisterDaemon() }
         await step(4) { try await self.disableExtension() }
-        await step(5) { try await self.cleanCaches() }
+        await step(5) { try await self.removeCommandLineLink() }
+        await step(6) { try await self.cleanCaches() }
 
         isRunning = false
         finished = true
@@ -208,6 +212,25 @@ final class Uninstaller: ObservableObject {
         return removed ? "disabled and unregistered" : "was not enabled"
     }
 
+    /// Only a link to this copy, so a link or a file that was already there
+    /// when setup looked, and that it left alone, stays. Any account's removal
+    /// takes it: it is one link for the Mac, and the app it points at is going.
+    private func removeCommandLineLink() async throws -> String {
+        switch CommandLineTool.currentLink() {
+        case .absent:
+            return "was not set"
+        case .otherLink, .notALink:
+            return "\(CommandLineLink.path) is not this app's, and was left alone"
+        case .ours:
+            break
+        }
+        switch await CommandLineTool.removeLink() {
+        case .done:              return "removed"
+        case .cancelled:         throw UninstallError.commandLineLinkKept("not removed")
+        case .failed(let why):   throw UninstallError.commandLineLinkKept(why)
+        }
+    }
+
     /// Deletes what the cache directory holds, never through a mount.
     ///
     /// It holds a mount point per attach, and, being the directory named after
@@ -311,6 +334,7 @@ enum UninstallError: LocalizedError {
     case volumesBusy([String])
     case daemonStillRegistered(SMAppService.Status)
     case loginItemStillRegistered(SMAppService.Status)
+    case commandLineLinkKept(String)
     case cacheNotEmpty([String])
     case cacheUndeletable([String])
 
@@ -321,6 +345,9 @@ enum UninstallError: LocalizedError {
         case .daemonStillRegistered(let status),
              .loginItemStillRegistered(let status):
             return "the system still reports it as registered (status \(status.rawValue))"
+        case .commandLineLinkKept(let why):
+            // The step list shows this line and not `recoverySuggestion`.
+            return "\(why). To remove it yourself: sudo rm \(CommandLineLink.path)"
         case .cacheNotEmpty(let names):
             return "a volume is still mounted there: \(names.joined(separator: ", "))"
         case .cacheUndeletable(let names):
@@ -341,6 +368,8 @@ enum UninstallError: LocalizedError {
         case .loginItemStillRegistered:
             return "Remove iSCSI Initiator from Open at Login in System Settings → "
                  + "General → Login Items & Extensions."
+        case .commandLineLinkKept:
+            return nil
         case .cacheNotEmpty:
             return "Restarting will release it, after which the folder can be deleted."
         case .cacheUndeletable:

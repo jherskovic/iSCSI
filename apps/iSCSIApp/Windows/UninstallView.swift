@@ -46,7 +46,7 @@ struct UninstallView: View {
             controls
         }
         .padding(20)
-        .frame(width: 520, height: 420)
+        .frame(width: 520, height: 460)
         .confirmationDialog("Remove iSCSI Initiator and everything it stored?",
                             isPresented: $confirming, titleVisibility: .visible) {
             Button("Remove Everything", role: .destructive) {
@@ -69,7 +69,9 @@ struct UninstallView: View {
             Label("This account's saved targets and stored passwords are deleted.",
                   systemImage: "key")
             Label("The background service is unregistered and the filesystem "
-                  + "extension is turned off.", systemImage: "gearshape")
+                  + "extension is turned off. An iscsictl link is removed if this "
+                  + "app added one, which needs an administrator's password.",
+                  systemImage: "gearshape")
             Label("**Nothing on the storage device itself is changed.** "
                   + "Your data stays where it is.", systemImage: "externaldrive")
                 .foregroundStyle(.primary)

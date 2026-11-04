@@ -72,13 +72,13 @@ struct SetupView: View {
     @ViewBuilder
     private func row(_ report: SetupCoordinator.Report) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            icon(for: report.state)
+            icon(for: report)
                 .frame(width: 16)
                 .padding(.top, 1)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(report.title)
-                    .fontWeight(report.isNext ? .semibold : .regular)
+                    .fontWeight(report.isNext && !report.isOptional ? .semibold : .regular)
                 Text(report.state.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -105,21 +105,29 @@ struct SetupView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(true)
             } else if report.isNext, let label = report.actionLabel {
-                Button(label) {
+                let action = {
                     if report.consentPrompt != nil {
                         consentFor = report
                     } else {
                         Task { await setup.perform(report.id) }
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                // Prominent is for what the user has to do next. This is not.
+                if report.isOptional {
+                    Button(label, action: action).buttonStyle(.bordered)
+                } else {
+                    Button(label, action: action).buttonStyle(.borderedProminent)
+                }
             }
         }
     }
 
     @ViewBuilder
-    private func icon(for state: StepState) -> some View {
-        switch state {
+    private func icon(for report: SetupCoordinator.Report) -> some View {
+        switch report.state {
+        // Orange and red say something is wrong, and here nothing is.
+        case _ where report.isOptional && report.state.needsAttention:
+            Image(systemName: "circle.dashed").foregroundStyle(.secondary)
         case .checking:
             ProgressView().controlSize(.small)
         case .satisfied:

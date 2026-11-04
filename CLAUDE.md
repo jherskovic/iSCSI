@@ -196,7 +196,11 @@ LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Bac
   target does not, so `swift run` keeps them and the safe build is the default.
   `release.sh` asserts that, and the signing identifier the daemon's allowlist
   matches on: a tool gets one from an Info.plist embedded in the binary, and
-  `PRODUCT_BUNDLE_IDENTIFIER` alone does nothing.
+  `PRODUCT_BUNDLE_IDENTIFIER` alone does nothing. Setup offers a link at
+  `/usr/local/bin/iscsictl` (`CommandLineTool`), its one optional step:
+  `isOptional` keeps it out of `isReady` and the "!". It goes through an
+  administrator prompt and not the daemon, which would let any account change a
+  system directory through root.
 - **Mutual CHAP is implemented but switched off** at `CHAP.mutualIsOffered`.
   The blocker is target-side; `docs/open-questions.md` item 3a has the evidence.
 - **The attach path is unprivileged and lives in the app, not the daemon.**

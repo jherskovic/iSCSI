@@ -56,6 +56,11 @@ protocol SetupStep: AnyObject {
     var title: String { get }
     var state: StepState { get }
 
+    /// The product works without this. It never holds up `isReady`, raises the
+    /// "!", or stops a later step, so leaving it undone needs no record: there
+    /// is nothing to dismiss. Its button comes once every required step holds.
+    var isOptional: Bool { get }
+
     /// Ask the system. Must be cheap enough to run on every launch and on every
     /// return to the foreground, and must never assume the result of a previous
     /// call — the whole point is to catch conditions that stopped holding.
@@ -81,6 +86,7 @@ protocol SetupStep: AnyObject {
 }
 
 extension SetupStep {
+    var isOptional: Bool { false }
     var actionLabel: String? { nil }
     var consentPrompt: String? { nil }
     var consentTitle: String? { nil }

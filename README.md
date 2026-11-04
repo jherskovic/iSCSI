@@ -55,6 +55,9 @@ System Settings. The problem is UI, not permissions. The app detects this and of
 
 You can also choose to enable the included Dock extension. The only thing it does is free the icon from Squircle Jail.
 
+Setup also offers to put the included `iscsictl` command-line tool on your PATH, with a link in `/usr/local/bin`.
+It's optional, and macOS will ask for an administrator's password.
+
 Don't keep multiple copies of the app around. macOS may use their FSKit extension instead of the current version.
 The app detects this on launch and will clean it up for you if you let it. It's probably a good idea to say yes.
 
