@@ -33,8 +33,21 @@ struct NVMeOptions: ParsableArguments {
     @Flag(help: "Do not offer header and data digests.")
     var noDigests = false
 
-    @Flag(help: "Trace every PDU on the wire to stderr.")
-    var debug = false
+    enum LogLevel: Int, ExpressibleByArgument {
+        case useful = 1
+        case debug = 2
+    }
+
+    @Option(help: "Trace to stderr: 1 = Useful log (connection summary and discovery commands), 2 = Debug log (includes level 1 and protocol PDU fields).")
+    var logLevel: LogLevel?
+
+    private static let logTimeFormat = Date.ISO8601FormatStyle(
+        timeZoneSeparator: .colon, includingFractionalSeconds: true, timeZone: .current)
+
+    func writeLog(_ message: String) {
+        let timestamp = logLevel == nil ? "" : Date.now.formatted(Self.logTimeFormat) + " "
+        FileHandle.standardError.write(Data((timestamp + message + "\n").utf8))
+    }
 
     func identity() throws -> NVMeHostIdentity {
         if let explicit = hostNQN ?? ProcessInfo.processInfo.environment["NVME_HOST_NQN"], !explicit.isEmpty {
@@ -53,16 +66,18 @@ struct NVMeOptions: ParsableArguments {
             + "Omit to let macOS routing choose."))
     var interface: String?
 
-    func openTransport() async throws -> any ConnectionTransport {
+    func openTransport(discovery: Bool = false) async throws -> any ConnectionTransport {
         #if canImport(Network)
         let tcp = try await NetworkTransport.connect(
             host: host, port: port,
             binding: InterfaceBinding.named(interface, fallback: false))
         if interface != nil {
-            FileHandle.standardError.write(Data(
-                "connected via \(tcp.connectedPath.interfaceName ?? "an unknown interface")\n".utf8))
+            writeLog("connected via \(tcp.connectedPath.interfaceName ?? "an unknown interface")")
         }
-        return debug ? NVMeTracingTransport(tcp, label: host) : tcp
+        guard let logLevel else { return tcp }
+        writeLog("Connected to \(host):\(port) over TCP")
+        guard discovery || logLevel == .debug else { return tcp }
+        return NVMeTracingTransport(tcp, label: host, discovery: discovery, includeWire: logLevel == .debug, sink: writeLog)
         #else
         throw ValidationError("Network.framework unavailable on this platform")
         #endif
@@ -87,9 +102,9 @@ struct NVMeDiscover: AsyncParsableCommand {
 
     func run() async throws {
         let host = try options.identity()
-        FileHandle.standardError.write(Data("host NQN: \(host.nqn)\n".utf8))
+        options.writeLog("host NQN: \(host.nqn)")
         let found = try await NVMeDiscovery.getLogPage(
-            transport: try await options.openTransport(), host: host,
+            transport: try await options.openTransport(discovery: true), host: host,
             requestDigests: !options.noDigests)
         if found.isEmpty {
             print("(no NVM subsystems advertised over TCP)")
