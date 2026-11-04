@@ -389,10 +389,40 @@ echo "  ok  iscsictl signs as $CTL_ID"
 
 # wipe, write-bench and verify --write reach the target directly, past the
 # daemon's one-writer check. They are for `swift run`, never for the bundle.
-for marker in DESTRUCTIVE write-bench "pass --write"; do
+#
+# Ask the tool, not `strings`: an optimized build keeps a string of up to 15
+# bytes inline in the code, so a `write-bench` marker passed a binary with that
+# command in it. --help on an unknown subcommand exits 0 with its parent's help,
+# so each answer has to show it is the one asked for, or a rename would pass.
+ctl_help() {
+    local help
+    help=$("$CTL" "$@" --help) || die "iscsictl $* --help failed"
+    grep -q -e "USAGE: iscsictl $* " <<<"$help" \
+        || die "iscsictl $* --help answered for something else. Did the command move?"
+    printf '%s\n' "$help"
+}
+
+for group in iscsi nvme; do
+    commands=$(ctl_help "$group")
+    for command in wipe write-bench; do
+        if grep -q -e "$command" <<<"$commands"; then
+            die "iscsictl $group has $command, which must not be in the bundle.
+It belongs behind ISCSICTL_DESTRUCTIVE, which stays out of the Xcode target."
+        fi
+    done
+    verify=$(ctl_help "$group" verify)
+    if grep -q -e "--write" <<<"$verify"; then
+        die "iscsictl $group verify has --write, which must not be in the bundle.
+It belongs behind ISCSICTL_DESTRUCTIVE, which stays out of the Xcode target."
+    fi
+done
+
+# The compile flag itself, whatever is listed. These sit inside long strings,
+# which `strings` can see.
+for marker in DESTRUCTIVE "pass --write"; do
     if binary_contains "$CTL" "$marker"; then
-        die "iscsictl contains \"$marker\": a destructive command is in the bundle.
-ISCSICTL_DESTRUCTIVE must stay out of the Xcode target."
+        die "iscsictl contains \"$marker\": ISCSICTL_DESTRUCTIVE is on in the bundle.
+It must stay out of the Xcode target."
     fi
 done
 echo "  ok  iscsictl has no destructive commands"
