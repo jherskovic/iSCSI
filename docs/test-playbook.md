@@ -235,11 +235,13 @@ uid decides whether any login works). Use the SIP-on VM, with a second account.
    account's saved targets were kept, and the first account's file is untouched.
 
 First run 2026-11-04, build 53.1 on 26.7.2, accounts `herko` and `third`: all
-five passed. The log shows the extension as uid 501, and the adopted secret
-logged in to a simulator that accepts only that secret. The old state was
-seeded by hand with `security add-generic-password`, so a secret written by a
-real 0.9.0 daemon, with that daemon's access list, is still untested, and 53.1
-has not run on 27.
+five passed, with the old state seeded by hand. Then a real upgrade: the
+published 0.9.0 wrote the CHAP secret, and 53.1 installed over it adopted both
+targets and logged in to a simulator that accepts only that secret, with the
+extension at uid 501. The item's access list names a code requirement for
+`iscsid`, not one binary, which is why a newer daemon can read it. The bundle
+was replaced by hand, so a Sparkle update is not yet run, and neither is 53.1
+on 27.
 
 ## Fuzzing
 
