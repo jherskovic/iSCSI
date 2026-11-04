@@ -234,6 +234,13 @@ uid decides whether any login works). Use the SIP-on VM, with a second account.
 5. **Uninstall.** From the second account, the step reports that another
    account's saved targets were kept, and the first account's file is untouched.
 
+First run 2026-11-04, build 53.1 on 26.7.2, accounts `herko` and `third`: all
+five passed. The log shows the extension as uid 501, and the adopted secret
+logged in to a simulator that accepts only that secret. The old state was
+seeded by hand with `security add-generic-password`, so a secret written by a
+real 0.9.0 daemon, with that daemon's access list, is still untested, and 53.1
+has not run on 27.
+
 ## Fuzzing
 
 `scripts/fuzz.sh [seconds]` builds `pdu-fuzz` with AddressSanitizer and runs a
