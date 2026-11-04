@@ -359,7 +359,18 @@ echo "  ok  LaunchDaemon $DAEMON_LABEL (one plist, label matches filename)"
 # the bypass path, so its presence in the binary is a compile-time fact rather
 # than an inference. A root daemon that accepts every connection must never be
 # something we can ship by accident.
-if strings -a "$APP/Contents/MacOS/iscsid" | grep -q "Never ship this binary"; then
+#
+# Not `strings | grep -q`: under pipefail, grep exits at the first match, strings
+# dies on the closed pipe, the pipeline fails, and `if` reads a match as no match.
+# This check was written that way, and on a binary containing the string it fired
+# 0 times in 20. Reading everything first leaves no pipe to break.
+binary_contains() {
+    local text
+    text=$(strings -a "$1")
+    grep -q -e "$2" <<<"$text"
+}
+
+if binary_contains "$APP/Contents/MacOS/iscsid" "Never ship this binary"; then
     die "iscsid was built with the DEBUG XPC-authorization bypass compiled in.
 It would accept a connection from any process on the machine. Archive Release."
 fi
