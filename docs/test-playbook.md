@@ -271,7 +271,12 @@ on 53.3 made `/usr/local/bin` 755 `root:wheel`, and `third` ran a real `nvme
 discover` through the link. A process started through it satisfies the daemon's
 code requirement, because the kernel identifies it by its real path in the
 bundle. The link outlived 53.4 replacing the bundle, by hand, so a Sparkle
-update is not yet run. Steps 4 to 6 are not yet run.
+update is not yet run.
+
+Steps 5 and 6 passed on 53.4. After the cancelled run the link stayed, and the
+targets, keychain items, service, extension and caches were gone. With the app
+in the Trash the link dangled, and it worked again, untouched, once 53.4 was
+reinstalled at the same path. Step 4 is not yet run.
 
 ## Fuzzing
 
