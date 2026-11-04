@@ -359,11 +359,43 @@ echo "  ok  LaunchDaemon $DAEMON_LABEL (one plist, label matches filename)"
 # the bypass path, so its presence in the binary is a compile-time fact rather
 # than an inference. A root daemon that accepts every connection must never be
 # something we can ship by accident.
-if strings -a "$APP/Contents/MacOS/iscsid" | grep -q "Never ship this binary"; then
+#
+# Not `strings | grep -q`: under pipefail, grep exits at the first match, strings
+# dies on the closed pipe, the pipeline fails, and `if` reads a match as no match.
+# This check was written that way, and on a binary containing the string it fired
+# 0 times in 20. Reading everything first leaves no pipe to break.
+binary_contains() {
+    local text
+    text=$(strings -a "$1")
+    grep -q -e "$2" <<<"$text"
+}
+
+if binary_contains "$APP/Contents/MacOS/iscsid" "Never ship this binary"; then
     die "iscsid was built with the DEBUG XPC-authorization bypass compiled in.
 It would accept a connection from any process on the machine. Archive Release."
 fi
 echo "  ok  iscsid has no DEBUG authorization bypass"
+
+CTL="$APP/Contents/MacOS/iscsictl"
+[ -x "$CTL" ] || die "the command-line tool is missing from $CTL"
+
+# The daemon's allowlist matches on this identifier. A wrong one builds, signs
+# and notarizes without complaint, and every XPC call then fails at runtime.
+CTL_ID=$(codesign -dv "$CTL" 2>&1 | sed -n 's/^Identifier=//p')
+[ "$CTL_ID" = "me.herko.iSCSIInitiator.iscsictl" ] \
+    || die "iscsictl signs as '$CTL_ID'. Check CREATE_INFOPLIST_SECTION_IN_BINARY
+in apps/project.yml: without an embedded Info.plist a tool signs as its file name."
+echo "  ok  iscsictl signs as $CTL_ID"
+
+# wipe, write-bench and verify --write reach the target directly, past the
+# daemon's one-writer check. They are for `swift run`, never for the bundle.
+for marker in DESTRUCTIVE write-bench "pass --write"; do
+    if binary_contains "$CTL" "$marker"; then
+        die "iscsictl contains \"$marker\": a destructive command is in the bundle.
+ISCSICTL_DESTRUCTIVE must stay out of the Xcode target."
+    fi
+done
+echo "  ok  iscsictl has no destructive commands"
 
 # The DMG filename comes from project.yml; the bundle's version comes from its
 # Info.plist. Nothing tied them together, and for two releases they disagreed —
@@ -381,6 +413,13 @@ for pair in "$APP:app" \
 Check that its Info.plist uses \$(MARKETING_VERSION) rather than a literal."
 done
 echo "  ok  every bundle reports version $VERSION"
+
+# Not a bundle, so not in the loop above. It reports what is embedded in the
+# binary, and it was a literal 0.1.0 when it first shipped.
+CTL_VERSION=$("$CTL" --version)
+[ "${CTL_VERSION%% *}" = "$VERSION" ] \
+    || die "iscsictl reports version '$CTL_VERSION' but this release is $VERSION."
+echo "  ok  iscsictl reports version $CTL_VERSION"
 
 check_binary() {
     local path="$1" label="$2" out

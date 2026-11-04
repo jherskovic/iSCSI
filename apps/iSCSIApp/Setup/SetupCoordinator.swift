@@ -13,7 +13,7 @@
 //
 //  Ordering is not cosmetic:
 //
-//    location -> other copies -> daemon -> registered -> enabled
+//    location -> other copies -> daemon -> registered -> enabled -> command line
 //
 //  Location first because SMAppService registration from a translocated bundle
 //  points at a path that will not exist. Other copies next: a second
@@ -21,7 +21,9 @@
 //  later steps report green over a broken install, and cleaning it up does
 //  not depend on the daemon. Daemon before enabled because on macOS
 //  26.x the enablement fallback needs the daemon to signal fskitd as root, so
-//  the daemon has to be answering before that step can succeed.
+//  the daemon has to be answering before that step can succeed. The command
+//  line comes last because it is optional, and because a link made before the
+//  location step passes would point at a path that is about to change.
 //
 //  Step B from the plan — Full Disk Access — is deliberately absent. It was
 //  conditional on the enablement write being denied by TCC, and it is not: a
@@ -41,6 +43,7 @@ final class SetupCoordinator: ObservableObject {
         let actionLabel: String?
         let consentPrompt: String?
         let consentTitle: String?
+        let isOptional: Bool
         /// True for the first not-yet-satisfied step only. Everything after it
         /// renders its state but offers no button — clicking "Enable" before the
         /// daemon exists produces a failure that teaches the user nothing.
@@ -69,7 +72,8 @@ final class SetupCoordinator: ObservableObject {
     /// a step is checking, so it cannot be used to label the work in progress.
     @Published private(set) var busyLabel: String?
 
-    /// Every prerequisite holds. The GUI gates its Connect affordances on this.
+    /// Every required prerequisite holds. The GUI gates its Connect affordances
+    /// on this.
     var isReady: Bool { Self.isReady(reports) }
 
     /// Checking, or running a step's action. What the sidebar's spinner shows.
@@ -78,12 +82,14 @@ final class SetupCoordinator: ObservableObject {
     /// A finished check found something to address. Narrower than `!isReady`,
     /// which is also true before the first check has finished: the "!" is
     /// for something the user can act on, not for "not known yet".
-    var needsAttention: Bool { reports.contains { $0.state.needsAttention } }
+    var needsAttention: Bool {
+        reports.contains { !$0.isOptional && $0.state.needsAttention }
+    }
 
     /// `isReady` for a given list, for observers of `$reports`: it publishes
     /// on willSet, so the property still holds the old list when they run.
     nonisolated static func isReady(_ reports: [Report]) -> Bool {
-        !reports.isEmpty && reports.allSatisfy(\.state.isSatisfied)
+        !reports.isEmpty && reports.allSatisfy { $0.isOptional || $0.state.isSatisfied }
     }
 
     private let steps: [any SetupStep]
@@ -98,6 +104,7 @@ final class SetupCoordinator: ObservableObject {
             DaemonStep(controller: daemon),
             ModuleRegistration(probe: fskitProbe),
             ModuleEnablement(probe: fskitProbe),
+            CommandLineTool(),
         ]
     }
 
@@ -136,6 +143,7 @@ final class SetupCoordinator: ObservableObject {
                           actionLabel: step.actionLabel,
                           consentPrompt: step.consentPrompt,
                           consentTitle: step.consentTitle,
+                          isOptional: step.isOptional,
                           isNext: isNext)
         }
     }

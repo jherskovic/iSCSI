@@ -41,7 +41,7 @@ our_disk() {
 }
 
 echo "=== wipe"
-$CTL wipe "$PORTAL" --target "$TARGET" >/Users/herko/logs/private-wipe.log 2>&1 \
+$CTL iscsi wipe "$PORTAL" --target "$TARGET" >/Users/herko/logs/private-wipe.log 2>&1 \
   || { echo WIPE-FAILED; exit 1; }
 
 echo "=== attach"

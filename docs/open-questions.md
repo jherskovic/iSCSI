@@ -89,7 +89,7 @@ without mutual even when set to Mutual CHAP" is not evidence of anything.
 
 **How to attack.** A second target implementation is the whole answer — anything
 that answers a mutual challenge clears this in one run of
-`iscsictl discover --debug --mutual-user … --mutual-secret-file …`, whose auth
+`iscsictl iscsi discover --debug --mutual-user … --mutual-secret-file …`, whose auth
 trace narrates each step. Failing that, whether TrueNAS ever loads `OutgoingUser`
 into sysfs is a bug to file against them, not something fixable here.
 
@@ -150,7 +150,7 @@ suggestive and may mean the boundary is per-target rather than universal.
 issues one large enough to matter, which makes this a curiosity rather than a
 bug — until a target negotiates something smaller.
 
-**How to attack.** `iscsictl read-bench --chunk N --max-transfer N --queue-depth
+**How to attack.** `iscsictl iscsi read-bench --chunk N --max-transfer N --queue-depth
 D` isolates it. A packet capture at the boundary would probably settle whether
 the target or the initiator's receive path degrades.
 

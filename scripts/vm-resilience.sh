@@ -350,7 +350,7 @@ scenario_corrupt() {
   # Show that digests really did negotiate on. Without that line, a pass here
   # is unreadable: "no corruption surfaced" means nothing if the digest that
   # was supposed to catch it was never enabled.
-  .build/release/iscsictl verify 127.0.0.1 --target "$IQN" 2>&1 \
+  .build/release/iscsictl iscsi verify 127.0.0.1 --target "$IQN" 2>&1 \
     | grep -i digest | sed 's/^/  /'
 
   attach || return 1

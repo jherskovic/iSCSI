@@ -1,4 +1,4 @@
-# macOS iSCSI Initiator
+# macOS iSCSI/NVMe-TCP Initiator
 
 [![version](https://img.shields.io/github/v/release/jherskovic/iSCSI?sort=semver&display_name=tag&label=version)](https://github.com/jherskovic/iSCSI/releases/latest)
 [![license](https://img.shields.io/github/license/jherskovic/iSCSI)](LICENSE)
@@ -54,6 +54,9 @@ Certain versions of macOS, especially 26.x, have a bug that doesn't let you enab
 System Settings. The problem is UI, not permissions. The app detects this and offers an override. It is safe.
 
 You can also choose to enable the included Dock extension. The only thing it does is free the icon from Squircle Jail.
+
+Setup also offers to put the included `iscsictl` command-line tool on your PATH, with a link in `/usr/local/bin`.
+It's optional, and macOS will ask for an administrator's password.
 
 Don't keep multiple copies of the app around. macOS may use their FSKit extension instead of the current version.
 The app detects this on launch and will clean it up for you if you let it. It's probably a good idea to say yes.
@@ -111,8 +114,8 @@ swift test                          # unit + integration suite
 scripts/fuzz.sh 60                  # 60s ASan fuzz of the PDU decoder
 
 # Against a real target (e.g. your NAS):
-swift run iscsictl discover 192.168.1.50
-swift run iscsictl verify 192.168.1.50 --target iqn.2000-01.com.example:disk0 \
+swift run iscsictl iscsi discover 192.168.1.50
+swift run iscsictl iscsi verify 192.168.1.50 --target iqn.2000-01.com.example:disk0 \
     --lun 0 --write        # DESTRUCTIVE — scratch LUN only
 
 # The same over NVMe/TCP (TrueNAS SCALE 25.04+, port 4420). The host NQN it
@@ -128,7 +131,7 @@ power with a volatile write cache):
 
 ```bash
 swift run iscsi-target-sim --port 3260 --capacity-mib 1024 &
-swift run iscsictl verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --write
+swift run iscsictl iscsi verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --write
 printf 'crash\n' | nc 127.0.0.1 3262     # target power loss, on demand
 
 swift run iscsi-target-sim --nvme --capacity-mib 1024 &     # the same, as NVMe/TCP on 4420

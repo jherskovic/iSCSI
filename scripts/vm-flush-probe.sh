@@ -18,7 +18,7 @@ our_disk() {
 }
 
 echo "== wipe LUN (so nothing auto-mounts)"
-$CTL wipe "$PORTAL" --target "$TARGET" >/tmp/flushprobe-wipe.log 2>&1 \
+$CTL iscsi wipe "$PORTAL" --target "$TARGET" >/tmp/flushprobe-wipe.log 2>&1 \
   || { echo "WIPE FAILED"; tail -5 /tmp/flushprobe-wipe.log; exit 1; }
 
 echo "== attach"

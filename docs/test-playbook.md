@@ -52,7 +52,7 @@ Run: `swift test --filter IntegrationTests`
 
 ## Layer 3 — end-to-end on real hardware (needs a NAS; Phase 4+)
 
-- `iscsictl discover <nas>` then `iscsictl verify <nas> --target <iqn> --write`
+- `iscsictl iscsi discover <nas>` then `iscsictl iscsi verify <nas> --target <iqn> --write`
   against a **scratch LUN** for an on-the-wire login + read/write/verify.
 - Capture with Wireshark's iSCSI dissector; assert clean dissection and that
   APFS barriers become SYNCHRONIZE CACHE / FUA on the wire.
@@ -136,11 +136,11 @@ On the dev host, which has `en0` (Wi-Fi) and `en17` (wired) on 192.168.0/24,
 `en18` on the NAS's 192.168.20/24 with no default route, and Tailscale (`utun4`)
 also claiming 192.168.0/24. All read-only.
 
-    swift run iscsictl discover 192.168.20.1 --interface en18     # connected via en18, targets listed
-    swift run iscsictl discover 192.168.20.1.nip.io --interface en18   # a hostname: resolved unbound, then pinned
-    swift run iscsictl discover 192.168.0.1 --port 80 --interface en18   # fails at once: en18 has no route
-    swift run iscsictl discover 192.168.0.1 --port 80 --interface en17   # connected via en17, then a protocol error
-    swift run iscsictl discover 192.168.0.1 --port 80 --interface en0    # connected via en0, then a protocol error
+    swift run iscsictl iscsi discover 192.168.20.1 --interface en18     # connected via en18, targets listed
+    swift run iscsictl iscsi discover 192.168.20.1.nip.io --interface en18   # a hostname: resolved unbound, then pinned
+    swift run iscsictl iscsi discover 192.168.0.1 --port 80 --interface en18   # fails at once: en18 has no route
+    swift run iscsictl iscsi discover 192.168.0.1 --port 80 --interface en17   # connected via en17, then a protocol error
+    swift run iscsictl iscsi discover 192.168.0.1 --port 80 --interface en0    # connected via en0, then a protocol error
 
 The hostname line matters: `en18` has no DNS resolver, and a bound connection
 resolves names through the bound interface alone, so this failed with "no
@@ -242,6 +242,41 @@ extension at uid 501. The item's access list names a code requirement for
 `iscsid`, not one binary, which is why a newer daemon can read it. The bundle
 was replaced by hand, so a Sparkle update is not yet run, and neither is 53.1
 on 27.
+
+## The iscsictl link (2026-11-04)
+
+`CommandLineLinkTests` covers what setup may touch. The password prompt and the
+optional step need a real Mac. Use the SIP-on VM, which has no `/usr/local/bin`
+until something makes one.
+
+1. **Optional.** With no link, Setup reads "Ready", the sidebar has no "!", the
+   menu bar icon has no warning, and attach works. The row has a plain Add Link
+   button and a grey icon.
+2. **Cancel.** Add Link, then Cancel in the password dialog. Nothing changes and
+   no error appears.
+3. **Add.** Add Link and enter the password. The row turns green.
+   `/usr/local/bin` exists, 755 and `root:wheel`, and a new Terminal finds
+   `iscsictl`, in every account.
+4. **Someone else's.** Replace it with a link to anything else: the row says it
+   is left alone and offers nothing, and uninstall leaves it there.
+5. **Uninstall, cancelled.** With this app's link, Remove Everything asks for a
+   password. Cancel: that step fails, says how to remove the link by hand, and
+   the rest of the removal finishes.
+6. **Uninstall.** Enter the password instead: the link goes, and `/usr/local/bin`
+   stays, since nothing records who made it.
+
+First run 2026-11-04, 26.7.2. With no link, Setup read Ready with no "!", Cancel
+changed nothing, and the dialog reads well under its "osascript" heading. Add
+on 53.3 made `/usr/local/bin` 755 `root:wheel`, and `third` ran a real `nvme
+discover` through the link. A process started through it satisfies the daemon's
+code requirement, because the kernel identifies it by its real path in the
+bundle. The link outlived 53.4 replacing the bundle, by hand, so a Sparkle
+update is not yet run.
+
+Steps 5 and 6 passed on 53.4. After the cancelled run the link stayed, and the
+targets, keychain items, service, extension and caches were gone. With the app
+in the Trash the link dangled, and it worked again, untouched, once 53.4 was
+reinstalled at the same path. Step 4 is not yet run.
 
 ## Fuzzing
 

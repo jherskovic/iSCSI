@@ -14,6 +14,8 @@ let package = Package(
         // Xcode target can only link a package *product*. Named ...Kit to keep
         // it distinguishable from the `iscsid` executable that consumes it.
         .library(name: "iSCSIDaemonKit", targets: ["iSCSIDaemon"]),
+        // For the Xcode `iscsictl` target, which imports it directly.
+        .library(name: "NVMeKit", targets: ["NVMeKit"]),
         // The FSKit extension's data path, minus the FSKit. Split out of
         // iSCSIFSExtension.swift so `swift test` can reach it: read-modify-write,
         // the chunk cache wiring, the ioLock and every XPC call the volume makes
@@ -79,7 +81,13 @@ let package = Package(
                 "iSCSIDaemon",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            swiftSettings: [.swiftLanguageMode(.v6)]
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                // Here and nowhere else: `swift run` keeps the commands that
+                // write to a target directly, and the bundled Xcode build,
+                // which does not define this, cannot include them by accident.
+                .define("ISCSICTL_DESTRUCTIVE"),
+            ]
         ),
         // Local iSCSI target: loopback benchmarking without the transport
         // ceiling, plus faults (drop / corrupt / stall / target power loss)
