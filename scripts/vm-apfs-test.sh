@@ -43,7 +43,7 @@ our_disk() {
 }
 
 echo "=== wipe"
-$CTL wipe "$PORTAL" --target "$TARGET" >/Users/herko/logs/apfs3-wipe.log 2>&1 || { echo WIPE-FAILED; exit 1; }
+$CTL iscsi wipe "$PORTAL" --target "$TARGET" >/Users/herko/logs/apfs3-wipe.log 2>&1 || { echo WIPE-FAILED; exit 1; }
 
 echo "=== attach"
 # Truncate: the daemon log is APPENDED to, and the publish-wait below greps it.

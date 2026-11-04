@@ -89,7 +89,7 @@ rate.
 
 ## Where the ceiling is
 
-`iscsictl read-bench` reads straight over iSCSI — no FSKit extension, no
+`iscsictl iscsi read-bench` reads straight over iSCSI — no FSKit extension, no
 DiskImages, no filesystem — which separates our stack from the transport.
 Uncached regions, sequential:
 
@@ -169,7 +169,7 @@ removed. One scatters the access pattern; the other only stops waiting. The
 earlier experiment answered "should separate operations overlap" (no) and was
 read as answering "should one operation be split" (which it never tested).
 
-Correctness on hardware, not just throughput: `iscsictl verify --write --blocks
+Correctness on hardware, not just throughput: `iscsictl iscsi verify --write --blocks
 2048` round-trips 1 MiB — four concurrent commands — byte-exact at LBA 262144.
 
 Note the FUA multiple is roughly preserved, 5.6x before and 6.9x after, so this

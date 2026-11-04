@@ -42,7 +42,7 @@ let verifyReadNote = " (read-only)"
 struct ISCSICtl: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "iscsictl",
-        abstract: "Control the macOS iSCSI initiator.",
+        abstract: "Control the macOS iSCSI and NVMe/TCP initiator.",
         version: version,
         subcommands: ISCSICtl.enabledSubcommands
     )
@@ -64,13 +64,29 @@ extension ISCSICtl {
     /// assembled rather than literal — otherwise turning a flag off leaves a
     /// reference to a type that is no longer there.
     static var enabledSubcommands: [any ParsableCommand.Type] {
-        var commands: [any ParsableCommand.Type] =
-            [Discover.self, Verify.self, ReadBench.self, NVMe.self]
-        #if ISCSICTL_DESTRUCTIVE
-        commands += [WriteBench.self, Wipe.self]
-        #endif
+        var commands: [any ParsableCommand.Type] = [ISCSI.self, NVMe.self]
         #if ISCSI_BACKEND_B
         commands += [DextAttach.self, DextStatsCommand.self]
+        #endif
+        return commands
+    }
+}
+
+/// The twin of `iscsictl nvme`. Neither protocol is the default: a bare
+/// `iscsictl discover` would only mean whichever came first.
+struct ISCSI: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "iscsi",
+        abstract: "iSCSI operations against a target: discover, verify, read-bench.",
+        subcommands: enabledSubcommands
+    )
+
+    /// Assembled for the same reason as `ISCSICtl.enabledSubcommands`.
+    static var enabledSubcommands: [any ParsableCommand.Type] {
+        var commands: [any ParsableCommand.Type] =
+            [Discover.self, Verify.self, ReadBench.self]
+        #if ISCSICTL_DESTRUCTIVE
+        commands += [WriteBench.self, Wipe.self]
         #endif
         return commands
     }

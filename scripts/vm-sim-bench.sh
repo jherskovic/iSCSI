@@ -43,10 +43,10 @@ for FB in 65536 262144 1048576; do
 
   echo "================ FirstBurstLength = $FB"
   echo "---- write, no FUA"
-  "$CTL" write-bench 127.0.0.1 --target "$IQN" --megabytes "$MB" --chunk 1048576 2>&1 | sed 's/^/  /'
+  "$CTL" iscsi write-bench 127.0.0.1 --target "$IQN" --megabytes "$MB" --chunk 1048576 2>&1 | sed 's/^/  /'
   echo "---- write, FUA (what the shipping daemon does)"
-  "$CTL" write-bench 127.0.0.1 --target "$IQN" --megabytes "$MB" --chunk 1048576 --fua 2>&1 | sed 's/^/  /'
+  "$CTL" iscsi write-bench 127.0.0.1 --target "$IQN" --megabytes "$MB" --chunk 1048576 --fua 2>&1 | sed 's/^/  /'
   echo "---- read"
-  "$CTL" read-bench 127.0.0.1 --target "$IQN" --megabytes "$MB" --chunk 1048576 2>&1 | sed 's/^/  /'
+  "$CTL" iscsi read-bench 127.0.0.1 --target "$IQN" --megabytes "$MB" --chunk 1048576 2>&1 | sed 's/^/  /'
   echo
 done

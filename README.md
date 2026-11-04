@@ -114,8 +114,8 @@ swift test                          # unit + integration suite
 scripts/fuzz.sh 60                  # 60s ASan fuzz of the PDU decoder
 
 # Against a real target (e.g. your NAS):
-swift run iscsictl discover 192.168.1.50
-swift run iscsictl verify 192.168.1.50 --target iqn.2000-01.com.example:disk0 \
+swift run iscsictl iscsi discover 192.168.1.50
+swift run iscsictl iscsi verify 192.168.1.50 --target iqn.2000-01.com.example:disk0 \
     --lun 0 --write        # DESTRUCTIVE — scratch LUN only
 
 # The same over NVMe/TCP (TrueNAS SCALE 25.04+, port 4420). The host NQN it
@@ -131,7 +131,7 @@ power with a volatile write cache):
 
 ```bash
 swift run iscsi-target-sim --port 3260 --capacity-mib 1024 &
-swift run iscsictl verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --write
+swift run iscsictl iscsi verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --write
 printf 'crash\n' | nc 127.0.0.1 3262     # target power loss, on demand
 
 swift run iscsi-target-sim --nvme --capacity-mib 1024 &     # the same, as NVMe/TCP on 4420
