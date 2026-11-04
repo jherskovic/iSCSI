@@ -279,6 +279,27 @@ struct UserConfigurationTests {
         }
     }
 
+    /// The old item is the only copy until the new one is proven. A store that
+    /// claims success and keeps nothing must not cost the user the secret.
+    @Test func aCopyThatDoesNotReadBackLeavesTheOldSecretInPlace() async throws {
+        try await withFake { fake in
+            let root = try makeRoot()
+            let adoption = LegacyConfigurationAdoption(root: root)
+            try seedLegacy(root, [record("a")], secrets: ["a": "initiator-secret"], fake: fake)
+
+            fake.dropNextStore = true
+            adoption.adoptIfNeeded(by: alice)
+
+            #expect(fake.fetch(account: "a", service: KeychainStore.legacyService).secret
+                    == Data("initiator-secret".utf8))
+            #expect(exists(root.legacyTargets))
+
+            adoption.adoptIfNeeded(by: alice)
+            #expect(KeychainStore.chapSecret(for: "a", owner: alice) == "initiator-secret")
+            #expect(!exists(root.legacyTargets))
+        }
+    }
+
     /// A daemon killed after writing the account's file and before removing the
     /// old one. The record is in both places and looks like a twin of itself:
     /// treating it as one would delete the secret just adopted.

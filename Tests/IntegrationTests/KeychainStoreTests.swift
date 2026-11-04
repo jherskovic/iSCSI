@@ -21,12 +21,19 @@ final class FakeKeychain: KeychainStore.Backend, @unchecked Sendable {
     var nextStoreStatus: OSStatus?
     /// Forced result for every `remove` while set, for the refused-delete path.
     var removeStatus: OSStatus?
+    /// The next `store` reports success and keeps nothing: the failure this
+    /// file exists for, and the one only a read-back can see.
+    var dropNextStore = false
 
     func store(account: String, service: String, label: String, secret: Data) -> OSStatus {
         lock.lock(); defer { lock.unlock() }
         if let forced = nextStoreStatus {
             nextStoreStatus = nil
             return forced
+        }
+        if dropNextStore {
+            dropNextStore = false
+            return errSecSuccess
         }
         items["\(service)/\(account)"] = secret
         return errSecSuccess
