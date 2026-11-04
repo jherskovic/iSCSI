@@ -1,4 +1,4 @@
-# macOS iSCSI Initiator
+# macOS iSCSI/NVMe-TCP Initiator
 
 [![version](https://img.shields.io/github/v/release/jherskovic/iSCSI?sort=semver&display_name=tag&label=version)](https://github.com/jherskovic/iSCSI/releases/latest)
 [![license](https://img.shields.io/github/license/jherskovic/iSCSI)](LICENSE)
