@@ -8,10 +8,12 @@
 //
 //    1. Detach every volume.       A mounted volume whose app is gone cannot be
 //                                  taken down by anything the user can find.
-//    2. Delete secrets and data.   Both live in the *daemon's* context. After
-//                                  step 4 the app cannot reach the keychain
-//                                  items, and they would outlive the app with
-//                                  nothing left that knows their names.
+//    2. Delete secrets and data.   This account's. Both live in the *daemon's*
+//                                  context. After step 4 the app cannot reach
+//                                  the keychain items, and they would outlive
+//                                  the app with nothing left that knows their
+//                                  names. Other accounts' are theirs to remove,
+//                                  and stay: the step says so.
 //    3. Remove the login item.     Independent of the daemon; done while the
 //                                  rest can still report.
 //    4. Unregister the daemon.     Only now, because steps 1 and 2 need it.
@@ -137,7 +139,12 @@ final class Uninstaller: ObservableObject {
 
     private func removeDaemonData() async throws -> String {
         try await DaemonConnection.removeAllData()
-        return "removed"
+        // Asked afterwards, and never a reason to fail: what went, went.
+        switch (try? await DaemonConnection.otherAccountsWithData()) ?? 0 {
+        case 0: return "removed"
+        case 1: return "removed; another account's saved targets were kept"
+        case let others: return "removed; \(others) other accounts' saved targets were kept"
+        }
     }
 
     /// "Attach at login" registers the app itself as a login item; a removed
@@ -348,6 +355,12 @@ extension DaemonConnection {
             proxy.removeAllData { error in
                 finish(error.map { .failure($0) } ?? .success(()))
             }
+        }
+    }
+
+    static func otherAccountsWithData() async throws -> Int {
+        try await call { proxy, finish in
+            proxy.otherAccountsWithData { count in finish(.success(count.intValue)) }
         }
     }
 }

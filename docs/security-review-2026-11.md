@@ -9,6 +9,7 @@ and lab tooling. The fixes are in PR #7.
 
 | ID | Finding | What changed |
 |---|---|---|
+| S-01 | Any account on a Mac could attach, edit or delete every target and use its saved secret: the daemon checked the caller's code signature, not the user. | Targets and CHAP secrets are per account, chosen from the XPC connection's uid (`UserConfiguration`). They stay daemon-held, because login resolves against them and root must not use a path its caller controls. Fixed after PR #7, not in it. See `docs/open-questions.md`, "Who may use the daemon", for what stays machine-wide. |
 | S-03 | A controller's MDTS could overflow `(1 << mdts) * pageBytes` and trap the root daemon, taking every session with it. | The maximum transfer size saturates instead. Tested over all 256 MDTS values; the fuzzer covers it. |
 | S-04 | Detach ignored every `diskutil`/`hdiutil`/`umount` result, fell back to forcing, and always dropped the attachment, so uninstall, target removal and updates went ahead over a volume still in use. | Detach is checked at every step and verified: the image device and the FSKit mount must be gone, or it throws and the row stays. Forcing needs the user's yes, in a "Force Eject?" prompt that defaults to Cancel. Uninstall and target removal never force. |
 | S-05 | A failed flush when the image was closed was answered with success. | `closeItem` returns EIO. Unmount and the data-cache close cannot return an error, so they log at fault level. |
@@ -50,11 +51,6 @@ Fixed alongside, not in the review:
 
 ## Not changed
 
-- **S-01: any account can use the daemon.** The daemon checks the caller's
-  code signature, not the user, and targets and secrets are machine-wide.
-  Two accounts writing to one disk is closed (above). Who may change
-  targets and secrets is open, pending a decision on whether shared Macs
-  are supported (`docs/open-questions.md`, "Who may use the daemon").
 - **S-02: cleartext storage traffic, target not authenticated.** This is
   by design and documented. The storage network must be trusted or
   tunnelled. Mutual CHAP is switched off for a target-side reason

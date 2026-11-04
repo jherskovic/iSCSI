@@ -119,10 +119,10 @@ public struct AutoAttachRun: Sendable, Equatable {
 
     /// Another login session on this Mac is using the target.
     ///
-    /// `autoAttach` lives in the daemon's machine-wide `targets.json`, but the
-    /// login item and the mounts are per user, so under fast user switching a
-    /// second user's login could mount a volume the first has mounted — two
-    /// independent writers on one APFS volume. The mount table is the witness:
+    /// Each account has its own target list, so two can name the same target,
+    /// and under fast user switching a second user's login could mount a volume
+    /// the first has mounted — two independent writers on one APFS volume. The
+    /// mount table is the witness:
     /// every attach starts with an FSKit mount whose source names the target,
     /// on a mount point in the home of the user who made it. One outside this
     /// user's home is someone else's.

@@ -120,43 +120,43 @@ struct KeychainStoreTests {
 
     @Test func aStoredSecretReadsBack() throws {
         try withFake { _ in
-            try KeychainStore.store("hunter2-and-then-some", for: "target-1")
-            #expect(KeychainStore.chapSecret(for: "target-1") == "hunter2-and-then-some")
+            try KeychainStore.store("hunter2-and-then-some", for: "target-1", owner: testOwner)
+            #expect(KeychainStore.chapSecret(for: "target-1", owner: testOwner) == "hunter2-and-then-some")
         }
     }
 
     @Test func theTwoHalvesOfAPairDoNotOverwriteEachOther() throws {
         try withFake { _ in
-            try KeychainStore.store("initiator-secret", for: "target-1", kind: .initiator)
-            try KeychainStore.store("peer-secret", for: "target-1", kind: .mutual)
-            #expect(KeychainStore.chapSecret(for: "target-1", kind: .initiator) == "initiator-secret")
-            #expect(KeychainStore.chapSecret(for: "target-1", kind: .mutual) == "peer-secret")
+            try KeychainStore.store("initiator-secret", for: "target-1", owner: testOwner, kind: .initiator)
+            try KeychainStore.store("peer-secret", for: "target-1", owner: testOwner, kind: .mutual)
+            #expect(KeychainStore.chapSecret(for: "target-1", owner: testOwner, kind: .initiator) == "initiator-secret")
+            #expect(KeychainStore.chapSecret(for: "target-1", owner: testOwner, kind: .mutual) == "peer-secret")
         }
     }
 
     @Test func differentTargetsMayShareAUsernameWithoutSharingASecret() throws {
         try withFake { _ in
-            try KeychainStore.store("secret-for-one", for: "target-1")
-            try KeychainStore.store("secret-for-two", for: "target-2")
-            #expect(KeychainStore.chapSecret(for: "target-1") == "secret-for-one")
-            #expect(KeychainStore.chapSecret(for: "target-2") == "secret-for-two")
+            try KeychainStore.store("secret-for-one", for: "target-1", owner: testOwner)
+            try KeychainStore.store("secret-for-two", for: "target-2", owner: testOwner)
+            #expect(KeychainStore.chapSecret(for: "target-1", owner: testOwner) == "secret-for-one")
+            #expect(KeychainStore.chapSecret(for: "target-2", owner: testOwner) == "secret-for-two")
         }
     }
 
     @Test func deletingATargetRemovesBothHalves() throws {
         try withFake { fake in
-            try KeychainStore.store("initiator-secret", for: "target-1", kind: .initiator)
-            try KeychainStore.store("peer-secret", for: "target-1", kind: .mutual)
-            try KeychainStore.deleteAllSecrets(for: "target-1")
+            try KeychainStore.store("initiator-secret", for: "target-1", owner: testOwner, kind: .initiator)
+            try KeychainStore.store("peer-secret", for: "target-1", owner: testOwner, kind: .mutual)
+            try KeychainStore.deleteAllSecrets(for: "target-1", owner: testOwner)
             #expect(fake.count == 0)
-            #expect(KeychainStore.chapSecret(for: "target-1", kind: .initiator) == nil)
-            #expect(KeychainStore.chapSecret(for: "target-1", kind: .mutual) == nil)
+            #expect(KeychainStore.chapSecret(for: "target-1", owner: testOwner, kind: .initiator) == nil)
+            #expect(KeychainStore.chapSecret(for: "target-1", owner: testOwner, kind: .mutual) == nil)
         }
     }
 
     @Test func anAbsentSecretIsNilRatherThanAnError() throws {
         try withFake { _ in
-            #expect(KeychainStore.chapSecret(for: "never-stored") == nil)
+            #expect(KeychainStore.chapSecret(for: "never-stored", owner: testOwner) == nil)
         }
     }
 
@@ -167,7 +167,7 @@ struct KeychainStoreTests {
         try withFake { fake in
             fake.nextStoreStatus = errSecAuthFailed
             #expect(throws: KeychainStore.StoreFailure.self) {
-                try KeychainStore.store("a-secret-long-enough", for: "target-1")
+                try KeychainStore.store("a-secret-long-enough", for: "target-1", owner: testOwner)
             }
         }
     }
@@ -177,13 +177,13 @@ struct KeychainStoreTests {
     /// from a refusal: there is nowhere to write at all.
     @Test func aRefusedDeleteThrowsAndAnAbsentItemDoesNot() throws {
         try withFake { fake in
-            try KeychainStore.deleteCHAPSecret(for: "never-stored")
-            try KeychainStore.store("a-secret-long-enough", for: "target-1")
+            try KeychainStore.deleteCHAPSecret(for: "never-stored", owner: testOwner)
+            try KeychainStore.store("a-secret-long-enough", for: "target-1", owner: testOwner)
             fake.removeStatus = errSecAuthFailed
             #expect(throws: KeychainStore.StoreFailure.self) {
-                try KeychainStore.deleteAllSecrets(for: "target-1")
+                try KeychainStore.deleteAllSecrets(for: "target-1", owner: testOwner)
             }
-            #expect(KeychainStore.chapSecret(for: "target-1") == "a-secret-long-enough")
+            #expect(KeychainStore.chapSecret(for: "target-1", owner: testOwner) == "a-secret-long-enough")
         }
     }
 
@@ -220,7 +220,7 @@ struct KeychainStoreTests {
         fake.nextStoreStatus = errSecAuthFailed
         let error = await reply { service.setCHAPSecret(targetID: "t", secret: "new-secret-long", reply: $0) }
         #expect(error != nil)
-        #expect(KeychainStore.chapSecret(for: "t") == "old-secret-long")
+        #expect(KeychainStore.chapSecret(for: "t", owner: testOwner) == "old-secret-long")
     }
 
     @Test func aRefusedSecretDeleteIsReportedAndKeepsTheTarget() async throws {
@@ -232,7 +232,7 @@ struct KeychainStoreTests {
         let record = try await store.save(TargetRecord(
             id: UUID().uuidString, displayName: "Kept", host: "nas", port: 3260,
             targetIQN: "iqn.2026-08.test.example:disk0", lun: 0))
-        try KeychainStore.store("a-secret-long-enough", for: record.id)
+        try KeychainStore.store("a-secret-long-enough", for: record.id, owner: testOwner)
 
         fake.removeStatus = errSecAuthFailed
         #expect(await reply { service.deleteCHAPSecret(targetID: record.id, reply: $0) } != nil)
@@ -252,7 +252,7 @@ struct KeychainStoreTests {
         try withFake { fake in
             fake.nextStoreStatus = errSecNotAvailable
             do {
-                try KeychainStore.store("a-secret-long-enough", for: "target-1")
+                try KeychainStore.store("a-secret-long-enough", for: "target-1", owner: testOwner)
                 Issue.record("expected the store to fail")
             } catch let failure as KeychainStore.StoreFailure {
                 guard case .noSystemKeychain = failure else {

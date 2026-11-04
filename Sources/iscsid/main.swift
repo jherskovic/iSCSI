@@ -4,7 +4,8 @@ import iSCSIKit
 
 // iscsid — the iSCSI initiator daemon: a launchd LaunchDaemon vending the
 // block-I/O + session-management XPC service to the app and the FSKit
-// extension (iscsictl connects in debug builds only). launchd registers the
+// extension (iscsictl connects in debug builds only). Clients act for the
+// account they run in: see UserConfiguration. launchd registers the
 // Mach service and hands us the listener via NSXPCListener(machServiceName:).
 
 #if canImport(Network)

@@ -5,13 +5,22 @@ import Security
 /// CHAP secrets, held by the daemon.
 ///
 /// Keyed by **target id**, not CHAP username: two targets can share a username
-/// with different secrets.
+/// with different secrets. And by **owner**, the uid whose target it is, as a
+/// keychain service per account. Clients choose target ids, so an id alone
+/// would let one account reach another's secret by saving a record with the
+/// same id. `owner` has no default, so no call can miss the scope.
 ///
 /// Secrets travel *into* this store and never back out over XPC — there is no
 /// `getSecret` on the protocol, so a compromised client cannot read back what
 /// an earlier trusted one saved.
 public enum KeychainStore {
-    private static let service = "me.herko.iSCSIInitiator.chap"
+    /// Where every secret lived before they were per account. Read only by
+    /// `adoptLegacySecrets`.
+    static let legacyService = "me.herko.iSCSIInitiator.chap"
+
+    public static func service(for owner: uid_t) -> String {
+        "\(legacyService).\(owner)"
+    }
 
     public enum StoreFailure: Error, LocalizedError {
         case osStatus(OSStatus)
@@ -43,7 +52,7 @@ public enum KeychainStore {
             guard case .notRemoved = self else { return nil }
             return "The list of saved targets was kept so this can be run again. "
                  + "The items can also be deleted by hand in Keychain Access → System, "
-                 + "service “me.herko.iSCSIInitiator.chap”."
+                 + "services beginning “\(KeychainStore.legacyService)”."
         }
     }
 
@@ -182,16 +191,43 @@ public enum KeychainStore {
     /// non-throwing variant: a discarded `SecItemAdd` status makes a refused
     /// write indistinguishable from an accepted one, and the XPC setter used
     /// to report success off a read-back that found the *old* secret.
-    public static func store(_ secret: String, for targetID: String,
+    public static func store(_ secret: String, for targetID: String, owner: uid_t,
                              kind: Kind = .initiator) throws {
-        let status = backend.store(account: kind.account(for: targetID),
-                                   service: service,
-                                   label: kind == .mutual
-                                       ? "iSCSI Initiator — mutual CHAP secret"
-                                       : "iSCSI Initiator — CHAP secret",
-                                   secret: Data(secret.utf8))
+        try check(backend.store(account: kind.account(for: targetID),
+                                service: service(for: owner),
+                                label: label(for: kind),
+                                secret: Data(secret.utf8)))
+    }
+
+    private static func label(for kind: Kind) -> String {
+        kind == .mutual ? "iSCSI Initiator — mutual CHAP secret" : "iSCSI Initiator — CHAP secret"
+    }
+
+    private static func check(_ status: OSStatus) throws {
         guard status != errSecNotAvailable else { throw StoreFailure.noSystemKeychain }
         guard status == errSecSuccess else { throw StoreFailure.osStatus(status) }
+    }
+
+    /// Move one target's secrets, both halves, from the machine-wide service
+    /// into `owner`'s. Safe to repeat: a half already moved has nothing left to
+    /// find, and one interrupted before its delete is rewritten with the same
+    /// bytes. The old item goes only after the new one reads back identical.
+    static func adoptLegacySecrets(for targetID: String, owner: uid_t) throws {
+        for kind in [Kind.initiator, .mutual] {
+            let account = kind.account(for: targetID)
+            let (status, secret) = backend.fetch(account: account, service: legacyService)
+            if status == errSecItemNotFound { continue }
+            try check(status)
+            guard let secret else { throw StoreFailure.notPersisted }
+            let destination = service(for: owner)
+            try check(backend.store(account: account, service: destination,
+                                    label: label(for: kind), secret: secret))
+            guard backend.fetch(account: account, service: destination).secret == secret else {
+                throw StoreFailure.notPersisted
+            }
+            let removed = backend.remove(account: account, service: legacyService)
+            if removed != errSecItemNotFound { try check(removed) }
+        }
     }
 
     /// An OSStatus with its name, because `-34018` is unreadable and
@@ -202,8 +238,10 @@ public enum KeychainStore {
         return "\(status) (\(text ?? "no description"))"
     }
 
-    public static func chapSecret(for targetID: String, kind: Kind = .initiator) -> String? {
-        let (status, data) = backend.fetch(account: kind.account(for: targetID), service: service)
+    public static func chapSecret(for targetID: String, owner: uid_t,
+                                  kind: Kind = .initiator) -> String? {
+        let (status, data) = backend.fetch(account: kind.account(for: targetID),
+                                           service: service(for: owner))
         guard status == errSecSuccess, let data else {
             // Logged because the caller sees only nil: "no such item" is
             // ordinary, anything else is the keychain refusing us.
@@ -216,8 +254,10 @@ public enum KeychainStore {
     /// Throws when the keychain refuses; an absent item is not an error. A
     /// delete that only logged its failure let target removal and uninstall
     /// report success over a secret that was still there.
-    public static func deleteCHAPSecret(for targetID: String, kind: Kind = .initiator) throws {
-        let status = backend.remove(account: kind.account(for: targetID), service: service)
+    public static func deleteCHAPSecret(for targetID: String, owner: uid_t,
+                                        kind: Kind = .initiator) throws {
+        let status = backend.remove(account: kind.account(for: targetID),
+                                    service: service(for: owner))
         guard status == errSecSuccess || status == errSecItemNotFound else {
             DaemonLog.auth("keychain delete \(kind) for \(targetID): \(describe(status))")
             if status == errSecNotAvailable { throw StoreFailure.noSystemKeychain }
@@ -227,9 +267,9 @@ public enum KeychainStore {
 
     /// Both halves, for deleting a target outright. Neither absence is an
     /// error; both halves are attempted even when the first is refused.
-    public static func deleteAllSecrets(for targetID: String) throws {
-        let initiator = Result { try deleteCHAPSecret(for: targetID, kind: .initiator) }
-        try deleteCHAPSecret(for: targetID, kind: .mutual)
+    public static func deleteAllSecrets(for targetID: String, owner: uid_t) throws {
+        let initiator = Result { try deleteCHAPSecret(for: targetID, owner: owner, kind: .initiator) }
+        try deleteCHAPSecret(for: targetID, owner: owner, kind: .mutual)
         try initiator.get()
     }
 }
@@ -237,10 +277,13 @@ public enum KeychainStore {
 public enum KeychainStore {
     public enum StoreFailure: Error { case osStatus(Int32), notPersisted, notRemoved([String]) }
     public enum Kind: Sendable { case initiator, mutual }
-    public static func store(_ secret: String, for targetID: String,
+    public static func store(_ secret: String, for targetID: String, owner: uid_t,
                              kind: Kind = .initiator) throws {}
-    public static func chapSecret(for targetID: String, kind: Kind = .initiator) -> String? { nil }
-    public static func deleteCHAPSecret(for targetID: String, kind: Kind = .initiator) throws {}
-    public static func deleteAllSecrets(for targetID: String) throws {}
+    public static func chapSecret(for targetID: String, owner: uid_t,
+                                  kind: Kind = .initiator) -> String? { nil }
+    public static func deleteCHAPSecret(for targetID: String, owner: uid_t,
+                                        kind: Kind = .initiator) throws {}
+    public static func deleteAllSecrets(for targetID: String, owner: uid_t) throws {}
+    static func adoptLegacySecrets(for targetID: String, owner: uid_t) throws {}
 }
 #endif

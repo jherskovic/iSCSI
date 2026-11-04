@@ -489,9 +489,10 @@ struct TargetEditor: View {
     /// Address, port, name and unit are what a mounted volume is found by
     /// (`MountpointTag`): changed under an attached target, the app loses the
     /// volume, and the next attach is a second writer on the same disk. So
-    /// they are fixed while this target is attached here or has a session —
-    /// another account's attach, which an edit here would orphan just the
-    /// same. `AppModel.save` enforces the same rule.
+    /// they are fixed while this target is attached here or has a session: an
+    /// attach still connecting, which an edit would orphan just the same, or
+    /// another account's, which the app cannot tell from one. `AppModel.save`
+    /// enforces the same rule.
     private var identityLocked: Bool {
         guard let existing, let row = model.rows.first(where: { $0.id == existing.id }) else {
             return false
