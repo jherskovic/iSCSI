@@ -225,8 +225,10 @@ uid decides whether any login works). Use the SIP-on VM, with a second account.
    directory and `users/<uid>/targets.json` exists, 0600 in a 0700 directory.
 2. **Extension uid.** With a volume attached, `ps -o uid=,comm= -p <pid>` on
    the extension shows the account, not root or a service uid.
-3. **Isolation.** Open the app in the second account: the list is empty, and
-   `mount -F` of the first account's target is refused with "No saved target".
+3. **Isolation.** Detach first: on 26.x a second account's Setup is refused
+   while anything is mounted through FSKit (`docs/open-questions.md` item 14).
+   Open the app in the second account: the list is empty, and `mount -F` of the
+   first account's target is refused with "No saved target".
 4. **Same target twice.** Add the same target in the second account with the
    first still attached: attach is refused as in use elsewhere, not double-mounted.
 5. **Uninstall.** From the second account, the step reports that another
