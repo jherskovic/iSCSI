@@ -265,6 +265,14 @@ until something makes one.
 6. **Uninstall.** Enter the password instead: the link goes, and `/usr/local/bin`
    stays, since nothing records who made it.
 
+First run 2026-11-04, 26.7.2. With no link, Setup read Ready with no "!", Cancel
+changed nothing, and the dialog reads well under its "osascript" heading. Add
+on 53.3 made `/usr/local/bin` 755 `root:wheel`, and `third` ran a real `nvme
+discover` through the link. A process started through it satisfies the daemon's
+code requirement, because the kernel identifies it by its real path in the
+bundle. The link outlived 53.4 replacing the bundle, by hand, so a Sparkle
+update is not yet run. Steps 4 to 6 are not yet run.
+
 ## Fuzzing
 
 `scripts/fuzz.sh [seconds]` builds `pdu-fuzz` with AddressSanitizer and runs a
