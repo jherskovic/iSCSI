@@ -18,7 +18,7 @@ struct NVMe: AsyncParsableCommand {
     /// Assembled for the same reason as `ISCSICtl.enabledSubcommands`.
     static var enabledSubcommands: [any ParsableCommand.Type] {
         var commands: [any ParsableCommand.Type] =
-            [NVMeAdd.self, NVMeDiscover.self, NVMeVerify.self, NVMeReadBench.self, NVMeCacheBench.self]
+            [NVMeAdd.self, NVMeAttach.self, NVMeDiscover.self, NVMeVerify.self, NVMeReadBench.self, NVMeCacheBench.self]
         #if ISCSICTL_DESTRUCTIVE
         commands.append(NVMeWriteBench.self)
         #endif
