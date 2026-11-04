@@ -25,6 +25,19 @@ func readSecret(file: String?, env: String, label: String) throws -> String {
 // iscsictl — control CLI: protocol operations run directly against a target
 // over TCP as one-shots, independent of the daemon.
 
+// ISCSICTL_DESTRUCTIVE: what writes to a target straight from this process, so the
+// daemon's one-writer check (`DaemonCore.claimedUnits`) never sees it. Only
+// Package.swift defines it. The bundled build is the Xcode target, which does
+// not, so forgetting a setting cannot ship these; release.sh asserts it.
+
+/// What `verify` says after a plain read: naming `--write` in a build without
+/// it would send the reader after a flag that is not there.
+#if ISCSICTL_DESTRUCTIVE
+let verifyReadNote = " (read-only; pass --write to test integrity)"
+#else
+let verifyReadNote = " (read-only)"
+#endif
+
 @main
 struct ISCSICtl: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -36,12 +49,15 @@ struct ISCSICtl: AsyncParsableCommand {
 }
 
 extension ISCSICtl {
-    /// The dext subcommands exist only when Backend B is compiled in, so the
-    /// list is assembled rather than literal — otherwise turning the flag off
-    /// leaves a reference to a type that is no longer there.
+    /// Some subcommands exist only under a compile flag, so the list is
+    /// assembled rather than literal — otherwise turning a flag off leaves a
+    /// reference to a type that is no longer there.
     static var enabledSubcommands: [any ParsableCommand.Type] {
         var commands: [any ParsableCommand.Type] =
-            [Discover.self, Verify.self, ReadBench.self, WriteBench.self, Wipe.self, NVMe.self]
+            [Discover.self, Verify.self, ReadBench.self, NVMe.self]
+        #if ISCSICTL_DESTRUCTIVE
+        commands += [WriteBench.self, Wipe.self]
+        #endif
         #if ISCSI_BACKEND_B
         commands += [DextAttach.self, DextStatsCommand.self]
         #endif
@@ -207,9 +223,15 @@ struct Discover: AsyncParsableCommand {
 // MARK: verify
 
 struct Verify: AsyncParsableCommand {
+    #if ISCSICTL_DESTRUCTIVE
     static let configuration = CommandConfiguration(
         abstract: "Log in and run a read/write/verify sweep against a scratch LUN. DESTRUCTIVE."
     )
+    #else
+    static let configuration = CommandConfiguration(
+        abstract: "Log in and read from a LUN."
+    )
+    #endif
 
     @OptionGroup var options: GlobalOptions
 
@@ -219,10 +241,12 @@ struct Verify: AsyncParsableCommand {
     @Option(help: "LUN number.")
     var lun: UInt64 = 0
 
+    #if ISCSICTL_DESTRUCTIVE
     @Flag(help: "Also write (DESTRUCTIVE — only use a scratch LUN).")
     var write = false
+    #endif
 
-    @Option(help: "Starting LBA for the write/verify sweep.")
+    @Option(help: "Starting LBA.")
     var lba: UInt64 = 0
 
     @Option(help: "Number of blocks per I/O.")
@@ -250,8 +274,8 @@ struct Verify: AsyncParsableCommand {
             lun: lunAddress, cdb: CDB.inquiry(), direction: .read(expectedLength: 96)
         ))
         if inquiry.data.count >= 32 {
-            let vendor = String(data: inquiry.data.sub(8, 8), encoding: .ascii) ?? "?"
-            let product = String(data: inquiry.data.sub(16, 16), encoding: .ascii) ?? "?"
+            let vendor = String(data: inquiry.data.dropFirst(8).prefix(8), encoding: .ascii) ?? "?"
+            let product = String(data: inquiry.data.dropFirst(16).prefix(16), encoding: .ascii) ?? "?"
             print("  INQUIRY: \(vendor.trimmingCharacters(in: .whitespaces)) / \(product.trimmingCharacters(in: .whitespaces))")
         }
 
@@ -275,6 +299,13 @@ struct Verify: AsyncParsableCommand {
         print("  CAPACITY: \(blockCount) blocks × \(blockSize) bytes = \(blockCount * UInt64(blockSize) / 1_048_576) MiB")
 
         let byteCount = Int(blocks) * Int(blockSize)
+        func readBlocks() async throws {
+            let readback = try await connection.executeChecked(SCSITask(
+                lun: lunAddress, cdb: CDB.read16(lba: lba, blocks: blocks), direction: .read(expectedLength: UInt32(byteCount))
+            ))
+            print("  READ: \(readback.data.count) bytes at LBA \(lba)\(verifyReadNote)")
+        }
+        #if ISCSICTL_DESTRUCTIVE
         if write {
             let pattern = Data((0 ..< byteCount).map { UInt8(($0 &* 0x9E) & 0xFF) })
             let w = try await connection.executeChecked(SCSITask(
@@ -292,11 +323,11 @@ struct Verify: AsyncParsableCommand {
                 throw ExitCode(1)
             }
         } else {
-            let readback = try await connection.executeChecked(SCSITask(
-                lun: lunAddress, cdb: CDB.read16(lba: lba, blocks: blocks), direction: .read(expectedLength: UInt32(byteCount))
-            ))
-            print("  READ: \(readback.data.count) bytes at LBA \(lba) (read-only; pass --write to test integrity)")
+            try await readBlocks()
         }
+        #else
+        try await readBlocks()
+        #endif
 
         _ = try await connection.logout()
         print("Logged out.")
@@ -306,6 +337,7 @@ struct Verify: AsyncParsableCommand {
     }
 }
 
+#if ISCSICTL_DESTRUCTIVE
 // MARK: wipe
 
 /// Raw sequential I/O straight over iSCSI — no FSKit, no DiskImages, no
@@ -400,6 +432,7 @@ struct WriteBench: AsyncParsableCommand {
         #endif
     }
 }
+#endif // ISCSICTL_DESTRUCTIVE
 
 struct ReadBench: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -523,6 +556,7 @@ struct ReadBench: AsyncParsableCommand {
     }
 }
 
+#if ISCSICTL_DESTRUCTIVE
 struct Wipe: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Zero the partition-table regions of a scratch LUN so macOS sees a blank disk. DESTRUCTIVE."
@@ -613,6 +647,7 @@ struct Wipe: AsyncParsableCommand {
         #endif
     }
 }
+#endif // ISCSICTL_DESTRUCTIVE
 
 // MARK: dext-attach
 

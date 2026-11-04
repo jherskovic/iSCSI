@@ -77,7 +77,7 @@ clone named `iSCSI` and copy the `.pbxproj` back — the diff should then be
 exactly the lines you meant to change.
 
 Two schemes. **iSCSI Initiator** is what ships (app + FSKit extension +
-`iscsid` inside the bundle). **iSCSIDext-dev** builds the parked DriverKit
+`iscsid` and `iscsictl` inside the bundle). **iSCSIDext-dev** builds the parked DriverKit
 extension alone, for a SIP-off machine.
 
 The app builds against the macOS 27 SDK with a macOS 26.0 deployment target,
@@ -189,6 +189,14 @@ LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Bac
   bootstrap namespace, so every call returns `-25291` and no secret was ever
   stored. Naming a file keychain costs one deprecation warning on
   `SecKeychainOpen`, which is deliberate — see `KeychainStore.swift`.
+- **`iscsictl` ships in the bundle, without what writes to a target directly.**
+  `wipe`, both `write-bench`s and `--write` on both `verify`s connect straight
+  from the CLI, so the daemon's one-writer check never sees them. They compile
+  only under `ISCSICTL_DESTRUCTIVE`, which `Package.swift` defines and the Xcode
+  target does not, so `swift run` keeps them and the safe build is the default.
+  `release.sh` asserts that, and the signing identifier the daemon's allowlist
+  matches on: a tool gets one from an Info.plist embedded in the binary, and
+  `PRODUCT_BUNDLE_IDENTIFIER` alone does nothing.
 - **Mutual CHAP is implemented but switched off** at `CHAP.mutualIsOffered`.
   The blocker is target-side; `docs/open-questions.md` item 3a has the evidence.
 - **The attach path is unprivileged and lives in the app, not the daemon.**

@@ -28,6 +28,12 @@ packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     exactVersion: 2.10.1
+  # For `iscsictl`. The local package depends on it too, but an Xcode target can
+  # link only a product of a package this project names. Exact for the reason
+  # Sparkle is, and the version Package.resolved pins.
+  swift-argument-parser:
+    url: https://github.com/apple/swift-argument-parser
+    exactVersion: 1.8.2
 
 settings:
   base:
@@ -95,6 +101,11 @@ targets:
         embed: true
         copy:
           destination: executables
+      # Contents/MacOS/iscsictl, in the bundle for the same reasons.
+      - target: iscsictl
+        embed: true
+        copy:
+          destination: executables
       - target: DockTilePlugin
         embed: true
         copy:
@@ -144,6 +155,39 @@ targets:
         # ("one {}" is an empty list of applicable methods). The daemon still
         # reaches the bundle through the Embed phase on iSCSIApp; it just must
         # not also be installed as a top-level product of the archive.
+        SKIP_INSTALL: YES
+
+  # ---- The command-line tool ----
+  # Built like the daemon, so that one archive signs and notarizes it with
+  # everything else. It compiles without ISCSICTL_DESTRUCTIVE, which only
+  # Package.swift defines: the commands that write to a target directly stay in
+  # `swift run` and out of the bundle.
+  iscsictl:
+    type: tool
+    platform: macOS
+    sources:
+      - ../Sources/iscsictl
+    dependencies:
+      - package: iSCSI
+        product: iSCSIKit
+      - package: iSCSI
+        product: NVMeKit
+      - package: iSCSI
+        product: iSCSIDaemonKit
+      - package: swift-argument-parser
+        product: ArgumentParser
+    settings:
+      base:
+        PRODUCT_NAME: iscsictl
+        # A tool's signing identifier comes from an Info.plist embedded in the
+        # binary. PRODUCT_BUNDLE_IDENTIFIER alone does nothing: the daemon has
+        # one and signs as plain `iscsid`. It matters here because the daemon's
+        # allowlist matches on it; release.sh asserts the result.
+        PRODUCT_BUNDLE_IDENTIFIER: me.herko.iSCSIInitiator.iscsictl
+        GENERATE_INFOPLIST_FILE: YES
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        # As for the daemon: a second top-level product breaks -exportArchive.
         SKIP_INSTALL: YES
 
   # ---- DriverKit extension (Backend B): virtual SCSI HBA ----

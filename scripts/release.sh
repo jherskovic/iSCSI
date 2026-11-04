@@ -376,6 +376,27 @@ It would accept a connection from any process on the machine. Archive Release."
 fi
 echo "  ok  iscsid has no DEBUG authorization bypass"
 
+CTL="$APP/Contents/MacOS/iscsictl"
+[ -x "$CTL" ] || die "the command-line tool is missing from $CTL"
+
+# The daemon's allowlist matches on this identifier. A wrong one builds, signs
+# and notarizes without complaint, and every XPC call then fails at runtime.
+CTL_ID=$(codesign -dv "$CTL" 2>&1 | sed -n 's/^Identifier=//p')
+[ "$CTL_ID" = "me.herko.iSCSIInitiator.iscsictl" ] \
+    || die "iscsictl signs as '$CTL_ID'. Check CREATE_INFOPLIST_SECTION_IN_BINARY
+in apps/project.yml: without an embedded Info.plist a tool signs as its file name."
+echo "  ok  iscsictl signs as $CTL_ID"
+
+# wipe, write-bench and verify --write reach the target directly, past the
+# daemon's one-writer check. They are for `swift run`, never for the bundle.
+for marker in DESTRUCTIVE write-bench "pass --write"; do
+    if binary_contains "$CTL" "$marker"; then
+        die "iscsictl contains \"$marker\": a destructive command is in the bundle.
+ISCSICTL_DESTRUCTIVE must stay out of the Xcode target."
+    fi
+done
+echo "  ok  iscsictl has no destructive commands"
+
 # The DMG filename comes from project.yml; the bundle's version comes from its
 # Info.plist. Nothing tied them together, and for two releases they disagreed —
 # "iSCSI Initiator-0.1.2.dmg" contained an app reporting 0.1.0, because the

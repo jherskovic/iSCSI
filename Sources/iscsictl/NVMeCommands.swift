@@ -12,9 +12,18 @@ struct NVMe: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "nvme",
         abstract: "NVMe/TCP operations against a subsystem: discover, verify, read-bench, cache-bench.",
-        subcommands: [NVMeDiscover.self, NVMeVerify.self, NVMeReadBench.self, NVMeWriteBench.self,
-                      NVMeCacheBench.self]
+        subcommands: enabledSubcommands
     )
+
+    /// Assembled for the same reason as `ISCSICtl.enabledSubcommands`.
+    static var enabledSubcommands: [any ParsableCommand.Type] {
+        var commands: [any ParsableCommand.Type] =
+            [NVMeDiscover.self, NVMeVerify.self, NVMeReadBench.self, NVMeCacheBench.self]
+        #if ISCSICTL_DESTRUCTIVE
+        commands.append(NVMeWriteBench.self)
+        #endif
+        return commands
+    }
 }
 
 struct NVMeOptions: ParsableArguments {
@@ -103,10 +112,17 @@ struct NVMeDiscover: AsyncParsableCommand {
 // MARK: verify
 
 struct NVMeVerify: AsyncParsableCommand {
+    #if ISCSICTL_DESTRUCTIVE
     static let configuration = CommandConfiguration(
         commandName: "verify",
         abstract: "Connect, identify, and run a read (or read/write/verify with --write) against a namespace. --write is DESTRUCTIVE."
     )
+    #else
+    static let configuration = CommandConfiguration(
+        commandName: "verify",
+        abstract: "Connect, identify, and read from a namespace."
+    )
+    #endif
 
     @OptionGroup var options: NVMeOptions
 
@@ -116,13 +132,15 @@ struct NVMeVerify: AsyncParsableCommand {
     @Option(help: "Namespace ID.")
     var nsid: UInt32 = 1
 
+    #if ISCSICTL_DESTRUCTIVE
     @Flag(help: "Also write (DESTRUCTIVE — only use a scratch namespace).")
     var write = false
+    #endif
 
     @Flag(help: "Hex-dump the blocks read (read-only inspection of what is on the namespace).")
     var dump = false
 
-    @Option(help: "Starting LBA for the write/verify sweep.")
+    @Option(help: "Starting LBA.")
     var lba: UInt64 = 0
 
     @Option(help: "Number of blocks per I/O.")
@@ -150,6 +168,12 @@ struct NVMeVerify: AsyncParsableCommand {
 
         let byteCount = Int(blocks) * blockSize
         let offset = lba * UInt64(blockSize)
+        func readBlocks() async throws {
+            let readback = try await device.read(offset: offset, length: byteCount)
+            print("  READ: \(readback.count) bytes at LBA \(lba)\(verifyReadNote)")
+            if dump { hexdump(readback, base: offset) }
+        }
+        #if ISCSICTL_DESTRUCTIVE
         if write {
             let pattern = Data((0 ..< byteCount).map { UInt8(($0 &* 0x9E) & 0xFF) })
             try await device.write(offset: offset, data: pattern)
@@ -162,10 +186,11 @@ struct NVMeVerify: AsyncParsableCommand {
                 throw ExitCode(1)
             }
         } else {
-            let readback = try await device.read(offset: offset, length: byteCount)
-            print("  READ: \(readback.count) bytes at LBA \(lba) (read-only; pass --write to test integrity)")
-            if dump { hexdump(readback, base: offset) }
+            try await readBlocks()
         }
+        #else
+        try await readBlocks()
+        #endif
         let started = ContinuousClock.now
         try await controller.logout()
         let shutdown = await controller.shutdownAcknowledged ? "shutdown acknowledged (CSTS.SHST)" : "no shutdown acknowledgement"
@@ -288,6 +313,7 @@ struct NVMeReadBench: AsyncParsableCommand {
     }
 }
 
+#if ISCSICTL_DESTRUCTIVE
 // MARK: write-bench
 
 /// Sequential write throughput over raw NVMe/TCP — the write-side twin of
@@ -388,3 +414,4 @@ struct NVMeWriteBench: AsyncParsableCommand {
         try await controller.logout()
     }
 }
+#endif // ISCSICTL_DESTRUCTIVE
