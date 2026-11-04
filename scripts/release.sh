@@ -414,6 +414,13 @@ Check that its Info.plist uses \$(MARKETING_VERSION) rather than a literal."
 done
 echo "  ok  every bundle reports version $VERSION"
 
+# Not a bundle, so not in the loop above. It reports what is embedded in the
+# binary, and it was a literal 0.1.0 when it first shipped.
+CTL_VERSION=$("$CTL" --version)
+[ "${CTL_VERSION%% *}" = "$VERSION" ] \
+    || die "iscsictl reports version '$CTL_VERSION' but this release is $VERSION."
+echo "  ok  iscsictl reports version $CTL_VERSION"
+
 check_binary() {
     local path="$1" label="$2" out
     [ -e "$path" ] || return 0

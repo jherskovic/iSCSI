@@ -43,12 +43,23 @@ struct ISCSICtl: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "iscsictl",
         abstract: "Control the macOS iSCSI initiator.",
-        version: "0.1.0",
+        version: version,
         subcommands: ISCSICtl.enabledSubcommands
     )
 }
 
 extension ISCSICtl {
+    /// From the Info.plist embedded in the binary, which Xcode fills in with
+    /// the app's version. That is what `Bundle.main` returns whether this runs
+    /// from the bundle or through the link in /usr/local/bin. This was a
+    /// literal, and the first bundled build said 0.1.0. A `swift build` has no
+    /// plist.
+    static var version: String {
+        let info = Bundle.main.infoDictionary
+        guard let version = info?["CFBundleShortVersionString"] as? String else { return "dev" }
+        return "\(version) (\(info?["CFBundleVersion"] as? String ?? "0"))"
+    }
+
     /// Some subcommands exist only under a compile flag, so the list is
     /// assembled rather than literal — otherwise turning a flag off leaves a
     /// reference to a type that is no longer there.
