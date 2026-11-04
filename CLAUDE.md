@@ -174,6 +174,15 @@ LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Bac
   recovery text survive the XPC boundary intact.
 - **`MountpointTag` is `sha256(portal|target|lun)` and is a compatibility
   contract** — changing how it is derived orphans every existing mount.
+- **Targets and CHAP secrets are per account, and the daemon holds them.**
+  `iscsid` picks `users/<uid>/targets.json` and a keychain service per uid from
+  the XPC connection (`UserConfiguration`), so `KeychainStore` calls take a
+  required `owner:`. Secrets need that as much as the list does: clients choose
+  target ids. Do not move the list to `~/Library`; root must not use a path its
+  caller controls. A machine-wide `targets.json` from an earlier release goes to
+  the first ordinary account to use the daemon. That runs per message, never in
+  `shouldAcceptNewConnection`: the code-signing requirement is enforced per
+  message, so an accepted peer is not yet a verified one.
 - **CHAP secrets live in the System keychain, and must.** The data-protection
   keychain (`kSecUseDataProtectionKeychain`) is served by `secd`, a per-user
   agent; `iscsid` is a system-domain LaunchDaemon with no such service in its

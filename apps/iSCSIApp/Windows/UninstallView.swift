@@ -66,7 +66,7 @@ struct UninstallView: View {
             Label("Volumes are unmounted first, and nothing is forced. "
                   + "If something is using a volume, removal stops and says so.",
                   systemImage: "eject")
-            Label("Saved targets and stored passwords are deleted.",
+            Label("This account's saved targets and stored passwords are deleted.",
                   systemImage: "key")
             Label("The background service is unregistered and the filesystem "
                   + "extension is turned off.", systemImage: "gearshape")

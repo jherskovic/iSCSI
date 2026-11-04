@@ -488,15 +488,32 @@ Still open, in cost order:
   anything was mounted. The first attempt, the other way round, was not a
   test: `another`'s first Setup restarted fskitd (item 14), which took
   `herko`'s volume down before `another` attached.
-- **Who may use the daemon** (S-01 in `docs/security-review-2026-11.md`, deferred). The daemon
-  checks the calling app's signature, not the calling user, and the target
-  list and secrets are machine-wide. On a Mac with more than one account any
-  account can attach, edit or delete every target and use its saved secret.
-  The double-attach half is closed above; the rest needs a decision on
-  whether shared Macs are supported. If they are: an optional owner on each
-  record (old `targets.json` must still decode), the caller's UID from the
-  connection, admin authorization for configuration changes and
-  `removeAllData`, and a narrower interface for the extension.
+- **Who may use the daemon** (S-01 in `docs/security-review-2026-11.md`,
+  settled 2026-11-04). Shared Macs are supported, and configuration is per
+  account: `users/<uid>/targets.json` under the daemon's directory, and a
+  keychain service per uid, chosen from the XPC connection. The file's path
+  carries the owner, so `TargetRecord` needed no new key, and a change to
+  your own configuration needs no admin. Decided with it:
+  - **Not `~/Library`.** Login resolves against this list, and root must not
+    read or write a path its caller controls. Moving it to the app would also
+    move the login model and the secrets out of the daemon.
+  - **Secrets had to move too.** Clients choose target ids, so with only the
+    list per account, one account could save a record with another's id and
+    spend that secret.
+  - **Upgrade: the first account to use the daemon adopts everything.** On a
+    shared Mac the others start empty and re-add their targets, and a second
+    account's mounted volume cannot recover if the first to connect after the
+    update is not its owner. Adopting per message rather than per connection
+    matters: the code-signing requirement is not checked until a message, so
+    at accept time an unsigned process could claim the list.
+  - **Uninstall removes only the caller's data.** The daemon is unregistered
+    for everyone, as before, so other accounts' files and keychain items stay
+    until a reinstall or an admin removes them. The step says so.
+
+  Still machine-wide, on purpose: one filesystem session per unit
+  (`DaemonCore.claimedUnits`), the host's iSCSI and NVMe identities, and
+  `listSessionsDetailed`, which shows no more than the world-readable mount
+  table. Not done: the narrower interface for the extension.
 
 - **Tailscale failure modes.** A `newfs_hfs` over Tailscale blocked ~4 minutes
   in uninterruptible wait. Explicitly parked. The wedge fixes in 0.3.6 —

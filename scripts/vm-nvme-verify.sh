@@ -12,7 +12,7 @@
 #
 # Preconditions (see docs/test-playbook.md): the app installed and its FSKit
 # module enabled, the daemon registered, passwordless sudo, and the records
-# for both targets in targets.json — this script edits the sim record's
+# for both targets in this account's targets.json — this script edits the sim record's
 # flush policy in place and removes it at the end. First run on 2026-09-01:
 # A passed; B1 lost 0 of 0 cached blocks and verified 32/32; B2 lost 9192
 # blocks and the volume was gone.
@@ -25,7 +25,7 @@ mkdir -p ~/logs
 NAS=${NAS:-192.168.20.1:4420}
 NAS_NQN=${NAS_NQN:-nqn.2011-06.com.truenas:uuid:75ca6aa3-69fd-44e5-8269-8722b52845d0:name-testing}
 SIM_NQN=nqn.2026-08.me.herko.sim:disk0
-TARGETS="/Library/Application Support/me.herko.iSCSIInitiator/targets.json"
+TARGETS="/Library/Application Support/me.herko.iSCSIInitiator/users/$(id -u)/targets.json"
 CACHE=~/Library/Caches/me.herko.iSCSIInitiator
 
 run() {  # run <secs> <label> <cmd...>: bounded, prints LABEL-OK / LABEL-FAILED / LABEL-BLOCKED
@@ -108,8 +108,8 @@ detach
 
 echo "=== B2. negative control: flushIntervalSeconds 0 (never), same sequence"
 sudo python3 - <<'PY'
-import json
-p="/Library/Application Support/me.herko.iSCSIInitiator/targets.json"
+import json, os
+p=f"/Library/Application Support/me.herko.iSCSIInitiator/users/{os.environ['SUDO_UID']}/targets.json"
 r=json.load(open(p))
 for t in r:
     if t["host"]=="127.0.0.1": t["flushIntervalSeconds"]=0
@@ -132,8 +132,8 @@ detach
 echo "=== cleanup"
 printf 'quit\n' | nc -w 3 127.0.0.1 3262 >/dev/null 2>&1; sleep 1; kill $SIMPID 2>/dev/null
 sudo python3 - <<'PY'
-import json
-p="/Library/Application Support/me.herko.iSCSIInitiator/targets.json"
+import json, os
+p=f"/Library/Application Support/me.herko.iSCSIInitiator/users/{os.environ['SUDO_UID']}/targets.json"
 r=[t for t in json.load(open(p)) if t["host"]!="127.0.0.1"]
 json.dump(r,open(p,"w"),indent=1)
 PY

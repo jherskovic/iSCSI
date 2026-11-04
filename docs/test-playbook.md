@@ -212,6 +212,37 @@ For two accounts, finish the second account's Setup **before** attaching
 anything in the first. Its FSKit enablement restarts fskitd, which disconnects
 every account's volumes (`docs/open-questions.md` item 14).
 
+## Per-account configuration (2026-11-04)
+
+`UserConfigurationTests` covers isolation, adoption and removal, with the
+account passed in. These need a real Mac, because only a real connection has
+a real uid, and macOS 26 has to be checked separately from 27 (the extension's
+uid decides whether any login works). Use the SIP-on VM, with a second account.
+
+1. **Upgrade.** Install over a build with saved targets, one using CHAP. Open
+   the app in the first account: the list is intact, and attach works without
+   re-entering the secret. As root, `targets.json` is gone from the daemon's
+   directory and `users/<uid>/targets.json` exists, 0600 in a 0700 directory.
+2. **Extension uid.** With a volume attached, `ps -o uid=,comm= -p <pid>` on
+   the extension shows the account, not root or a service uid.
+3. **Isolation.** Detach first: on 26.x a second account's Setup is refused
+   while anything is mounted through FSKit (`docs/open-questions.md` item 14).
+   Open the app in the second account: the list is empty, and `mount -F` of the
+   first account's target is refused with "No saved target".
+4. **Same target twice.** Add the same target in the second account with the
+   first still attached: attach is refused as in use elsewhere, not double-mounted.
+5. **Uninstall.** From the second account, the step reports that another
+   account's saved targets were kept, and the first account's file is untouched.
+
+First run 2026-11-04, build 53.1 on 26.7.2, accounts `herko` and `third`: all
+five passed, with the old state seeded by hand. Then a real upgrade: the
+published 0.9.0 wrote the CHAP secret, and 53.1 installed over it adopted both
+targets and logged in to a simulator that accepts only that secret, with the
+extension at uid 501. The item's access list names a code requirement for
+`iscsid`, not one binary, which is why a newer daemon can read it. The bundle
+was replaced by hand, so a Sparkle update is not yet run, and neither is 53.1
+on 27.
+
 ## Fuzzing
 
 `scripts/fuzz.sh [seconds]` builds `pdu-fuzz` with AddressSanitizer and runs a

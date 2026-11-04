@@ -141,7 +141,7 @@ struct XPCServiceTests {
             $0.chapUser = "initiator-user"
             $0.mutualChapUser = "peer-user"      // named, with no secret stored
         }
-        try KeychainStore.store("initiator-secret-long", for: record.id, kind: .initiator)
+        try KeychainStore.store("initiator-secret-long", for: record.id, owner: testOwner, kind: .initiator)
 
         let service = ISCSIXPCService(core: core, targets: store)
         let (handle, error) = await loginResult(service)

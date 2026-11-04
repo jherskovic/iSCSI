@@ -123,6 +123,7 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func removeAllData(reply: @escaping (Error?) -> Void) { reply(nil) }
+    func otherAccountsWithData(reply: @escaping (NSNumber) -> Void) { reply(0) }
     func discoverTargets(host: String, port: NSNumber, chapUser: String?,
                          chapSecret: String?, interfaceName: String?, interfaceFallback: Bool,
                          reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }

@@ -22,10 +22,10 @@ import Foundation
     ///
     /// The portal identifies a target the daemon **already has on file**; there
     /// is deliberately no credential parameter. The daemon resolves
-    /// (host, port, targetIQN, lun) against its own `TargetStore` and takes the
-    /// CHAP identity from that record, so a client can neither choose which
-    /// stored secret is used nor point one at a portal the user never
-    /// configured. A portal with no matching record is refused.
+    /// (host, port, targetIQN, lun) against the calling account's `TargetStore`
+    /// and takes the CHAP identity from that record, so a client can neither
+    /// choose which stored secret is used nor point one at a portal the user
+    /// never configured. A portal with no matching record is refused.
     ///
     /// No username or id parameter: a client-supplied lookup key either misses
     /// (silent downgrade to `AuthMethod=None`) or lets a client spend any
@@ -175,11 +175,16 @@ import Foundation
                    interfaceName: String?, interfaceFallback: Bool,
                    reply: @escaping (Data?, Error?) -> Void)
 
-    /// Delete everything the daemon owns: targets file, its directory, every
-    /// stored CHAP secret. Must run while the daemon still exists — the
-    /// secrets live in *its* keychain context and are unreachable after
-    /// unregistration.
+    /// Delete everything the daemon holds for the calling account: its targets
+    /// and their stored CHAP secrets. Other accounts' are not touched. Must run
+    /// while the daemon still exists — the secrets live in *its* keychain
+    /// context and are unreachable after unregistration.
     func removeAllData(reply: @escaping (Error?) -> Void)
+
+    /// How many other accounts on this Mac have saved targets, so Uninstall can
+    /// say it left them. A count and nothing more: accounts cannot see each
+    /// other's configuration.
+    func otherAccountsWithData(reply: @escaping (NSNumber) -> Void)
 }
 
 /// The Mach service name the daemon registers and clients connect to.

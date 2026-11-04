@@ -15,7 +15,24 @@ private struct SendableBox<T>: @unchecked Sendable {
 public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     private let core: DaemonCore
 
-    private let targets: TargetStore
+    /// The account on the other end, from the connection and never the caller.
+    private let account: UserConfiguration
+    private let adoption: LegacyConfigurationAdoption
+    private let store: TargetStore
+
+    /// This account's targets. Reading this or `owner` runs any pending
+    /// adoption first, so every path to configuration or a secret sees it
+    /// finished, and only once a call has passed the code-signing requirement.
+    private var targets: TargetStore {
+        adoption.adoptIfNeeded(by: account.uid)
+        return store
+    }
+
+    /// Whose secrets this connection reaches.
+    private var owner: uid_t {
+        adoption.adoptIfNeeded(by: account.uid)
+        return account.uid
+    }
 
     /// Handles created on *this* connection. DaemonCore's registry is one
     /// flat namespace shared by every client, so without this check any
@@ -24,9 +41,12 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     /// consulted on every read/write, per-connection so contention is nil.
     private let owned = OSAllocatedUnfairLock(initialState: Set<String>())
 
-    public init(core: DaemonCore, targets: TargetStore = TargetStore()) {
+    public init(core: DaemonCore, account: UserConfiguration,
+                adoption: LegacyConfigurationAdoption, targets: TargetStore? = nil) {
         self.core = core
-        self.targets = targets
+        self.account = account
+        self.adoption = adoption
+        self.store = targets ?? TargetStore(url: account.targetsURL)
     }
 
     /// Readahead budget and local cache size per owned handle, resolved once
@@ -92,7 +112,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         guard let user = record.chapUser, !user.isEmpty else {
             return (record, nil)   // deliberately unauthenticated: the user configured no CHAP
         }
-        guard let secret = KeychainStore.chapSecret(for: record.id) else {
+        guard let secret = KeychainStore.chapSecret(for: record.id, owner: owner) else {
             throw DaemonAuthError.secretMissing(user: user, target: record.displayName)
         }
         var chap = CHAP.Credentials(name: user, secret: secret)
@@ -101,7 +121,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         // CHAP.mutualIsOffered (see the note there); the record and keychain
         // item are left intact so re-enabling the flag restores the setup.
         if CHAP.mutualIsOffered, let mutualUser = record.mutualChapUser, !mutualUser.isEmpty {
-            guard let mutualSecret = KeychainStore.chapSecret(for: record.id, kind: .mutual) else {
+            guard let mutualSecret = KeychainStore.chapSecret(for: record.id, owner: owner,
+                                                               kind: .mutual) else {
                 throw DaemonAuthError.mutualSecretMissing(user: mutualUser,
                                                           target: record.displayName)
             }
@@ -366,7 +387,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 // Secrets first, so a refusal leaves the record in place and
                 // the removal can be retried; the other order lost the only
                 // pointer to an item the keychain would not delete.
-                try KeychainStore.deleteAllSecrets(for: id)
+                try KeychainStore.deleteAllSecrets(for: id, owner: owner)
                 try await targets.delete(id: id)
                 box.value(nil)
             } catch {
@@ -378,13 +399,13 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     // MARK: - Credentials
 
     public func setCHAPSecret(targetID: String, secret: String, reply: @escaping (Error?) -> Void) {
-        reply(Self.storeSecret(secret, for: targetID, kind: .initiator,
+        reply(Self.storeSecret(secret, for: targetID, owner: owner, kind: .initiator,
                                context: "Saving the CHAP secret"))
     }
 
     public func deleteCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void) {
         do {
-            try KeychainStore.deleteCHAPSecret(for: targetID)
+            try KeychainStore.deleteCHAPSecret(for: targetID, owner: owner)
             reply(nil)
         } catch {
             reply(ISCSIError.nsError(from: error, context: "Removing the CHAP secret"))
@@ -395,32 +416,32 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     /// status is what says *why* a write was refused, and only an exact
     /// read-back proves the new secret is the one in force — a non-nil
     /// read-back was satisfied by the old secret surviving a failed rotation.
-    static func storeSecret(_ secret: String, for targetID: String,
+    static func storeSecret(_ secret: String, for targetID: String, owner: uid_t,
                             kind: KeychainStore.Kind, context: String) -> Error? {
         do {
-            try KeychainStore.store(secret, for: targetID, kind: kind)
+            try KeychainStore.store(secret, for: targetID, owner: owner, kind: kind)
         } catch {
             return ISCSIError.nsError(from: error, context: context)
         }
-        guard KeychainStore.chapSecret(for: targetID, kind: kind) == secret else {
+        guard KeychainStore.chapSecret(for: targetID, owner: owner, kind: kind) == secret else {
             return ISCSIError.nsError(from: KeychainStore.StoreFailure.notPersisted, context: context)
         }
         return nil
     }
 
     public func hasCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void) {
-        reply(KeychainStore.chapSecret(for: targetID) != nil)
+        reply(KeychainStore.chapSecret(for: targetID, owner: owner) != nil)
     }
 
     public func setMutualCHAPSecret(targetID: String, secret: String,
                                     reply: @escaping (Error?) -> Void) {
-        reply(Self.storeSecret(secret, for: targetID, kind: .mutual,
+        reply(Self.storeSecret(secret, for: targetID, owner: owner, kind: .mutual,
                                context: "Saving the mutual CHAP secret"))
     }
 
     public func deleteMutualCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void) {
         do {
-            try KeychainStore.deleteCHAPSecret(for: targetID, kind: .mutual)
+            try KeychainStore.deleteCHAPSecret(for: targetID, owner: owner, kind: .mutual)
             reply(nil)
         } catch {
             reply(ISCSIError.nsError(from: error, context: "Removing the mutual CHAP secret"))
@@ -428,7 +449,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     }
 
     public func hasMutualCHAPSecret(targetID: String, reply: @escaping (Bool) -> Void) {
-        reply(KeychainStore.chapSecret(for: targetID, kind: .mutual) != nil)
+        reply(KeychainStore.chapSecret(for: targetID, owner: owner, kind: .mutual) != nil)
     }
 
     // MARK: - Discovery and inspection
@@ -580,7 +601,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
             // and running this again can finish the job.
             var refused: [String] = []
             for target in await targets.all() {
-                do { try KeychainStore.deleteAllSecrets(for: target.id) }
+                do { try KeychainStore.deleteAllSecrets(for: target.id, owner: owner) }
                 catch { refused.append("\(target.displayName): \(error.localizedDescription)") }
             }
             guard refused.isEmpty else {
@@ -592,16 +613,17 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 return
             }
             do {
-                let directory = TargetStore.defaultURL.deletingLastPathComponent()
-                if FileManager.default.fileExists(atPath: directory.path) {
-                    try FileManager.default.removeItem(at: directory)
-                }
-                DaemonLog.lifecycle("removeAllData: cleared \(directory.path)")
+                try account.remove()
+                DaemonLog.lifecycle("removeAllData: cleared \(account.directory.path)")
                 box.value(nil)
             } catch {
                 box.value(ISCSIError.nsError(from: error, context: "Removing saved data"))
             }
         }
+    }
+
+    public func otherAccountsWithData(reply: @escaping (NSNumber) -> Void) {
+        reply(NSNumber(value: account.otherAccountsWithTargets()))
     }
 
     public func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void) {
@@ -616,9 +638,13 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 /// XPC listener delegate that hands each connection an ISCSIXPCService.
 public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let core: DaemonCore
+    private let root: ConfigurationRoot
+    private let adoption: LegacyConfigurationAdoption
 
-    public init(core: DaemonCore) {
+    public init(core: DaemonCore, root: ConfigurationRoot = .system) {
         self.core = core
+        self.root = root
+        self.adoption = LegacyConfigurationAdoption(root: root)
     }
 
     public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
@@ -627,7 +653,12 @@ public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unch
         guard ClientAuthorization.authorize(connection) else { return false }
 
         let iface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
-        let service = ISCSIXPCService(core: core)
+        // The kernel's record of the peer, which a client cannot influence.
+        // Reading it is all that happens here: anything with an effect waits
+        // for a message that has passed the requirement above.
+        let service = ISCSIXPCService(core: core,
+                                      account: root.account(connection.effectiveUserIdentifier),
+                                      adoption: adoption)
         connection.exportedInterface = iface
         connection.exportedObject = service
         // A dead peer surfaces here as invalidation; release its sessions so a

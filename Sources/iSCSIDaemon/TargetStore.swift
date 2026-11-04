@@ -2,8 +2,8 @@
 //  TargetStore.swift
 //  Where configured targets live.
 //
-//  Daemon-side rather than app-side: a boot-time auto-attach must read this
-//  before anyone logs in, and an app's container is not readable then.
+//  One store per account, at `UserConfiguration.targetsURL`, which says why the
+//  daemon holds them and not the app.
 //
 //  Secrets are NOT here. `TargetRecord` carries a CHAP *username*; the secret
 //  lives in the keychain under the record's id. The file is still 0600 in a
@@ -15,17 +15,10 @@ import Foundation
 import iSCSIKit
 
 public actor TargetStore {
-    /// `/Library/Application Support/...` rather than `~/Library`: root-owned,
-    /// readable before login, and the same file for every user of the machine —
-    /// which matches the fact that the iSCSI session is a machine-level resource,
-    /// not a per-user one.
-    public static let defaultURL = URL(fileURLWithPath:
-        "/Library/Application Support/me.herko.iSCSIInitiator/targets.json")
-
     private let url: URL
     private var cache: [TargetRecord]?
 
-    public init(url: URL = TargetStore.defaultURL) {
+    public init(url: URL) {
         self.url = url
     }
 
@@ -46,12 +39,12 @@ public actor TargetStore {
         var records = all()
         var incoming = record
 
-        if let index = records.firstIndex(where: { $0.id != record.id && isSameTarget($0, record) }) {
+        if let index = records.firstIndex(where: { $0.id != record.id && Self.isSameTarget($0, record) }) {
             incoming.id = records[index].id
             records[index] = incoming
             // Any *other* twins are collapsed too, so a file that already went
             // wrong is repaired the next time it is written rather than kept.
-            records.removeAll { $0.id != incoming.id && isSameTarget($0, incoming) }
+            records.removeAll { $0.id != incoming.id && Self.isSameTarget($0, incoming) }
         } else if let index = records.firstIndex(where: { $0.id == record.id }) {
             records[index] = incoming
         } else {
@@ -85,7 +78,7 @@ public actor TargetStore {
         }
     }
 
-    private func isSameTarget(_ a: TargetRecord, _ b: TargetRecord) -> Bool {
+    static func isSameTarget(_ a: TargetRecord, _ b: TargetRecord) -> Bool {
         a.host.caseInsensitiveCompare(b.host) == .orderedSame
             && a.port == b.port
             && a.targetIQN == b.targetIQN
@@ -103,8 +96,7 @@ public actor TargetStore {
     private func load() -> [TargetRecord] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         do {
-            let data = try Data(contentsOf: url)
-            let records = try JSONDecoder().decode([TargetRecord].self, from: data)
+            let records = try Self.decode(contentsOf: url)
 
             // Retire any `workloadProfile` left by the removed workload
             // picker: nothing can clear one now, and a stale value pins that
@@ -136,6 +128,16 @@ public actor TargetStore {
     }
 
     private func persist(_ records: [TargetRecord]) throws {
+        try Self.write(records, to: url)
+        cache = records
+    }
+
+    static func decode(contentsOf url: URL) throws -> [TargetRecord] {
+        try JSONDecoder().decode([TargetRecord].self, from: Data(contentsOf: url))
+    }
+
+    /// `persist` with no store open, for adoption, which runs before one is.
+    static func write(_ records: [TargetRecord], to url: URL) throws {
         // 0700/0600: nothing unprivileged has any business reading this —
         // every legitimate reader is this daemon or the authenticated XPC
         // channel.
@@ -155,6 +157,5 @@ public actor TargetStore {
         // The atomic write lands a fresh inode with umask permissions; the
         // 0700 directory is what closes that pre-chmod window.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        cache = records
     }
 }
