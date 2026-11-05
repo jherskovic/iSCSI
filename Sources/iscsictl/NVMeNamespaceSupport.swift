@@ -53,6 +53,13 @@ struct NamespaceError: Error, LocalizedError {
 }
 
 func namespaceTargets() throws -> [TargetRecord] {
+    let data = try namespaceRequest { proxy, finish in proxy.listTargets(reply: finish) }
+    return try JSONDecoder().decode([TargetRecord].self, from: data)
+}
+
+func namespaceRequest(
+    _ request: (ISCSIDaemonProtocol, @escaping @Sendable (Data?, Error?) -> Void) throws -> Void
+) throws -> Data {
     let connection = NSXPCConnection(machServiceName: iscsiDaemonServiceName, options: .privileged)
     connection.remoteObjectInterface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
     connection.resume()
@@ -68,9 +75,9 @@ func namespaceTargets() throws -> [TargetRecord] {
     }
     guard let proxy = connection.remoteObjectProxyWithErrorHandler({ finish(nil, $0) }) as? ISCSIDaemonProtocol
     else { throw NamespaceError("Cannot connect to iscsid.") }
-    proxy.listTargets(reply: finish)
+    try request(proxy, finish)
     guard semaphore.wait(timeout: .now() + 30) == .success else { throw NamespaceError("iscsid did not reply.") }
-    return try JSONDecoder().decode([TargetRecord].self, from: result.withLock { try $0!.get() })
+    return try result.withLock { try $0!.get() }
 }
 
 func namespaceMounts() throws -> [MountTableEntry] {
