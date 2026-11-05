@@ -41,11 +41,15 @@ struct NVMeOptions: ParsableArguments {
     @Option(help: "Trace to stderr: 1 = Useful log (connection summary and discovery commands), 2 = Debug log (includes level 1 and protocol PDU fields).")
     var logLevel: LogLevel?
 
+    @Flag(help: .hidden) var debug = false
+
+    private var effectiveLevel: LogLevel? { logLevel ?? (debug ? .debug : nil) }
+
     private static let logTimeFormat = Date.ISO8601FormatStyle(
         timeZoneSeparator: .colon, includingFractionalSeconds: true, timeZone: .current)
 
     func writeLog(_ message: String) {
-        let timestamp = logLevel == nil ? "" : Date.now.formatted(Self.logTimeFormat) + " "
+        let timestamp = effectiveLevel == nil ? "" : Date.now.formatted(Self.logTimeFormat) + " "
         FileHandle.standardError.write(Data((timestamp + message + "\n").utf8))
     }
 
@@ -74,7 +78,7 @@ struct NVMeOptions: ParsableArguments {
         if interface != nil {
             writeLog("connected via \(tcp.connectedPath.interfaceName ?? "an unknown interface")")
         }
-        guard let logLevel else { return tcp }
+        guard let logLevel = effectiveLevel else { return tcp }
         writeLog("Connected to \(host):\(port) over TCP")
         guard discovery || logLevel == .debug else { return tcp }
         return NVMeTracingTransport(tcp, label: host, discovery: discovery, includeWire: logLevel == .debug, sink: writeLog)
