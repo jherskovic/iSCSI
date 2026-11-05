@@ -12,6 +12,7 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
     private var queueID: UInt16 = 0
     private var lastControllerStatus: UInt32?
     private var badDigests: Set<UInt16> = []
+    private var receivedBytes: [UInt16: Int] = [:]
     // Accessed under the trace lock, scoped to this connection.
     private var requests: [UInt16: SQE] = [:]
     private let lock = NSLock()
@@ -132,6 +133,7 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
             return completion(cqe)
         case .c2hData(let data):
             if dataDigestFailed { badDigests.insert(data.cccid) }
+            receivedBytes[data.cccid, default: 0] += data.data.count
             if data.success { return completion(CQE(commandID: data.cccid)) }
             if dataDigestFailed { return "cid=\(data.cccid) data digest mismatch" }
             return nil
@@ -149,6 +151,7 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
 
     private func completion(_ cqe: CQE) -> String? {
         let badDigest = badDigests.remove(cqe.commandID) != nil
+        let received = receivedBytes.removeValue(forKey: cqe.commandID) ?? 0
         guard let sqe = requests.removeValue(forKey: cqe.commandID) else {
             return "Unexpected completion cid=\(cqe.commandID)"
         }
@@ -158,6 +161,11 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
             return prefix + " failed: " + ISCSIError.nsError(from: error).localizedDescription
         }
         if badDigest { return prefix + " failed: data digest mismatch" }
+        // Bits 1:0 of an opcode give its direction; 10b is controller to host.
+        // The queue fails a read that succeeds with bytes missing, so say so.
+        if sqe.opcode & 0x3 == 0x2, received != Int(sqe.sgl.length) {
+            return prefix + " failed: \(received) of \(sqe.sgl.length) bytes delivered"
+        }
         guard sqe.opcode == NVMeOpcode.Admin.fabrics else { return prefix + " ok" }
         switch (sqe.fabricsType, sqe.cdw11) {
         case (FabricsCommandType.connect, _):
@@ -170,6 +178,7 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
             lastControllerStatus = cqe.dw0
             let status = ControllerStatus(raw: cqe.dw0)
             return prefix + " ready=\(status.ready) fatal=\(status.fatal)"
+                + (status.shutdownComplete ? " shutdownComplete=true" : "")
         default:
             return prefix + " ok"
         }
@@ -204,7 +213,10 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
         switch (sqe.fabricsType, sqe.cdw11) {
         case (FabricsCommandType.connect, _): return "Connect queue=\(queueID)"
         case (FabricsCommandType.propertyGet, NVMeProperty.cap): return "Property Get CAP"
-        case (FabricsCommandType.propertySet, NVMeProperty.cc): return "Property Set CC enable=\(sqe.cdw12 & 1)"
+        case (FabricsCommandType.propertySet, NVMeProperty.cc):
+            // A shutdown leaves EN set, so the enable bit alone reads backwards.
+            let shutdown = sqe.cdw12 & NVMeCommands.shutdownNormal != 0 ? " shutdown=normal" : ""
+            return "Property Set CC enable=\(sqe.cdw12 & 1)\(shutdown)"
         case (FabricsCommandType.propertyGet, NVMeProperty.csts): return "Property Get CSTS"
         default: return String(format: "Fabrics command fctype=0x%02x", sqe.fabricsType)
         }
