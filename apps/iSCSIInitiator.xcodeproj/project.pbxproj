@@ -31,6 +31,8 @@
 		4F590EE71717E2236EB91D0D /* NVMeCacheBench.swift in Sources */ = {isa = PBXBuildFile; fileRef = 094D284D70F065B4F6676346 /* NVMeCacheBench.swift */; };
 		55788E1D687E363D11E508DE /* TargetsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A78E2D4EB65C66F2C89DCBF1 /* TargetsView.swift */; };
 		56E053A775D10A0F3E3B5BBF /* SidebarRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEB7014D643231D7883A0AD4 /* SidebarRow.swift */; };
+		59BBE837750FC11DEE78FFEE /* NVMeNamespaceSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08C2ED84B113EB0E1DE3541E /* NVMeNamespaceSupport.swift */; };
+		5B47BCCC68BACE83CDBF2C48 /* NVMeAttach.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73D73A038FFFB8AFC0AA4E74 /* NVMeAttach.swift */; };
 		5D2750BDD476A45989A9568C /* MenuBarLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00EC6380114B4831D7E0A785 /* MenuBarLabel.swift */; };
 		639F557EB39F50C31EEB5B6F /* InterfacePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E320392778744E1F0F1ED49 /* InterfacePicker.swift */; };
 		63DF83BB8A3C38F8726719F4 /* DaemonController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D391D2F85F1E895FFA385D9 /* DaemonController.swift */; };
@@ -48,6 +50,7 @@
 		9FAF8F9B4328CBD250375CA0 /* LastPortal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CFABF815361ED5F578A112C /* LastPortal.swift */; };
 		A58F809922167D0141D7F8D9 /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1F9DA9FC103454545F666E41 /* iSCSIKit */; };
 		A5942087ABDE23B87B1E18A0 /* SetupCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF2DEFBFF72FCC0059FE6E5 /* SetupCoordinator.swift */; };
+		A60F77FFB08E615C4498B729 /* NVMeDetach.swift in Sources */ = {isa = PBXBuildFile; fileRef = 722D60793201CA5A98D3F109 /* NVMeDetach.swift */; };
 		A62AA91BCC64D9EF76D8FB54 /* FSKitSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF1BC41F137227EA4CAFCF0D /* FSKitSteps.swift */; };
 		ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B994EEC4E49C9C783699E6 /* FSKitProbe.swift */; };
 		AF1FD391FC1153FBE7F490E4 /* iSCSIBootstrap.iig in Sources */ = {isa = PBXBuildFile; fileRef = EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */; };
@@ -61,6 +64,7 @@
 		C2FA943143F4A95500BB9317 /* AutoAttacher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24DACD1EADC8A79E88E09803 /* AutoAttacher.swift */; };
 		CCCCC5B27408C33929C740B2 /* DiscoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3071CFD21D92FAF593C1D5E5 /* DiscoveryView.swift */; };
 		D0275F7018B35D408AE1692A /* iSCSIBootstrap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */; };
+		DF998BE959CC4A58F2B959F7 /* NVMeAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7588C38F09BCAA5AE5C6A941 /* NVMeAdd.swift */; };
 		DFEA7DCC0B29AE751ADC8685 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63687E9A8247C4F8AD9C2785 /* AppModel.swift */; };
 		E614E32D2BC3802C587BEB01 /* AttachmentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D00ADBA0B6BA390CD8BA86F /* AttachmentManager.swift */; };
 		E71D3B1A098B46CBAB3D75F8 /* iSCSIUserClient.iig in Sources */ = {isa = PBXBuildFile; fileRef = E2A9410B4B594B4270735046 /* iSCSIUserClient.iig */; };
@@ -155,6 +159,7 @@
 		02251FB6F05C94DD8CC6FA18 /* DockIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = DockIcon.png; sourceTree = "<group>"; };
 		05248BE0BC00DDCB8993C611 /* Uninstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Uninstaller.swift; sourceTree = "<group>"; };
 		0710492659A0FA46BDD2108A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		08C2ED84B113EB0E1DE3541E /* NVMeNamespaceSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVMeNamespaceSupport.swift; sourceTree = "<group>"; };
 		094D284D70F065B4F6676346 /* NVMeCacheBench.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVMeCacheBench.swift; sourceTree = "<group>"; };
 		0C12DB841FAC34082F197B06 /* iSCSIBootstrap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = iSCSIBootstrap.cpp; sourceTree = "<group>"; };
 		0CC1D231F0FFC5DB1C566C42 /* InstallLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallLocation.swift; sourceTree = "<group>"; };
@@ -188,8 +193,11 @@
 		682C40965D9251FC76D1CA54 /* NVMeCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVMeCommands.swift; sourceTree = "<group>"; };
 		6B913BC483648A1C6DE80191 /* iSCSIFSExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iSCSIFSExtension.entitlements; sourceTree = "<group>"; };
 		6D391D2F85F1E895FFA385D9 /* DaemonController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonController.swift; sourceTree = "<group>"; };
+		722D60793201CA5A98D3F109 /* NVMeDetach.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVMeDetach.swift; sourceTree = "<group>"; };
 		723340E094F2D9CBBD1B60F5 /* iSCSI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = iSCSI; path = ..; sourceTree = SOURCE_ROOT; };
+		73D73A038FFFB8AFC0AA4E74 /* NVMeAttach.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVMeAttach.swift; sourceTree = "<group>"; };
 		74EBC031D395B5399FDC5506 /* iSCSIDext.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iSCSIDext.entitlements; sourceTree = "<group>"; };
+		7588C38F09BCAA5AE5C6A941 /* NVMeAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVMeAdd.swift; sourceTree = "<group>"; };
 		8357529A12CBF7C315FFD02E /* CommandLineTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineTool.swift; sourceTree = "<group>"; };
 		89472971AD8F995DD4FCCA0D /* LoginItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItem.swift; sourceTree = "<group>"; };
 		8B7C2E394D634AD1AF184FFC /* MenuBarContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContent.swift; sourceTree = "<group>"; };
@@ -450,8 +458,12 @@
 			isa = PBXGroup;
 			children = (
 				31261B848E0BA82D44404FA6 /* ISCSICtl.swift */,
+				7588C38F09BCAA5AE5C6A941 /* NVMeAdd.swift */,
+				73D73A038FFFB8AFC0AA4E74 /* NVMeAttach.swift */,
 				094D284D70F065B4F6676346 /* NVMeCacheBench.swift */,
 				682C40965D9251FC76D1CA54 /* NVMeCommands.swift */,
+				722D60793201CA5A98D3F109 /* NVMeDetach.swift */,
+				08C2ED84B113EB0E1DE3541E /* NVMeNamespaceSupport.swift */,
 			);
 			path = iscsictl;
 			sourceTree = "<group>";
@@ -690,8 +702,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				FEC36D3F022D78C24D6A4F23 /* ISCSICtl.swift in Sources */,
+				DF998BE959CC4A58F2B959F7 /* NVMeAdd.swift in Sources */,
+				5B47BCCC68BACE83CDBF2C48 /* NVMeAttach.swift in Sources */,
 				4F590EE71717E2236EB91D0D /* NVMeCacheBench.swift in Sources */,
 				860A1C924983E1E680C520D2 /* NVMeCommands.swift in Sources */,
+				A60F77FFB08E615C4498B729 /* NVMeDetach.swift in Sources */,
+				59BBE837750FC11DEE78FFEE /* NVMeNamespaceSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
