@@ -37,6 +37,9 @@ struct NamespaceLifecycleTests {
         ]
         #expect(NamespaceLifecycle.device(in: attached, imagePath: path) == "/dev/disk9")
         #expect(NamespaceLifecycle.device(in: attached, imagePath: "/other/lun0.img") == nil)
+        // A stale entry for the path does not hide a live one behind it.
+        let staleThenLive: [[String: Any]] = [["image-path": path]] + attached
+        #expect(NamespaceLifecycle.device(in: staleThenLive, imagePath: path) == "/dev/disk9")
     }
 
     @Test func attachmentRequiresAtLeastOneLayer() {
