@@ -90,14 +90,7 @@ func namespaceDevice(image: String) throws -> String? {
     let data = try runNamespaceCommand("/usr/bin/hdiutil", ["info", "-plist"], output: Pipe())
     guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
           let images = plist["images"] as? [[String: Any]] else { throw NamespaceError("Cannot read image list.") }
-    for entry in images where entry["image-path"] as? String == image {
-        guard let entities = entry["system-entities"] as? [[String: Any]],
-              let disk = entities.compactMap({ $0["dev-entry"] as? String }).first(where: {
-                  $0.range(of: #"^/dev/disk[0-9]+$"#, options: .regularExpression) != nil
-              }) else { throw NamespaceError("Cannot identify disk for \(image).") }
-        return disk
-    }
-    return nil
+    return NamespaceLifecycle.device(in: images, imagePath: image)
 }
 
 func detachNamespaceDevice(image: String) throws {
