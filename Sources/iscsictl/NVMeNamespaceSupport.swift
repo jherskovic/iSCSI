@@ -107,19 +107,26 @@ func detachNamespaceDevice(image: String) throws {
 }
 
 func unmountNamespace(_ path: String) throws {
-    for attempt in 0..<3 {
+    // After a stalled target's disk goes, the volume stays busy for some
+    // seconds and then comes free, so a refusal is not yet the final answer.
+    // A volume nothing is using unmounts on the first try.
+    let deadline = Date().addingTimeInterval(30)
+    while true {
         guard try namespaceMounts().contains(where: { $0.on == path }) else { return }
-        do { try runNamespaceCommand("/sbin/umount", [path]); return }
+        do { try runNamespaceCommand("/sbin/umount", [path], quiet: true); return }
         catch {
             if try !namespaceMounts().contains(where: { $0.on == path }) { return }
-            if attempt == 2 { throw error }
-            Thread.sleep(forTimeInterval: 0.5)
+            if Date() >= deadline { throw error }
+            Thread.sleep(forTimeInterval: 1)
         }
     }
 }
 
+/// `quiet` keeps the child's stderr off the terminal, for a command that may
+/// be retried, and makes it the message of the error thrown on failure.
 @discardableResult
-func runNamespaceCommand(_ path: String, _ arguments: [String], captureOutput: Bool = false) throws -> Data {
+func runNamespaceCommand(_ path: String, _ arguments: [String], captureOutput: Bool = false,
+                         quiet: Bool = false) throws -> Data {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: path)
     process.arguments = arguments
@@ -129,6 +136,7 @@ func runNamespaceCommand(_ path: String, _ arguments: [String], captureOutput: B
     let handle = try FileHandle(forWritingTo: file)
     defer { try? handle.close(); try? FileManager.default.removeItem(at: file) }
     if captureOutput { process.standardOutput = handle }
+    if quiet { process.standardError = handle }
     try process.run()
     let deadline = Date().addingTimeInterval(60)
     while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
@@ -147,6 +155,10 @@ func runNamespaceCommand(_ path: String, _ arguments: [String], captureOutput: B
         throw NamespaceError("\(path) timed out after 60 seconds. Inspect attachment state before retrying.")
     }
     process.waitUntilExit()
-    guard process.terminationStatus == 0 else { throw NamespaceError("\(path) failed with status \(process.terminationStatus).") }
+    guard process.terminationStatus == 0 else {
+        let said = quiet ? String(decoding: (try? Data(contentsOf: file)) ?? Data(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        throw NamespaceError(said.isEmpty ? "\(path) failed with status \(process.terminationStatus)." : said)
+    }
     return !captureOutput ? Data() : try Data(contentsOf: file)
 }

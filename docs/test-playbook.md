@@ -278,6 +278,39 @@ targets, keychain items, service, extension and caches were gone. With the app
 in the Trash the link dangled, and it worked again, untouched, once 53.4 was
 reinstalled at the same path. Step 4 is not yet run.
 
+## `nvme add`, `attach` and `detach` (2026-11-05)
+
+These need a notarized build, because the daemon checks the signature, and they
+mount things, so they run on the VMs and never on the development host. Start
+`iscsi-target-sim --nvme --capacity-mib 256 --port 14420 --control-port 14421`
+there, and run `iscsictl` as the logged-in account.
+
+1. **Add.** A new target says "Target added". Adding it again says "Target
+   already saved" with its id, and `--name` then warns on stderr.
+2. **Attach.** A fresh attach and a repeat print the same bare `/dev/diskN` on
+   stdout. The backing mount goes to stderr.
+3. **Busy disk.** With something holding the disk open, detach exits 1 at once
+   and all three layers stay.
+4. **Stalled detach.** `printf 'fault stallcommands on\n' | nc -w 1 127.0.0.1
+   14421`, then detach. It exits 0 at about a minute, with no mount, disk or
+   directory left. `clear` ends the stall.
+5. **Stalled attach.** Stall first, then attach. It exits 1 at about 16 s and
+   leaves nothing behind.
+6. **Leftovers.** An empty directory at the mount path is reused. A non-empty one
+   is refused.
+7. **Same namespace, another way.** With it attached, attaching by another
+   address is refused, and so is attaching from another account. That account's
+   detach says it is not attached and touches nothing.
+8. **Wedged extension.** `kill -STOP` the extension, then detach. It exits 1 at
+   about 47 s with the disk gone and the mount up. `kill -CONT`, and detach again
+   cleans up.
+
+All eight passed on 53.8 on 26.7.2 and 27.2, except that 27 has no second account
+for step 7. Step 4 ran four times on each: 60.4 to 61.7 s, every one exit 0. In
+step 8, if the disk has already gone when detach starts, detach blocks in the
+kernel until the thaw instead (seen on 53.5 and 53.7), which the bounded child
+process timeout cannot help with. Simulator only, not yet a NAS.
+
 ## Fuzzing
 
 `scripts/fuzz.sh [seconds]` builds `pdu-fuzz` with AddressSanitizer and runs a

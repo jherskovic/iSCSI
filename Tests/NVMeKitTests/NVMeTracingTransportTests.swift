@@ -48,6 +48,12 @@ private final class TraceSession {
         NVMeCommands.getLogPage(commandID: cid, logID: NVMeLogPage.discovery, offset: offset, length: 4)
     }
 
+    private func connectIOQueue() -> SQE {
+        NVMeCommands.connect(commandID: 1, queueID: 1, queueEntries: 32, keepAliveMS: 0,
+                             hostID: Data(count: 16), controllerID: 1,
+                             subsystemNQN: "nqn.test:disk", hostNQN: "nqn.test").sqe
+    }
+
     @Test func correlatesOutOfOrderResponsesAndDecodes64BitOffset() async throws {
         let session = TraceSession()
         try await session.send(logRead(1))
@@ -91,6 +97,67 @@ private final class TraceSession {
         #expect(session.matching("authentication required").count == 1)
         #expect(session.matching("refused this Mac's host NQN").count == 1)
         #expect(session.matching(" ok").isEmpty)
+    }
+
+    @Test func aShortReadIsNotReportedAsSuccess() async throws {
+        let session = TraceSession()
+        try await session.send(logRead(6))
+        try await session.receive(.c2hData(C2HDataPDU(cccid: 6, dataOffset: 0, data: Data(count: 2),
+                                                      last: true, success: true)))
+        #expect(session.matching("failed: 2 of 4 bytes delivered").count == 1)
+        #expect(session.matching(" ok").isEmpty)
+        // Data split over several PDUs adds up, and the CID starts again from zero.
+        try await session.send(logRead(6))
+        for offset: UInt32 in [0, 2] {
+            try await session.receive(.c2hData(C2HDataPDU(cccid: 6, dataOffset: offset, data: Data(count: 2),
+                                                          last: offset == 2, success: offset == 2)))
+        }
+        #expect(session.matching("length=4B ok").count == 1)
+    }
+
+    @Test func aWriteDeliversNothingAndIsStillOk() async throws {
+        let session = TraceSession()
+        try await session.send(connectIOQueue())
+        try await session.respond(1)
+        let write = NVMeCommands.write(commandID: 2, nsid: 1, slba: 0, blocks: 1, blockSize: 4096, fua: false,
+                                       inCapsule: false)
+        try await session.send(write)
+        try await session.respond(2)
+        #expect(session.matching("Write nsid=1 ok").count == 1)
+    }
+
+    @Test func anIOQueueNamesItsCommands() async throws {
+        let session = TraceSession()
+        try await session.send(connectIOQueue())
+        try await session.respond(1)
+        #expect(session.matching("Connect queue=1").count == 2)
+        // Read is 0x02, the same opcode as Get Log Page on the admin queue.
+        try await session.send(NVMeCommands.read(commandID: 2, nsid: 1, slba: 0, blocks: 1, blockSize: 4096))
+        try await session.send(NVMeCommands.flush(commandID: 3, nsid: 1))
+        #expect(session.matching("→ cid=2 Read nsid=1").count == 1)
+        #expect(session.matching("→ cid=3 Flush nsid=1").count == 1)
+        #expect(session.matching("Discovery").isEmpty)
+    }
+
+    @Test func aShutdownSaysSoAndSoDoesItsCompletion() async throws {
+        let session = TraceSession()
+        let enable = NVMeCommands.controllerConfigurationEnable
+        try await session.send(NVMeCommands.propertySet(commandID: 7, offset: NVMeProperty.cc, value: enable))
+        try await session.respond(7)
+        #expect(session.matching("shutdown=normal").isEmpty)
+        try await session.send(NVMeCommands.propertySet(commandID: 8, offset: NVMeProperty.cc,
+                                                        value: enable | NVMeCommands.shutdownNormal))
+        try await session.respond(8)
+        #expect(session.matching("enable=1 shutdown=normal").count == 2)
+        try await session.send(NVMeCommands.propertyGet(commandID: 9, offset: NVMeProperty.csts, wide: false))
+        try await session.respond(9, dw0: 0x9) // RDY, and SHST 10b: shutdown complete.
+        #expect(session.matching("ready=true fatal=false shutdownComplete=true").count == 1)
+    }
+
+    @Test func aStatusPollIsNotLoggedWhenSent() async throws {
+        let session = TraceSession()
+        try await session.send(NVMeCommands.propertyGet(commandID: 5, offset: NVMeProperty.csts, wide: false))
+        #expect(session.matching("→").isEmpty)
     }
 
     @Test func levelsShowStatusChangesAndDebugAddsWireDetailsOnce() async throws {

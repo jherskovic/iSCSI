@@ -1295,6 +1295,30 @@ Also outstanding: a Feedback report to Apple on `hdiutil`'s CRawDiskImage
 reading its backing file serially, and on DiskImageKit having no attach
 with a block size.
 
+## 18. What holds a volume busy after a stalled target's disk goes (2026-11-05)
+
+With commands stalled, `hdiutil detach` reports error 49157 and the disk goes,
+but `umount` on the backing volume then refuses with `Resource busy` for about
+13 seconds. After that it blocks for 15 to 30 seconds and succeeds, with the
+target still stalled. `unmountNamespace` retries for 30 seconds to get through
+this. All of that was measured against the simulator, on 26.7.2 and 27.2.
+
+**Unexplained: what holds it.** During the refusal `lsof` showed `mds` with the
+volume's root open and nothing else, on both versions, but nothing ties that to
+the refusal.
+
+**Untested.** A NAS, where the window may be longer than 30 seconds allows. The
+app's plain eject: `tearDown` runs `umount` once and stops at `.inUse` on this
+same refusal, so a stalled target probably needs Force Eject there.
+
+## 19. `hdiutil` is deprecated for attach and detach on macOS 27 (2026-11-05)
+
+On 27.2, `hdiutil attach -nomount` and `hdiutil detach` print a warning naming
+`diskutil image attach --noMount` and `diskutil eject` as the replacements. The
+app and `iscsictl` both still use them, and they work. The warning is harmless
+until they stop working, but `diskutil image attach` is the DiskImages2 engine,
+which is opt-in because of items 16 and 17, so moving is not a small change.
+
 ## A note on method
 
 Four things were got wrong during this work and three had the same cause:
