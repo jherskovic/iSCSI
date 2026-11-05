@@ -12,12 +12,11 @@ import Security
 public enum ClientAuthorization {
     public static let teamIdentifier = "4A27X5PJP3"
 
-    /// The only two legitimate clients: the container app and the FSKit
-    /// extension. `iscsictl` is deliberately absent — ad-hoc signed dev
-    /// tooling; it works in debug builds only (see `authorize`).
+    /// Release clients must carry this team's Developer ID signature.
     public static let allowedIdentifiers = [
         "me.herko.iSCSIInitiator",
         "me.herko.iSCSIInitiator.fsext",
+        "me.herko.iSCSIInitiator.iscsictl",
     ]
 
     /// A Developer ID requirement in canonical `codesign -dr -` form. The two

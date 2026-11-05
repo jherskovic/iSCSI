@@ -61,15 +61,13 @@ struct ClientAuthorizationTests {
                 "missing the Developer ID Application leaf OID")
     }
 
-    @Test("only the app and the FSKit extension are allowed")
-    func allowsExactlyTheTwoClients() {
+    @Test("only the three signed clients are allowed")
+    func allowsExactlyTheThreeClients() {
         #expect(ClientAuthorization.allowedIdentifiers.sorted() == [
             "me.herko.iSCSIInitiator",
             "me.herko.iSCSIInitiator.fsext",
+            "me.herko.iSCSIInitiator.iscsictl",
         ])
-        // iscsictl is ad-hoc signed by `swift build`; a root daemon must not
-        // accept a binary that anyone can produce.
-        #expect(!ClientAuthorization.allowedIdentifiers.contains { $0.contains("iscsictl") })
     }
 
     @Test("every allowed identifier appears in the requirement")
