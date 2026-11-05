@@ -7,7 +7,7 @@ struct NVMeAttach: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "attach",
         abstract: "Expose a namespace as /dev/diskN using the installed FSKit extension.",
-        discussion: "First save the host, port, subsystem NQN and namespace ID with nvme add or the iSCSI Initiator app. The daemon uses that record to log in."
+        discussion: "First save the host, port, subsystem NQN and namespace ID with nvme add or the iSCSI/NVMe/TCP Initiator app. The daemon uses that record to log in."
     )
 
     @OptionGroup var namespace: NVMeNamespaceOptions
