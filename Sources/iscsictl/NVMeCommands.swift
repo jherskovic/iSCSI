@@ -38,7 +38,7 @@ struct NVMeOptions: ParsableArguments {
         case debug = 2
     }
 
-    @Option(help: "Trace to stderr: 1 = Useful log (connection summary and discovery commands), 2 = Debug log (includes level 1 and protocol PDU fields).")
+    @Option(help: "Trace to stderr: 1 = Useful log (connection and command summaries), 2 = Debug log (includes level 1 and protocol PDU fields).")
     var logLevel: LogLevel?
 
     @Flag(help: .hidden) var debug = false
@@ -70,7 +70,7 @@ struct NVMeOptions: ParsableArguments {
             + "Omit to let macOS routing choose."))
     var interface: String?
 
-    func openTransport(discovery: Bool = false) async throws -> any ConnectionTransport {
+    func openTransport() async throws -> any ConnectionTransport {
         #if canImport(Network)
         let tcp = try await NetworkTransport.connect(
             host: host, port: port,
@@ -78,10 +78,9 @@ struct NVMeOptions: ParsableArguments {
         if interface != nil {
             writeLog("connected via \(tcp.connectedPath.interfaceName ?? "an unknown interface")")
         }
-        guard let logLevel = effectiveLevel else { return tcp }
+        guard let level = effectiveLevel else { return tcp }
         writeLog("Connected to \(host):\(port) over TCP")
-        guard discovery || logLevel == .debug else { return tcp }
-        return NVMeTracingTransport(tcp, label: host, discovery: discovery, includeWire: logLevel == .debug, sink: writeLog)
+        return NVMeTracingTransport(tcp, label: host, level: level == .debug ? .debug : .useful, sink: writeLog)
         #else
         throw ValidationError("Network.framework unavailable on this platform")
         #endif
@@ -108,7 +107,7 @@ struct NVMeDiscover: AsyncParsableCommand {
         let host = try options.identity()
         options.writeLog("host NQN: \(host.nqn)")
         let found = try await NVMeDiscovery.getLogPage(
-            transport: try await options.openTransport(discovery: true), host: host,
+            transport: try await options.openTransport(), host: host,
             requestDigests: !options.noDigests)
         if found.isEmpty {
             print("(no NVM subsystems advertised over TCP)")

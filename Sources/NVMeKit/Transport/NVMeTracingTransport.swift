@@ -1,16 +1,16 @@
 import Foundation
 import iSCSIKit
 
-/// Wraps a transport and prints a one-line summary of every NVMe/TCP PDU in
-/// each direction — the `TracingTransport` twin. Unlike iSCSI's, this one
-/// knows the negotiated digests: it watches the ICResp go by and rebuilds
-/// its deframers to match, so the trace stays readable after initialization.
+/// Describes queue operations and their outcomes. Debug tracing also reports the
+/// wire fields for each PDU.
 public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendable {
     private let inner: any ConnectionTransport
     private let label: String
     private let sink: @Sendable (String) -> Void
-    private let discovery: Bool
-    private let includeWire: Bool
+    public enum Level: Sendable { case useful, debug }
+    private let level: Level
+    private var queueID: UInt16 = 0
+    private var lastControllerStatus: UInt32?
     // Accessed under the trace lock, scoped to this connection.
     private var requests: [UInt16: SQE] = [:]
     private let lock = NSLock()
@@ -20,12 +20,10 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
     public init(
         _ inner: any ConnectionTransport,
         label: String = "nvme",
-        discovery: Bool = false,
-        includeWire: Bool = false,
+        level: Level = .debug,
         sink: @escaping @Sendable (String) -> Void = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
     ) {
-        self.discovery = discovery
-        self.includeWire = includeWire
+        self.level = level
         self.inner = inner
         self.label = label
         self.sink = sink
@@ -55,16 +53,20 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
         self[keyPath: keyPath].append(data)
         var lines: [String] = []
         while let raw = try? self[keyPath: keyPath].next() {
-            let line = summary(raw, discovery: discovery)
-            lines.append(line)
-            if discovery && includeWire {
-                let wire = summary(raw, discovery: false)
+            guard let pdu = try? AnyNVMeTCPPDU.decode(raw) else {
+                lines.append(String(format: "Undecodable PDU type=0x%02x", raw.type))
+                continue
+            }
+            let line = summary(pdu)
+            if let line { lines.append(line) }
+            if level == .debug {
+                let wire = wireDescription(pdu)
                 if wire != line { lines.append(wire) }
             }
-            if raw.pduType == .icResp, let icresp = try? ICRespPDU(raw: raw) {
+            if case .icResp(let icresp) = pdu {
                 // From here on both directions carry the negotiated digests.
-                txFramer = NVMeTCPDeframer(digests: icresp.digests, maxPDUBytes: 4 << 20)
-                rxFramer = NVMeTCPDeframer(digests: icresp.digests, maxPDUBytes: 4 << 20)
+                txFramer.digests = icresp.digests
+                rxFramer.digests = icresp.digests
             }
         }
         lock.unlock()
@@ -73,10 +75,7 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
         }
     }
 
-    private func summary(_ raw: RawNVMeTCPPDU, discovery: Bool) -> String {
-        guard let pdu = try? AnyNVMeTCPPDU.decode(raw) else {
-            return String(format: "type=0x%02x psh=%dB data=%dB", raw.type, raw.psh.count, raw.data.count)
-        }
+    private func wireDescription(_ pdu: AnyNVMeTCPPDU) -> String {
         switch pdu {
         case .icReq(let p):
             return "ICReq pfv=\(p.pfv) hpda=\(p.hpda) digests=\(digestLabel(p.digests)) maxr2t=\(p.maxR2T)"
@@ -84,10 +83,6 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
             return "ICResp pfv=\(p.pfv) cpda=\(p.cpda) digests=\(digestLabel(p.digests)) maxh2cdata=\(p.maxH2CData)"
         case .capsuleCmd(let p):
             guard let sqe = try? SQE(bytes: p.sqe) else { return "CapsuleCmd (bad SQE)" }
-            if discovery {
-                requests[sqe.commandID] = sqe
-                return "cid=\(sqe.commandID) \(discoveryOperation(sqe))"
-            }
             var parts = [String(format: "CapsuleCmd op=0x%02x cid=%d", sqe.opcode, sqe.commandID)]
             if sqe.opcode == NVMeOpcode.Admin.fabrics {
                 parts.append(String(format: "fctype=0x%02x", sqe.fabricsType))
@@ -100,32 +95,9 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
             return parts.joined(separator: " ")
         case .capsuleResp(let p):
             guard let cqe = try? CQE(bytes: p.cqe) else { return "CapsuleResp (bad CQE)" }
-            if discovery, let sqe = requests.removeValue(forKey: cqe.commandID) {
-                var line = "cid=\(cqe.commandID) \(discoveryOperation(sqe))"
-                guard cqe.status.isSuccess else { return line + " failed: " + cqe.status.description }
-                line += " ok"
-                if sqe.opcode == NVMeOpcode.Admin.fabrics {
-                    switch (sqe.fabricsType, sqe.cdw11) {
-                    case (FabricsCommandType.connect, _):
-                        line += " controllerID=\(cqe.dw0 & 0xffff)"
-                    case (FabricsCommandType.propertyGet, NVMeProperty.csts):
-                        let status = ControllerStatus(raw: cqe.dw0)
-                        line += " ready=\(status.ready) fatal=\(status.fatal)"
-                    case (FabricsCommandType.propertyGet, NVMeProperty.cap):
-                        line += " supportsNVM=\(ControllerCapabilities(raw: cqe.result64).supportsNVMCommandSet)"
-                    default: break
-                    }
-                }
-                return line
-            }
             return String(format: "CapsuleResp cid=%d status=%@ dw0=0x%08x", cqe.commandID,
                           cqe.status.isSuccess ? "ok" : cqe.status.description, cqe.dw0)
         case .c2hData(let p):
-            if discovery, let sqe = requests[p.cccid] {
-                if p.success { requests.removeValue(forKey: p.cccid) }
-                return "cid=\(p.cccid) \(discoveryOperation(sqe)) dataOffset=\(p.dataOffset) received=\(p.data.count)B"
-                    + (p.last ? " LAST" : "") + (p.success ? " SUCCESS" : "")
-            }
             return "C2HData cid=\(p.cccid) off=\(p.dataOffset) len=\(p.data.count)"
                 + (p.last ? " LAST" : "") + (p.success ? " SUCCESS" : "")
         case .h2cData(let p):
@@ -140,17 +112,91 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
         }
     }
 
-    private func discoveryOperation(_ sqe: SQE) -> String {
+    private func summary(_ pdu: AnyNVMeTCPPDU) -> String? {
+        switch pdu {
+        case .icReq:
+            return "Negotiating NVMe/TCP connection"
+        case .icResp(let response):
+            return "NVMe/TCP negotiated digests=\(digestLabel(response.digests))"
+        case .capsuleCmd(let capsule):
+            guard let sqe = try? SQE(bytes: capsule.sqe) else { return "Invalid command capsule" }
+            requests[sqe.commandID] = sqe
+            if sqe.opcode == NVMeOpcode.Admin.fabrics, sqe.fabricsType == FabricsCommandType.connect {
+                queueID = UInt16(sqe.cdw10 >> 16)
+            }
+            if isStatusPoll(sqe) { return nil } // Report status changes on the response.
+            return "cid=\(sqe.commandID) \(operation(sqe))"
+        case .capsuleResp(let response):
+            guard let cqe = try? CQE(bytes: response.cqe) else { return "Invalid completion capsule" }
+            return completion(cqe)
+        case .c2hData(let data):
+            if data.success { return completion(CQE(commandID: data.cccid)) }
+            return nil
+        case .r2t, .h2cData:
+            return nil
+        case .h2cTermReq, .c2hTermReq:
+            return wireDescription(pdu)
+        }
+    }
+
+    private func isStatusPoll(_ sqe: SQE) -> Bool {
+        sqe.opcode == NVMeOpcode.Admin.fabrics && sqe.fabricsType == FabricsCommandType.propertyGet
+            && sqe.cdw11 == NVMeProperty.csts
+    }
+
+    private func completion(_ cqe: CQE) -> String? {
+        guard let sqe = requests.removeValue(forKey: cqe.commandID) else {
+            return "Unexpected completion cid=\(cqe.commandID)"
+        }
+        let prefix = "cid=\(cqe.commandID) \(operation(sqe))"
+        if !cqe.status.isSuccess {
+            let error = BlockDeviceError.nvmeStatus(sct: cqe.status.sct, sc: cqe.status.sc, opcode: sqe.opcode)
+            return prefix + " failed: " + ISCSIError.nsError(from: error).localizedDescription
+        }
+        guard sqe.opcode == NVMeOpcode.Admin.fabrics else { return prefix + " ok" }
+        switch (sqe.fabricsType, sqe.cdw11) {
+        case (FabricsCommandType.connect, _):
+            return prefix + " ok controllerID=\(cqe.dw0 & 0xffff)"
+        case (FabricsCommandType.propertyGet, NVMeProperty.cap):
+            return prefix + " supportsNVM=\(ControllerCapabilities(raw: cqe.result64).supportsNVMCommandSet)"
+        case (FabricsCommandType.propertyGet, NVMeProperty.csts):
+            guard lastControllerStatus != cqe.dw0 else { return nil }
+            lastControllerStatus = cqe.dw0
+            let status = ControllerStatus(raw: cqe.dw0)
+            return prefix + " ready=\(status.ready) fatal=\(status.fatal)"
+        default:
+            return prefix + " ok"
+        }
+    }
+
+    private func operation(_ sqe: SQE) -> String {
+        if queueID != 0 && sqe.opcode != NVMeOpcode.Admin.fabrics {
+            let name: String
+            switch sqe.opcode {
+            case NVMeOpcode.NVM.read: name = "Read"
+            case NVMeOpcode.NVM.write: name = "Write"
+            case NVMeOpcode.NVM.flush: name = "Flush"
+            default: name = String(format: "I/O op=0x%02x", sqe.opcode)
+            }
+            return "\(name) nsid=\(sqe.nsid)"
+        }
         if sqe.opcode == NVMeOpcode.Admin.getLogPage, UInt8(truncatingIfNeeded: sqe.cdw10) == NVMeLogPage.discovery {
             let offset = UInt64(sqe.cdw13) << 32 | UInt64(sqe.cdw12)
             let section = offset == 0 ? "header" : "entries"
             return "Get Discovery Log \(section) logOffset=\(offset) length=\(sqe.sgl.length)B"
         }
         guard sqe.opcode == NVMeOpcode.Admin.fabrics else {
+            switch sqe.opcode {
+            case NVMeOpcode.Admin.identify: return "Identify nsid=\(sqe.nsid) cns=\(sqe.cdw10 & 0xff)"
+            case NVMeOpcode.Admin.setFeatures: return "Set Features"
+            case NVMeOpcode.Admin.getFeatures: return "Get Features"
+            case NVMeOpcode.Admin.keepAlive: return "Keep Alive"
+            default: break
+            }
             return String(format: "Admin command op=0x%02x", sqe.opcode)
         }
         switch (sqe.fabricsType, sqe.cdw11) {
-        case (FabricsCommandType.connect, _): return "Connect discovery controller"
+        case (FabricsCommandType.connect, _): return "Connect queue=\(queueID)"
         case (FabricsCommandType.propertyGet, NVMeProperty.cap): return "Property Get CAP"
         case (FabricsCommandType.propertySet, NVMeProperty.cc): return "Property Set CC enable=\(sqe.cdw12 & 1)"
         case (FabricsCommandType.propertyGet, NVMeProperty.csts): return "Property Get CSTS"
