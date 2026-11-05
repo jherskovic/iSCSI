@@ -639,7 +639,6 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let core: DaemonCore
     private let root: ConfigurationRoot
-    private let stores = OSAllocatedUnfairLock(initialState: [uid_t: TargetStore]())
     private let adoption: LegacyConfigurationAdoption
 
     public init(core: DaemonCore, root: ConfigurationRoot = .system) {
@@ -657,16 +656,9 @@ public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unch
         // The kernel's record of the peer, which a client cannot influence.
         // Reading it is all that happens here: anything with an effect waits
         // for a message that has passed the requirement above.
-        let account = root.account(connection.effectiveUserIdentifier)
-        let targets = stores.withLock { stores in
-            if let existing = stores[account.uid] { return existing }
-            let store = TargetStore(url: account.targetsURL)
-            stores[account.uid] = store
-            return store
-        }
         let service = ISCSIXPCService(core: core,
-                                      account: account,
-                                      adoption: adoption, targets: targets)
+                                      account: root.account(connection.effectiveUserIdentifier),
+                                      adoption: adoption)
         connection.exportedInterface = iface
         connection.exportedObject = service
         // A dead peer surfaces here as invalidation; release its sessions so a
