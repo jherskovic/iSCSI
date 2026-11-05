@@ -366,7 +366,7 @@ enum UninstallError: LocalizedError {
         case .daemonStillRegistered:
             return "Remove it in System Settings → General → Login Items & Extensions."
         case .loginItemStillRegistered:
-            return "Remove iSCSI Initiator from Open at Login in System Settings → "
+            return "Remove iSCSI/NVMe/TCP Initiator from Open at Login in System Settings → "
                  + "General → Login Items & Extensions."
         case .commandLineLinkKept:
             return nil

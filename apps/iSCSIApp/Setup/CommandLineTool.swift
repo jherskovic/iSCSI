@@ -106,14 +106,14 @@ final class CommandLineTool: SetupStep {
         on run argv
             do shell script "/bin/mkdir -p /usr/local/bin && /bin/ln -s " ¬
                 & quoted form of (item 1 of argv) & " \(CommandLineLink.path)" ¬
-                with prompt "iSCSI Initiator wants to add the iscsictl command to /usr/local/bin." ¬
+                with prompt "iSCSI/NVMe/TCP Initiator wants to add the iscsictl command to /usr/local/bin." ¬
                 with administrator privileges
         end run
         """
 
     private nonisolated static let removeScript = """
         do shell script "/bin/rm \(CommandLineLink.path)" ¬
-            with prompt "iSCSI Initiator wants to remove the iscsictl command from /usr/local/bin." ¬
+            with prompt "iSCSI/NVMe/TCP Initiator wants to remove the iscsictl command from /usr/local/bin." ¬
             with administrator privileges
         """
 

@@ -169,7 +169,7 @@ final class DaemonStep: SetupStep {
         case .running(let info):
             return .satisfied("running \(info.version), pid \(info.pid)")
         case .notRegistered:
-            return .actionable("iSCSI Initiator needs a background service to "
+            return .actionable("iSCSI/NVMe/TCP Initiator needs a background service to "
                                + "hold the connection to your storage.")
         case .requiresApproval:
             return .actionable("macOS is waiting for you to allow the background "

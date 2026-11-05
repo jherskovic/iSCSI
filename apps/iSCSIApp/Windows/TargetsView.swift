@@ -256,7 +256,7 @@ private struct LoginItemBanner: View {
         if model.loginItemStatus == .requiresApproval {
             return "Attach at login is turned off in System Settings."
         }
-        return "iSCSI Initiator is not set to open at login, so nothing will attach."
+        return "iSCSI/NVMe/TCP Initiator is not set to open at login, so nothing will attach."
     }
 
     private var buttonTitle: String {

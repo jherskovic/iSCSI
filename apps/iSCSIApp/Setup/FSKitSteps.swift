@@ -338,7 +338,7 @@ final class ModuleEnablement: SetupStep {
         guard !state.isSatisfied, !Self.switchWorks else { return nil }
         if !inTheWay.isEmpty {
             return """
-                iSCSI Initiator will add its filesystem extension to the list macOS \
+                iSCSI/NVMe/TCP Initiator will add its filesystem extension to the list macOS \
                 keeps of enabled extensions, at
 
                 ~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist
@@ -353,7 +353,7 @@ final class ModuleEnablement: SetupStep {
                 """
         }
         return """
-            iSCSI Initiator will add its filesystem extension to the list macOS \
+            iSCSI/NVMe/TCP Initiator will add its filesystem extension to the list macOS \
             keeps of enabled extensions, at
 
             ~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist

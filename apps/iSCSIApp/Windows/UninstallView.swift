@@ -26,7 +26,7 @@ struct UninstallView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Remove iSCSI Initiator")
+            Text("Remove iSCSI/NVMe/TCP Initiator")
                 .font(.title2).bold()
 
             if uninstaller.steps.isEmpty {
@@ -47,7 +47,7 @@ struct UninstallView: View {
         }
         .padding(20)
         .frame(width: 520, height: 460)
-        .confirmationDialog("Remove iSCSI Initiator and everything it stored?",
+        .confirmationDialog("Remove iSCSI/NVMe/TCP Initiator and everything it stored?",
                             isPresented: $confirming, titleVisibility: .visible) {
             Button("Remove Everything", role: .destructive) {
                 Task { await uninstaller.run() }

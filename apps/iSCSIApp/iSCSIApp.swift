@@ -162,7 +162,7 @@ struct MainWindow: View {
 
                         HStack {
                             Spacer()
-                            Button("Remove iSCSI Initiator…") { isUninstalling = true }
+                            Button("Remove iSCSI/NVMe/TCP Initiator…") { isUninstalling = true }
                         }
 
                         DisclosureGroup("Diagnostics") {
