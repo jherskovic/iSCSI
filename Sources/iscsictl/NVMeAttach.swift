@@ -17,14 +17,44 @@ struct NVMeAttach: ParsableCommand {
     }
 
     private func attach(resource: URL, volume: URL) throws {
-        // Reserve this namespace's mountpoint before opening a session.
-        guard mkdir(volume.path, 0o700) == 0 else {
-            throw ValidationError("Cannot reserve \(volume.path): \(String(cString: strerror(errno))). Check for an existing attachment.")
+        let mounts = try namespaceMounts()
+        if let other = AutoAttachRun.otherMount(ofTarget: namespace.subsystem, lun: UInt64(namespace.nsid),
+                                                mounts: mounts, except: volume.path) {
+            throw NamespaceError("Namespace is already mounted at \(other.on). Detach it there first.")
         }
-        var mounted = false
+        let existingMount = mounts.first { $0.on == volume.path }
+        if let existingMount, existingMount.from != resource.absoluteString &&
+            !existingMount.from.hasPrefix(resource.absoluteString + "?") {
+            throw NamespaceError("Unexpected mount at \(volume.path).")
+        }
+        let wasMounted = existingMount != nil
+        let imagePath = volume.appendingPathComponent("lun0.img").path
+        let device = try namespaceDevice(image: imagePath)
+        switch ImageAttachPlan.decide(fskitWasMounted: wasMounted, existingDevice: device) {
+        case .reuse(let disk):
+            print(disk)
+            print("Backing mount: \(volume.path)")
+            return
+        case .replaceStale:
+            try detachNamespaceDevice(image: imagePath)
+        case .attach: break
+        }
+        if !wasMounted {
+            if mkdir(volume.path, 0o700) != 0 {
+                let attributes = try FileManager.default.attributesOfItem(atPath: volume.path)
+                let empty = try FileManager.default.contentsOfDirectory(atPath: volume.path).isEmpty
+                guard NamespaceLifecycle.canReuseDirectory(
+                    isDirectory: attributes[.type] as? FileAttributeType == .typeDirectory,
+                    isSymbolicLink: attributes[.type] as? FileAttributeType == .typeSymbolicLink,
+                    isEmpty: empty) else { throw NamespaceError("Mountpoint is not an empty directory: \(volume.path)") }
+            }
+        }
+        var createdMount = false
         do {
-            try runNamespaceCommand("/sbin/mount", ["-F", "-t", "iSCSI", resource.absoluteString, volume.path])
-            mounted = true
+            if !wasMounted {
+                try runNamespaceCommand("/sbin/mount", ["-F", "-t", "iSCSI", resource.absoluteString, volume.path])
+                createdMount = true
+            }
             let image = volume.appendingPathComponent("lun0.img")
             let file = try FileHandle(forReadingFrom: image)
             defer { try? file.close() }
@@ -38,15 +68,14 @@ struct NVMeAttach: ParsableCommand {
             try runNamespaceCommand("/usr/bin/hdiutil", args + [image.path])
             print("Backing mount: \(volume.path)")
         } catch {
-            if mounted { try runNamespaceCommand("/sbin/umount", [volume.path]) }
-            _ = rmdir(volume.path)
-            if !mounted {
-                FileHandle.standardError.write(Data("""
-                    FSKit could not mount \(resource.absoluteString). Save this namespace with nvme add or iSCSI Initiator using the same host, port, subsystem NQN and NSID.
-                    For the underlying error, run:
-                      /usr/bin/log show --last 5m --predicate 'subsystem == "me.herko.iSCSIInitiator.fsext" AND eventMessage CONTAINS "loadResource failed"'
-
-                    """.utf8))
+            // A failed attach may still have created a disk. Keep its backing
+            // mount if cleanup cannot establish that the disk is gone.
+            do {
+                try detachNamespaceDevice(image: imagePath)
+                if createdMount { try unmountNamespace(volume.path) }
+                if !wasMounted { _ = rmdir(volume.path) }
+            } catch {
+                FileHandle.standardError.write(Data("Cleanup failed: \(error.localizedDescription)\n".utf8))
             }
             throw error
         }
