@@ -68,7 +68,6 @@ struct ClientAuthorizationTests {
             "me.herko.iSCSIInitiator.fsext",
             "me.herko.iSCSIInitiator.iscsictl",
         ])
-
     }
 
     @Test("every allowed identifier appears in the requirement")

@@ -18,10 +18,12 @@ iscsictl nvme detach '<target-host>' --port '<target-port>' --subsystem '<subsys
 ```
 
 Add uses the daemon's XPC interface and preserves an existing matching record.
+An existing target reports its saved ID. The --name option applies to new targets.
 Configuration belongs to the logged-in account. Run without sudo.
 The next FSKit login reads the saved configuration without a daemon restart.
 
-Attach uses FSKit and hdiutil with -nomount, printing the resulting disk and
-backing mount directory. Detach finds the whole disk by its image path, detaches
+Attach uses FSKit and hdiutil with -nomount. Both a new attachment and an
+existing attachment print only the whole-disk path to stdout. The backing
+mount directory is reported on stderr. Detach finds the whole disk by its image path, detaches
 it, unmounts the backing FSKit volume, and removes the mount directory.
 A busy disk causes detach to fail while preserving the backing mount.
