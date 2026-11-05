@@ -49,11 +49,9 @@ struct NVMeAttach: ParsableCommand {
                     isEmpty: empty) else { throw NamespaceError("Mountpoint is not an empty directory: \(volume.path)") }
             }
         }
-        var createdMount = false
         do {
             if !wasMounted {
                 try runNamespaceCommand("/sbin/mount", ["-F", "-t", "iSCSI", resource.absoluteString, volume.path])
-                createdMount = true
             }
             let image = volume.appendingPathComponent("lun0.img")
             let file = try FileHandle(forReadingFrom: image)
@@ -72,7 +70,17 @@ struct NVMeAttach: ParsableCommand {
             // mount if cleanup cannot establish that the disk is gone.
             do {
                 try detachNamespaceDevice(image: imagePath)
-                if createdMount { try unmountNamespace(volume.path) }
+                if !wasMounted {
+                    // mount can establish the volume before returning an error
+                    // or being terminated. Inspect the current mount table.
+                    if let mount = try namespaceMounts().first(where: { $0.on == volume.path }) {
+                        guard mount.from == resource.absoluteString ||
+                            mount.from.hasPrefix(resource.absoluteString + "?") else {
+                            throw NamespaceError("Unexpected mount during cleanup at \(volume.path).")
+                        }
+                        try unmountNamespace(volume.path)
+                    }
+                }
                 if !wasMounted { _ = rmdir(volume.path) }
             } catch {
                 FileHandle.standardError.write(Data("Cleanup failed: \(error.localizedDescription)\n".utf8))

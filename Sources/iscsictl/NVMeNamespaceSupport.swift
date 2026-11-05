@@ -136,7 +136,14 @@ func runNamespaceCommand(_ path: String, _ arguments: [String], output: Pipe? = 
         process.terminate()
         let grace = Date().addingTimeInterval(2)
         while process.isRunning && Date() < grace { Thread.sleep(forTimeInterval: 0.05) }
-        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        if process.isRunning {
+            guard kill(process.processIdentifier, SIGKILL) == 0 || errno == ESRCH else {
+                throw NamespaceError("Cannot terminate \(path): \(String(cString: strerror(errno))).")
+            }
+        }
+        // Reap the terminated child before callers inspect or tear down the
+        // state it may have created. Sending a signal alone is asynchronous.
+        process.waitUntilExit()
         throw NamespaceError("\(path) timed out after 60 seconds. Inspect attachment state before retrying.")
     }
     process.waitUntilExit()
