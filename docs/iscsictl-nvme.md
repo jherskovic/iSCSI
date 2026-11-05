@@ -27,3 +27,19 @@ existing attachment print only the whole-disk path to stdout. The backing
 mount directory is reported on stderr. Detach finds the whole disk by its image path, detaches
 it, unmounts the backing FSKit volume, and removes the mount directory.
 A busy disk causes detach to fail while preserving the backing mount.
+
+If the target has stopped answering, detach takes about a minute. The disk goes
+first, then the backing volume refuses to unmount for some seconds, so detach
+keeps trying for 30 seconds. If it still fails, run it again once the target is
+back: nothing is lost.
+
+A stalled target is bounded by the daemon's timeouts. A wedged FSKit extension
+is not: these commands can block in the kernel until the extension is released
+or killed, like anything else that touches the volume.
+
+## Tracing
+
+`discover`, `verify` and the benches take `--log-level`, which writes timestamped
+lines to stderr. Level 1 summarizes connection setup and each command with its
+outcome. Level 2 adds the fields of every PDU. `add`, `attach` and `detach` have
+no trace, because the daemon does that work.
