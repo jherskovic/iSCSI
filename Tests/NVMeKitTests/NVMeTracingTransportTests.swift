@@ -26,8 +26,9 @@ private final class TraceSession {
         try await trace.send(serializer.serialize(CapsuleCmdPDU(sqe: sqe.bytes).encode()))
     }
 
-    func receive(_ pdu: AnyNVMeTCPPDU) async throws {
-        let bytes = serializer.serialize(pdu.encode())
+    func receive(_ pdu: AnyNVMeTCPPDU, corruptDigest: Bool = false) async throws {
+        var bytes = serializer.serialize(pdu.encode())
+        if corruptDigest { bytes[bytes.count - 1] ^= 1 }
         try await peer.send(bytes)
         _ = try await trace.receive()
     }
@@ -58,6 +59,38 @@ private final class TraceSession {
         try await session.respond(1)
         #expect(session.matching("← cid=2 Get Discovery Log entries logOffset=4294968320 length=4B ok").count == 1)
         #expect(session.matching("← cid=1 Get Discovery Log header logOffset=0 length=4B ok").count == 1)
+    }
+
+    @Test(arguments: [true, false]) func digestFailureSurvivesCompletion(inline: Bool) async throws {
+        let session = TraceSession()
+        let digests = NVMeTCPDigests(header: false, data: true)
+        try await session.receive(.icResp(ICRespPDU(digests: digests)))
+        session.serializer = NVMeTCPSerializer(digests: digests)
+        try await session.send(logRead(3))
+        try await session.receive(.c2hData(C2HDataPDU(cccid: 3, dataOffset: 0, data: Data(count: 4),
+                                                      last: true, success: inline)), corruptDigest: true)
+        if !inline { try await session.respond(3) }
+        #expect(session.matching("failed: data digest mismatch").count == 1)
+        #expect(session.matching(" ok").isEmpty)
+        // Reusing the CID must not inherit the earlier failure.
+        try await session.send(logRead(3))
+        try await session.receive(.c2hData(C2HDataPDU(cccid: 3, dataOffset: 0, data: Data(count: 4),
+                                                      last: true, success: true)))
+        #expect(session.matching("length=4B ok").count == 1)
+    }
+
+    @Test func connectExplainsAuthenticationAndRejection() async throws {
+        let session = TraceSession()
+        let (sqe, _) = NVMeCommands.connect(commandID: 4, queueID: 0, queueEntries: 32, keepAliveMS: 0,
+                                            hostID: Data(count: 16), controllerID: 0xffff,
+                                            subsystemNQN: NQN.discovery, hostNQN: "nqn.test")
+        try await session.send(sqe)
+        try await session.respond(4, dw0: 0x10001)
+        try await session.send(sqe)
+        try await session.respond(4, status: NVMeStatus(sct: 1, sc: 0x84))
+        #expect(session.matching("authentication required").count == 1)
+        #expect(session.matching("refused this Mac's host NQN").count == 1)
+        #expect(session.matching(" ok").isEmpty)
     }
 
     @Test func levelsShowStatusChangesAndDebugAddsWireDetailsOnce() async throws {

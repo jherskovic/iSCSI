@@ -2,7 +2,7 @@ import Foundation
 import iSCSIKit
 
 /// Describes queue operations and their outcomes. Debug tracing also reports the
-/// wire fields for each PDU.
+/// wire fields, including the controller's original status on locally failed reads.
 public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendable {
     private let inner: any ConnectionTransport
     private let label: String
@@ -11,6 +11,7 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
     private let level: Level
     private var queueID: UInt16 = 0
     private var lastControllerStatus: UInt32?
+    private var badDigests: Set<UInt16> = []
     // Accessed under the trace lock, scoped to this connection.
     private var requests: [UInt16: SQE] = [:]
     private let lock = NSLock()
@@ -57,7 +58,7 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
                 lines.append(String(format: "Undecodable PDU type=0x%02x", raw.type))
                 continue
             }
-            let line = summary(pdu)
+            let line = summary(pdu, dataDigestFailed: raw.dataDigestFailed)
             if let line { lines.append(line) }
             if level == .debug {
                 let wire = wireDescription(pdu)
@@ -112,7 +113,7 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
         }
     }
 
-    private func summary(_ pdu: AnyNVMeTCPPDU) -> String? {
+    private func summary(_ pdu: AnyNVMeTCPPDU, dataDigestFailed: Bool) -> String? {
         switch pdu {
         case .icReq:
             return "Negotiating NVMe/TCP connection"
@@ -130,7 +131,9 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
             guard let cqe = try? CQE(bytes: response.cqe) else { return "Invalid completion capsule" }
             return completion(cqe)
         case .c2hData(let data):
+            if dataDigestFailed { badDigests.insert(data.cccid) }
             if data.success { return completion(CQE(commandID: data.cccid)) }
+            if dataDigestFailed { return "cid=\(data.cccid) data digest mismatch" }
             return nil
         case .r2t, .h2cData:
             return nil
@@ -145,6 +148,7 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
     }
 
     private func completion(_ cqe: CQE) -> String? {
+        let badDigest = badDigests.remove(cqe.commandID) != nil
         guard let sqe = requests.removeValue(forKey: cqe.commandID) else {
             return "Unexpected completion cid=\(cqe.commandID)"
         }
@@ -153,9 +157,11 @@ public final class NVMeTracingTransport: ConnectionTransport, @unchecked Sendabl
             let error = BlockDeviceError.nvmeStatus(sct: cqe.status.sct, sc: cqe.status.sc, opcode: sqe.opcode)
             return prefix + " failed: " + ISCSIError.nsError(from: error).localizedDescription
         }
+        if badDigest { return prefix + " failed: data digest mismatch" }
         guard sqe.opcode == NVMeOpcode.Admin.fabrics else { return prefix + " ok" }
         switch (sqe.fabricsType, sqe.cdw11) {
         case (FabricsCommandType.connect, _):
+            if cqe.dw0 >> 16 != 0 { return prefix + " failed: in-band authentication required" }
             return prefix + " ok controllerID=\(cqe.dw0 & 0xffff)"
         case (FabricsCommandType.propertyGet, NVMeProperty.cap):
             return prefix + " supportsNVM=\(ControllerCapabilities(raw: cqe.result64).supportsNVMCommandSet)"
