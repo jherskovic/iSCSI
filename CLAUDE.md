@@ -174,6 +174,14 @@ LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Bac
   recovery text survive the XPC boundary intact.
 - **`MountpointTag` is `sha256(portal|target|lun)` and is a compatibility
   contract** — changing how it is derived orphans every existing mount.
+- **The bundle is `iSCSI Initiator.app`; people see `iSCSI/NVMe/TCP Initiator`.**
+  A file name cannot hold a slash, so the name people see is `CFBundleName`
+  (menu bar) and a localized `CFBundleDisplayName` in
+  `en.lproj/InfoPlist.strings` (Dock, Finder), which macOS honours only while
+  the plain value in `Info.plist` matches the file name. `SUBundleName` must
+  stay free of slashes: Sparkle names its download directory after it, so one
+  slash fails every update download and that build cannot update itself out of
+  the fault. `release.sh` asserts it.
 - **Targets and CHAP secrets are per account, and the daemon holds them.**
   `iscsid` picks `users/<uid>/targets.json` and a keychain service per uid from
   the XPC connection (`UserConfiguration`), so `KeychainStore` calls take a

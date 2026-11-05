@@ -291,7 +291,7 @@ final class ModuleEnablement: SetupStep {
         if Self.switchWorks {
             return .actionable(
                 "macOS needs your permission to run the filesystem "
-                + "extension. Turn on “iSCSI Initiator” under File System "
+                + "extension. Turn on “iSCSI/NVMe/TCP Initiator” under File System "
                 + "Extensions.")
         }
         inTheWay = FSKitRestart.mountsItWouldDisconnect(AttachmentManager.mountTable())
