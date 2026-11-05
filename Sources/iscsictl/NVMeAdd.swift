@@ -14,7 +14,7 @@ struct NVMeAdd: ParsableCommand {
     @Option(help: "Display name for a newly saved target.") var name: String?
 
     func run() throws {
-        try namespace.withVolume { _, _ in }
+        try namespace.validate()
         let connection = NSXPCConnection(machServiceName: iscsiDaemonServiceName, options: .privileged)
         connection.remoteObjectInterface = NSXPCInterface(with: ISCSIDaemonProtocol.self)
         connection.resume()
@@ -30,16 +30,15 @@ struct NVMeAdd: ParsableCommand {
         }
         guard let proxy = connection.remoteObjectProxyWithErrorHandler({
             finish(nil, $0)
-        }) as? ISCSIDaemonProtocol else { throw ValidationError("Cannot connect to iscsid.") }
+        }) as? ISCSIDaemonProtocol else { throw NamespaceError("Cannot connect to iscsid.") }
         proxy.listTargets { data, error in
             if let error { finish(nil, error); return }
             do {
                 let records = try JSONDecoder().decode([TargetRecord].self, from: data ?? Data())
-                if let existing = records.first(where: {
-                    $0.host.caseInsensitiveCompare(namespace.host) == .orderedSame &&
-                    $0.port == namespace.port && $0.targetIQN == namespace.subsystem &&
-                    $0.lun == UInt64(namespace.nsid)
-                }) {
+                if let existing = NamespaceLifecycle.record(in: records, host: namespace.host,
+                                                              port: namespace.port,
+                                                              subsystem: namespace.subsystem,
+                                                              nsid: UInt64(namespace.nsid)) {
                     finish(try JSONEncoder().encode(existing), nil)
                     return
                 }
@@ -50,7 +49,7 @@ struct NVMeAdd: ParsableCommand {
             } catch { finish(nil, error) }
         }
         guard semaphore.wait(timeout: .now() + 30) == .success else {
-            throw ValidationError("iscsid did not reply. Check the CLI signature and daemon version.")
+            throw NamespaceError("iscsid did not reply. Check the CLI signature and daemon version.")
         }
         let data = try result.withLock { try $0!.get() }
         let saved = try JSONDecoder().decode(TargetRecord.self, from: data)
