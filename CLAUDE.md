@@ -181,7 +181,10 @@ LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Bac
   the plain value in `Info.plist` matches the file name. `SUBundleName` must
   stay free of slashes: Sparkle names its download directory after it, so one
   slash fails every update download and that build cannot update itself out of
-  the fault. `release.sh` asserts it.
+  the fault. `release.sh` asserts it. A Dock tile saved before the rename keeps
+  the old label, even across a Dock restart, because the Dock stores it in
+  `com.apple.dock` and does not look again. That is not a build fault: removing
+  the tile and adding it back shows the new name.
 - **Targets and CHAP secrets are per account, and the daemon holds them.**
   `iscsid` picks `users/<uid>/targets.json` and a keychain service per uid from
   the XPC connection (`UserConfiguration`), so `KeychainStore` calls take a
