@@ -42,8 +42,25 @@ struct NVMeOptions: ParsableArguments {
     @Flag(help: "Do not offer header and data digests.")
     var noDigests = false
 
-    @Flag(help: "Trace every PDU on the wire to stderr.")
-    var debug = false
+    enum LogLevel: Int, ExpressibleByArgument {
+        case useful = 1
+        case debug = 2
+    }
+
+    @Option(help: "Trace to stderr: 1 = Useful log (connection and command summaries), 2 = Debug log (includes level 1 and protocol PDU fields).")
+    var logLevel: LogLevel?
+
+    @Flag(help: .hidden) var debug = false
+
+    private var effectiveLevel: LogLevel? { logLevel ?? (debug ? .debug : nil) }
+
+    private static let logTimeFormat = Date.ISO8601FormatStyle(
+        timeZoneSeparator: .colon, includingFractionalSeconds: true, timeZone: .current)
+
+    func writeLog(_ message: String) {
+        let timestamp = effectiveLevel == nil ? "" : Date.now.formatted(Self.logTimeFormat) + " "
+        FileHandle.standardError.write(Data((timestamp + message + "\n").utf8))
+    }
 
     func identity() throws -> NVMeHostIdentity {
         if let explicit = hostNQN ?? ProcessInfo.processInfo.environment["NVME_HOST_NQN"], !explicit.isEmpty {
@@ -68,10 +85,11 @@ struct NVMeOptions: ParsableArguments {
             host: host, port: port,
             binding: InterfaceBinding.named(interface, fallback: false))
         if interface != nil {
-            FileHandle.standardError.write(Data(
-                "connected via \(tcp.connectedPath.interfaceName ?? "an unknown interface")\n".utf8))
+            writeLog("connected via \(tcp.connectedPath.interfaceName ?? "an unknown interface")")
         }
-        return debug ? NVMeTracingTransport(tcp, label: host) : tcp
+        guard let level = effectiveLevel else { return tcp }
+        writeLog("Connected to \(host):\(port) over TCP")
+        return NVMeTracingTransport(tcp, label: host, level: level == .debug ? .debug : .useful, sink: writeLog)
         #else
         throw ValidationError("Network.framework unavailable on this platform")
         #endif
@@ -96,7 +114,7 @@ struct NVMeDiscover: AsyncParsableCommand {
 
     func run() async throws {
         let host = try options.identity()
-        FileHandle.standardError.write(Data("host NQN: \(host.nqn)\n".utf8))
+        options.writeLog("host NQN: \(host.nqn)")
         let found = try await NVMeDiscovery.getLogPage(
             transport: try await options.openTransport(), host: host,
             requestDigests: !options.noDigests)
