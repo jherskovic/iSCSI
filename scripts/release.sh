@@ -451,6 +451,16 @@ CTL_VERSION=$("$CTL" --version)
     || die "iscsictl reports version '$CTL_VERSION' but this release is $VERSION."
 echo "  ok  iscsictl reports version $CTL_VERSION"
 
+# Sparkle names its download directory after SUBundleName, falling back to the
+# display name. A slash there fails every update download, and a build with that
+# fault cannot update itself out of it.
+SPARKLE_NAME=$(plutil -extract SUBundleName raw "$APP/Contents/Info.plist") \
+    || die "Info.plist has no SUBundleName, so Sparkle would use the display name."
+case "$SPARKLE_NAME" in
+    */*) die "SUBundleName '$SPARKLE_NAME' has a slash, which fails every update download." ;;
+esac
+echo "  ok  Sparkle's name, $SPARKLE_NAME, has no slash"
+
 check_binary() {
     local path="$1" label="$2" out
     [ -e "$path" ] || return 0

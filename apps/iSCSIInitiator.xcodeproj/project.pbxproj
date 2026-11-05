@@ -55,6 +55,7 @@
 		ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B994EEC4E49C9C783699E6 /* FSKitProbe.swift */; };
 		AF1FD391FC1153FBE7F490E4 /* iSCSIBootstrap.iig in Sources */ = {isa = PBXBuildFile; fileRef = EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */; };
 		B131D51A4DE8326CD0998844 /* UninstallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66A066551C98F53B7638A06D /* UninstallView.swift */; };
+		B13203674D0BEFBA9F41CB56 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 962359150D6304F53498F15A /* InfoPlist.strings */; };
 		B77CB9C6828A0BC03BDBDF53 /* FSKitEnablement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */; };
 		BA462B6CED93BFC7D7BF3128 /* NVMeKit in Frameworks */ = {isa = PBXBuildFile; productRef = EF08C9A09525965FA80E5F76 /* NVMeKit */; };
 		BDCC0B27CD1E5C4DC0C16396 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DDEAF78D697AF7DFDE1F9A4 /* main.swift */; };
@@ -202,6 +203,7 @@
 		89472971AD8F995DD4FCCA0D /* LoginItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItem.swift; sourceTree = "<group>"; };
 		8B7C2E394D634AD1AF184FFC /* MenuBarContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContent.swift; sourceTree = "<group>"; };
 		90DA087A85B91E84CD0AB5D4 /* iSCSIApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iSCSIApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		979635E6CF9EE6B49425E909 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		9DDEAF78D697AF7DFDE1F9A4 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		A69431A8E793158D26316EAD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A78E2D4EB65C66F2C89DCBF1 /* TargetsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TargetsView.swift; sourceTree = "<group>"; };
@@ -290,6 +292,7 @@
 				5F8B8631D4F5E81291847966 /* iSCSIApp.entitlements */,
 				0FC18B26402E15EC48C74856 /* iSCSIApp.swift */,
 				5FF3AB83DB47EADB7AF28ECC /* Client */,
+				962359150D6304F53498F15A /* InfoPlist.strings */,
 				2DBB9BD9979EA5791B8473D2 /* LaunchDaemons */,
 				B0E5958580139696F056B7A9 /* Menu */,
 				43583C634F10BF5F2F2C2CD7 /* Setup */,
@@ -682,6 +685,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B13203674D0BEFBA9F41CB56 /* InfoPlist.strings in Resources */,
 				BF50F567786DC8AD3B01B8D8 /* initiator.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -805,6 +809,17 @@
 			targetProxy = 9545C726B6D9EC5AD7F92A54 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		962359150D6304F53498F15A /* InfoPlist.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				979635E6CF9EE6B49425E909 /* en */,
+			);
+			name = InfoPlist.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
 		33A8822ABA9E9A6EF5A2B54E /* Debug */ = {

@@ -1,0 +1,2 @@
+/* The name in the Dock and in Finder. See CFBundleDisplayName in Info.plist. */
+CFBundleDisplayName = "iSCSI/NVMe/TCP Initiator";

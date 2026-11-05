@@ -49,7 +49,7 @@ struct ISCSIInitiatorApp: App {
     }
 
     var body: some Scene {
-        Window("iSCSI Initiator", id: "main") {
+        Window("iSCSI/NVMe/TCP Initiator", id: "main") {
             MainWindow(model: model)
                 .frame(minWidth: 760, minHeight: 480)
         }

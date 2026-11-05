@@ -2,8 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- The menu bar title. The bundle is still "iSCSI Initiator.app": a file
+         name cannot hold a slash, and installs and updates go by that path. -->
     <key>CFBundleName</key>
+    <string>iSCSI/NVMe/TCP Initiator</string>
+    <!-- The Dock and Finder show the file name unless this matches it and a
+         localized value exists, so this stays the file name and the name
+         people see is in en.lproj/InfoPlist.strings. -->
+    <key>CFBundleDisplayName</key>
     <string>iSCSI Initiator</string>
+    <key>LSHasLocalizedDisplayName</key>
+    <true/>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
     <key>CFBundleIdentifier</key>
     <string>me.herko.iSCSIInitiator</string>
     <key>CFBundlePackageType</key>
@@ -14,6 +25,12 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <!-- Sparkle. The feed lives in this repo and its enclosures point at
          GitHub Release assets. -->
+    <!-- Must not contain a slash. Sparkle names its download directory after
+         this, and without it the name would be the display name above: every
+         update download would fail, and that build could never update itself
+         out of the fault. release.sh checks. -->
+    <key>SUBundleName</key>
+    <string>iSCSI Initiator</string>
     <key>SUFeedURL</key>
     <string>https://raw.githubusercontent.com/jherskovic/iSCSI/main/appcast.xml</string>
     <!-- EdDSA public key. The private half lives in the login keychain of
@@ -51,6 +68,6 @@
         </dict>
     </array>
     <key>NSHumanReadableCopyright</key>
-    <string>iSCSI Initiator</string>
+    <string>iSCSI/NVMe/TCP Initiator</string>
 </dict>
 </plist>

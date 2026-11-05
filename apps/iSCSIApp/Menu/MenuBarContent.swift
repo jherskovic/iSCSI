@@ -40,7 +40,7 @@ struct MenuBarContent: View {
                     Task { await model.detachAll() }
                 }
             }
-            menuButton("iSCSI Initiator…", systemImage: "macwindow") {
+            menuButton("iSCSI/NVMe/TCP Initiator…", systemImage: "macwindow") {
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
             }
