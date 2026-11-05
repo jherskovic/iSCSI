@@ -33,7 +33,7 @@ struct NVMeAttach: ParsableCommand {
         switch ImageAttachPlan.decide(fskitWasMounted: wasMounted, existingDevice: device) {
         case .reuse(let disk):
             print(disk)
-            print("Backing mount: \(volume.path)")
+            FileHandle.standardError.write(Data("Backing mount: \(volume.path)\n".utf8))
             return
         case .replaceStale:
             try detachNamespaceDevice(image: imagePath)
@@ -63,8 +63,12 @@ struct NVMeAttach: ParsableCommand {
             if let block = PartitionTableProbe.attachBlockSize(prefix: prefix, lunBlockSize: size) {
                 args += ["-blocksize", String(block)]
             }
-            try runNamespaceCommand("/usr/bin/hdiutil", args + [image.path])
-            print("Backing mount: \(volume.path)")
+            _ = try runNamespaceCommand("/usr/bin/hdiutil", args + [image.path], captureOutput: true)
+            guard let disk = try namespaceDevice(image: imagePath) else {
+                throw NamespaceError("Attachment completed without a whole-disk device.")
+            }
+            print(disk)
+            FileHandle.standardError.write(Data("Backing mount: \(volume.path)\n".utf8))
         } catch {
             // A failed attach may still have created a disk. Keep its backing
             // mount if cleanup cannot establish that the disk is gone.

@@ -94,7 +94,7 @@ func namespaceMounts() throws -> [MountTableEntry] {
 }
 
 func namespaceDevice(image: String) throws -> String? {
-    let data = try runNamespaceCommand("/usr/bin/hdiutil", ["info", "-plist"], output: Pipe())
+    let data = try runNamespaceCommand("/usr/bin/hdiutil", ["info", "-plist"], captureOutput: true)
     guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
           let images = plist["images"] as? [[String: Any]] else { throw NamespaceError("Cannot read image list.") }
     return NamespaceLifecycle.device(in: images, imagePath: image)
@@ -119,7 +119,7 @@ func unmountNamespace(_ path: String) throws {
 }
 
 @discardableResult
-func runNamespaceCommand(_ path: String, _ arguments: [String], output: Pipe? = nil) throws -> Data {
+func runNamespaceCommand(_ path: String, _ arguments: [String], captureOutput: Bool = false) throws -> Data {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: path)
     process.arguments = arguments
@@ -128,7 +128,7 @@ func runNamespaceCommand(_ path: String, _ arguments: [String], output: Pipe? = 
     FileManager.default.createFile(atPath: file.path, contents: nil)
     let handle = try FileHandle(forWritingTo: file)
     defer { try? handle.close(); try? FileManager.default.removeItem(at: file) }
-    if output != nil { process.standardOutput = handle }
+    if captureOutput { process.standardOutput = handle }
     try process.run()
     let deadline = Date().addingTimeInterval(60)
     while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
@@ -148,5 +148,5 @@ func runNamespaceCommand(_ path: String, _ arguments: [String], output: Pipe? = 
     }
     process.waitUntilExit()
     guard process.terminationStatus == 0 else { throw NamespaceError("\(path) failed with status \(process.terminationStatus).") }
-    return output == nil ? Data() : try Data(contentsOf: file)
+    return !captureOutput ? Data() : try Data(contentsOf: file)
 }
