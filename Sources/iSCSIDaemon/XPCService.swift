@@ -154,7 +154,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                     targetIQN: targetIQN, lun: lun.uint64Value, chap: chap,
                     flushPolicy: FlushPolicy(intervalSeconds: record.flushIntervalSeconds),
                     binding: record.interfaceBinding,
-                    claimingUnit: true
+                    claimingUnit: true,
+                    validateConfiguration: { [targets = self.targets] in try await targets.validate(record) }
                 )
                 self.claim(handle, budgets: SessionBudgets(
                     readahead: WorkloadProfile.pinnedBudgetBytes(stored: record.workloadProfile) ?? 0,
@@ -382,16 +383,34 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             do {
-                // Both secret halves go with the target: an orphaned keychain
-                // item would be inherited by a later target reusing the id.
-                // Secrets first, so a refusal leaves the record in place and
-                // the removal can be retried; the other order lost the only
-                // pointer to an item the keychain would not delete.
-                try KeychainStore.deleteAllSecrets(for: id, owner: owner)
-                try await targets.delete(id: id)
+                if let record = await targets.all().first(where: { $0.id == id }) {
+                    try await remove(record)
+                }
                 box.value(nil)
             } catch {
                 box.value(ISCSIError.nsError(from: error, context: "Deleting the target"))
+            }
+        }
+    }
+
+    public func deleteTargetIfUnchanged(_ data: Data, reply: @escaping (Error?) -> Void) {
+        let box = SendableBox(reply)
+        Task {
+            do {
+                try await remove(JSONDecoder().decode(TargetRecord.self, from: data))
+                box.value(nil)
+            } catch {
+                box.value(ISCSIError.nsError(from: error, context: "Deleting the target"))
+            }
+        }
+    }
+
+    private func remove(_ record: TargetRecord) async throws {
+        let targets = self.targets
+        let owner = self.owner
+        try await core.withTargetRemoval(record: record) {
+            try await targets.delete(expected: record) {
+                try KeychainStore.deleteAllSecrets(for: record.id, owner: owner)
             }
         }
     }
@@ -576,7 +595,8 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 // write-through rather than spinning up a flush timer.
                 let handle = try await core.login(
                     host: host, port: port.uint16Value, targetIQN: targetIQN,
-                    lun: lun.uint64Value, chap: chap, binding: record.interfaceBinding)
+                    lun: lun.uint64Value, chap: chap, binding: record.interfaceBinding,
+                    validateConfiguration: { [targets = self.targets] in try await targets.validate(record) })
                 // Always close, even when reading the capacity fails: a probe
                 // must not leave a session behind.
                 defer { Task { try? await self.core.logout(handle) } }
@@ -613,7 +633,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 return
             }
             do {
-                try account.remove()
+                try await targets.removeConfiguration { [account] in try account.remove() }
                 DaemonLog.lifecycle("removeAllData: cleared \(account.directory.path)")
                 box.value(nil)
             } catch {
@@ -639,6 +659,7 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
 public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let core: DaemonCore
     private let root: ConfigurationRoot
+    private let stores = OSAllocatedUnfairLock(initialState: [uid_t: TargetStore]())
     private let adoption: LegacyConfigurationAdoption
 
     public init(core: DaemonCore, root: ConfigurationRoot = .system) {
@@ -656,9 +677,16 @@ public final class ISCSIListenerDelegate: NSObject, NSXPCListenerDelegate, @unch
         // The kernel's record of the peer, which a client cannot influence.
         // Reading it is all that happens here: anything with an effect waits
         // for a message that has passed the requirement above.
+        let account = root.account(connection.effectiveUserIdentifier)
+        let store = stores.withLock { stores in
+            if let store = stores[account.uid] { return store }
+            let store = TargetStore(url: account.targetsURL)
+            stores[account.uid] = store
+            return store
+        }
         let service = ISCSIXPCService(core: core,
-                                      account: root.account(connection.effectiveUserIdentifier),
-                                      adoption: adoption)
+                                      account: account,
+                                      adoption: adoption, targets: store)
         connection.exportedInterface = iface
         connection.exportedObject = service
         // A dead peer surfaces here as invalidation; release its sessions so a

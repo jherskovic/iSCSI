@@ -106,6 +106,8 @@ import Foundation
     /// refers to.
     func saveTarget(_ record: Data, reply: @escaping (Data?, Error?) -> Void)
     func deleteTarget(id: String, reply: @escaping (Error?) -> Void)
+    /// Compare the complete saved record before deleting; never fall back to ID-only deletion.
+    func deleteTargetIfUnchanged(_ record: Data, reply: @escaping (Error?) -> Void)
 
     // MARK: - Credentials
     //

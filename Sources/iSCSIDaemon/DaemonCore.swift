@@ -65,6 +65,21 @@ public actor DaemonCore {
     /// held for a moment.
     private let unitClaimWait: Duration
     private var sessions: [String: SessionEntry] = [:]
+    private var unitUsers: [UnitKey: Int] = [:]
+    private var removingUnits: Set<UnitKey> = []
+
+    /// Reserve across actor suspension: no login can overlap deletion.
+    public func withTargetRemoval(record: TargetRecord,
+                                  operation: @Sendable () async throws -> Void) async throws {
+        let key = UnitKey(targetIQN: record.targetIQN, lun: record.lun)
+        guard unitUsers[key, default: 0] == 0, !removingUnits.contains(key) else {
+            throw TargetRemovalError.inUse
+        }
+        removingUnits.insert(key)
+        defer { removingUnits.remove(key) }
+        try await operation()
+    }
+
     private var handleCounter: UInt64 = 0
     /// The iSCSI initiator name presented in every login. `nonisolated`, like
     /// `hostIdentity`, so `daemonInfo` can read it without hopping onto the
@@ -197,11 +212,18 @@ public actor DaemonCore {
         chap: CHAP.Credentials? = nil,
         flushPolicy: FlushPolicy? = nil,
         binding: InterfaceBinding? = nil,
-        claimingUnit: Bool = false
+        claimingUnit: Bool = false,
+        validateConfiguration: @Sendable () async throws -> Void = {}
     ) async throws -> String {
         // A session that will carry a filesystem holds its unit for its whole
         // life (`claimedUnits`). Reserved before the first suspension, or a
         // second login could pass the check while this one is still connecting.
+        let key = UnitKey(targetIQN: targetIQN, lun: lun)
+        guard !removingUnits.contains(key) else { throw TargetRemovalError.inUse }
+        unitUsers[key, default: 0] += 1
+        var keptUser = false
+        defer { if !keptUser { unitUsers[key, default: 0] -= 1 } }
+        try await validateConfiguration()
         let claim = claimingUnit ? UnitKey(targetIQN: targetIQN, lun: lun) : nil
         if let claim { try await reserve(claim) }
         var registered = false
@@ -287,6 +309,7 @@ public actor DaemonCore {
                                         flushPolicy: durability, path: path, claim: claim)
         if let claim { claimedUnits[claim] = handle }
         registered = true
+        keptUser = true
         if case .interval(let seconds) = durability {
             sessions[handle]?.flushTask = Task { [weak self] in
                 while !Task.isCancelled {
@@ -394,6 +417,8 @@ public actor DaemonCore {
 
     public func logout(_ handle: String) async throws {
         guard let entry = sessions.removeValue(forKey: handle) else { return }
+        let key = UnitKey(targetIQN: entry.targetIQN, lun: entry.lun)
+        defer { unitUsers[key, default: 0] -= 1 }
         // Released once the session is down, not before: a relaxed flush
         // policy's last SYNCHRONIZE CACHE below still belongs to this holder.
         defer { if let claim = entry.claim, claimedUnits[claim] == handle { claimedUnits[claim] = nil } }

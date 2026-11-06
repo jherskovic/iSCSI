@@ -89,6 +89,32 @@ public actor TargetStore {
         try persist(all().filter { $0.id != id })
     }
 
+    /// Compare and delete in one actor turn, including credential cleanup.
+    public func delete(expected: TargetRecord, beforeDelete: @Sendable () throws -> Void = {}) throws {
+        let records = all()
+        let matchingIDs = records.filter { $0.id == expected.id }
+        guard matchingIDs.count <= 1 else { throw TargetRemovalError.duplicateID }
+        guard let current = matchingIDs.first else {
+            throw TargetRemovalError.changed
+        }
+        guard current == expected else { throw TargetRemovalError.changed }
+        guard records.filter({ Self.isSameTarget($0, expected) }).count == 1 else {
+            throw TargetRemovalError.duplicates
+        }
+        try beforeDelete()
+        try persist(records.filter { $0.id != expected.id })
+    }
+
+    /// Account erasure must invalidate the shared cache in the same actor turn.
+    public func removeConfiguration(_ removeFiles: @Sendable () throws -> Void) throws {
+        try removeFiles()
+        cache = []
+    }
+
+    public func validate(_ expected: TargetRecord) throws {
+        guard all().contains(expected) else { throw TargetRemovalError.changed }
+    }
+
     // MARK: - Disk
 
     /// A corrupt file returns an empty list rather than refusing to start the
@@ -157,5 +183,17 @@ public actor TargetStore {
         // The atomic write lands a fresh inode with umask permissions; the
         // 0700 directory is what closes that pre-chmod window.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+}
+
+public enum TargetRemovalError: Error, LocalizedError, Equatable {
+    case inUse, changed, duplicates, duplicateID
+    public var errorDescription: String? {
+        switch self {
+        case .inUse: "Device is in use; cannot remove namespace. Detach it first."
+        case .changed: "Target configuration changed. Refresh and retry."
+        case .duplicateID: "Multiple saved records share this target ID. Resolve duplicate IDs before removing it."
+        case .duplicates: "Multiple saved records match this namespace. Resolve duplicate records before removing it."
+        }
     }
 }
