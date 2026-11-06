@@ -19,9 +19,9 @@ struct NVMeNamespaceOptions: ParsableArguments {
         else { throw ValidationError("Invalid portal, subsystem NQN, or namespace ID.") }
     }
 
-    func withVolume(_ body: (URL, URL) throws -> Void) throws {
+    func withVolume(record suppliedRecord: TargetRecord? = nil, _ body: (URL, URL) throws -> Void) throws {
         try validate()
-        let records = try namespaceTargets()
+        let records = try suppliedRecord.map { [$0] } ?? namespaceTargets()
         guard let record = NamespaceLifecycle.record(in: records, host: host, port: port,
                                                      subsystem: subsystem, nsid: UInt64(nsid)),
               let resource = MountResourceURL.make(host: record.host, port: record.port,
@@ -93,11 +93,28 @@ func namespaceMounts() throws -> [MountTableEntry] {
     }
 }
 
-func namespaceDevice(image: String) throws -> String? {
+func namespaceImages() throws -> [[String: Any]] {
     let data = try runNamespaceCommand("/usr/bin/hdiutil", ["info", "-plist"], captureOutput: true)
     guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
           let images = plist["images"] as? [[String: Any]] else { throw NamespaceError("Cannot read image list.") }
-    return NamespaceLifecycle.device(in: images, imagePath: image)
+    return images
+}
+
+func namespaceDevice(image: String) throws -> String? {
+    NamespaceLifecycle.device(in: try namespaceImages(), imagePath: image)
+}
+
+func namespaceRemovalDevice(image: String) throws -> String? {
+    try namespaceRemovalDevice(image: image, images: namespaceImages(), mounts: namespaceMounts())
+}
+
+func namespaceRemovalDevice(image: String, images: [[String: Any]], mounts: [MountTableEntry]) throws -> String? {
+    guard let blocking = NamespaceLifecycle.removalBlockingImage(in: images, imagePath: image, mounts: mounts)
+    else { return nil }
+    guard blocking.imagePath == image else {
+        throw NamespaceError("Cannot confirm namespace is unused: orphaned namespace image \(blocking.imagePath) is attached as \(blocking.device). Inspect and detach that device before retrying remove.")
+    }
+    return blocking.device
 }
 
 func detachNamespaceDevice(image: String) throws {

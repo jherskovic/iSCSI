@@ -109,6 +109,11 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
+            name: "iscsictlTests",
+            dependencies: ["iscsictl", "iSCSIKit"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
             name: "iSCSIKitTests",
             dependencies: ["iSCSIKit"],
             swiftSettings: [.swiftLanguageMode(.v6)]
