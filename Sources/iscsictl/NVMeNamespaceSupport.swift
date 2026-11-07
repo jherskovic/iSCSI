@@ -104,19 +104,6 @@ func namespaceDevice(image: String) throws -> String? {
     NamespaceLifecycle.device(in: try namespaceImages(), imagePath: image)
 }
 
-func namespaceRemovalDevice(image: String) throws -> String? {
-    try namespaceRemovalDevice(image: image, images: namespaceImages(), mounts: namespaceMounts())
-}
-
-func namespaceRemovalDevice(image: String, images: [[String: Any]], mounts: [MountTableEntry]) throws -> String? {
-    guard let blocking = NamespaceLifecycle.removalBlockingImage(in: images, imagePath: image, mounts: mounts)
-    else { return nil }
-    guard blocking.imagePath == image else {
-        throw NamespaceError("Cannot confirm namespace is unused: orphaned namespace image \(blocking.imagePath) is attached as \(blocking.device). Inspect and detach that device before retrying remove.")
-    }
-    return blocking.device
-}
-
 func detachNamespaceDevice(image: String) throws {
     guard let disk = try namespaceDevice(image: image) else { return }
     do { try runNamespaceCommand("/usr/bin/hdiutil", ["detach", disk]) }

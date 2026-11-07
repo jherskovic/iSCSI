@@ -101,36 +101,15 @@ struct NVMeRemoveTests {
         }
     }
 
-    @Test func ordinaryLunImageDoesNotPreventDeletion() throws {
+    @Test(arguments: ["/tmp/lun0.img", "/cache/fedcba9876543210/lun0.img"])
+    func unrelatedImagesDoNotPreventDeletion(otherImage: String) throws {
         var deleted = false
         try NVMeRemove.remove(record: record, volume: volume, mounts: { [] },
             device: { path in
-                try namespaceRemovalDevice(image: path,
-                    images: [["image-path": "/tmp/lun0.img", "system-entities": [["dev-entry": "/dev/disk9"]]]],
-                    mounts: [])
+                NamespaceLifecycle.device(in: [
+                    ["image-path": otherImage, "system-entities": [["dev-entry": "/dev/disk9"]]]
+                ], imagePath: path)
             }, delete: { _ in deleted = true })
         #expect(deleted)
     }
-
-    @Test func managedOrphanReportsActualDeviceAndPathWithoutDeleting() {
-        let root = "/Users/test/Library/Caches/me.herko.iSCSIInitiator"
-        let orphan = root + "/fedcba9876543210/lun0.img"
-        var deleted = false
-        do {
-            try NVMeRemove.remove(record: record,
-                volume: URL(fileURLWithPath: root + "/0123456789abcdef"), mounts: { [] },
-                device: { path in
-                    try namespaceRemovalDevice(image: path,
-                        images: [["image-path": orphan, "system-entities": [["dev-entry": "/dev/disk9"]]]],
-                        mounts: [])
-                }, delete: { _ in deleted = true })
-            Issue.record("Must refuse uncertain orphan state")
-        } catch {
-            #expect(error.localizedDescription.contains(orphan))
-            #expect(error.localizedDescription.contains("/dev/disk9"))
-            #expect(!error.localizedDescription.contains("Run nvme detach first"))
-        }
-        #expect(!deleted)
-    }
-
 }

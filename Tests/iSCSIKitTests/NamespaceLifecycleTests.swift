@@ -47,25 +47,4 @@ struct NamespaceLifecycleTests {
         #expect(NamespaceLifecycle.isAttached(mounted: true, device: nil))
         #expect(NamespaceLifecycle.isAttached(mounted: false, device: "/dev/disk9"))
     }
-    @Test func onlyManagedOrphanedImagesBlockRemoval() {
-        let root = "/Users/test/Library/Caches/me.herko.iSCSIInitiator"
-        let current = root + "/0123456789abcdef/lun0.img"
-        let orphan = root + "/fedcba9876543210/lun0.img"
-        func images(_ path: String) -> [[String: Any]] {
-            [["image-path": path, "system-entities": [["dev-entry": "/dev/disk9"]]]]
-        }
-        #expect(NamespaceLifecycle.removalBlockingImage(in: images("/tmp/lun0.img"),
-                    imagePath: current, mounts: []) == nil)
-        #expect(NamespaceLifecycle.removalBlockingImage(in: images(root + "/ordinary/lun0.img"),
-                    imagePath: current, mounts: []) == nil)
-        let blocked = NamespaceLifecycle.removalBlockingImage(in: images(orphan), imagePath: current, mounts: [])
-        #expect(blocked?.device == "/dev/disk9")
-        #expect(blocked?.imagePath == orphan)
-        #expect(NamespaceLifecycle.removalBlockingImage(in: images(orphan), imagePath: current,
-                    mounts: [MountTableEntry(from: "nvme://nas/nqn.test:other/1", on: root + "/fedcba9876543210")]) == nil)
-        #expect(NamespaceLifecycle.removalBlockingImage(in: [["image-path": orphan]],
-                    imagePath: current, mounts: []) == nil)
-        #expect(NamespaceLifecycle.removalBlockingImage(in: images(current),
-                    imagePath: current, mounts: [])?.device == "/dev/disk9")
-    }
 }

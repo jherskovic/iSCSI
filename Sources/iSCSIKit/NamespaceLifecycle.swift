@@ -27,27 +27,6 @@ public enum NamespaceLifecycle {
         return nil
     }
 
-    /// Only managed namespace images qualify as unknown orphaned devices.
-    /// A regular file elsewhere named lun0.img is unrelated to our mounts.
-    public static func removalBlockingImage(in images: [[String: Any]], imagePath: String,
-                                            mounts: [MountTableEntry]) -> (device: String, imagePath: String)? {
-        let root = URL(fileURLWithPath: imagePath).deletingLastPathComponent().deletingLastPathComponent()
-        for image in images {
-            guard let path = image["image-path"] as? String,
-                  let disk = device(in: [image], imagePath: path) else { continue }
-            if path == imagePath { return (disk, path) }
-            let url = URL(fileURLWithPath: path)
-            let volume = url.deletingLastPathComponent()
-            if url.lastPathComponent == "lun0.img",
-               volume.deletingLastPathComponent().path == root.path,
-               volume.lastPathComponent.range(of: #"^[0-9a-f]{16}$"#, options: .regularExpression) != nil,
-               !mounts.contains(where: { $0.on == volume.path }) {
-                return (disk, path)
-            }
-        }
-        return nil
-    }
-
     public static func isAttached(mounted: Bool, device: String?) -> Bool {
         mounted || device != nil
     }

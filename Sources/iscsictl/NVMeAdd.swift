@@ -69,7 +69,7 @@ struct NVMeRemove: ParsableCommand {
     static func remove(
         record: TargetRecord, volume: URL,
         mounts: () throws -> [MountTableEntry] = namespaceMounts,
-        device: (String) throws -> String? = { try namespaceRemovalDevice(image: $0) },
+        device: (String) throws -> String? = { try namespaceDevice(image: $0) },
         delete: (TargetRecord) throws -> Void = { try deleteSavedRecord($0) }
     ) throws {
         let entries = try mounts()
