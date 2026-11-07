@@ -383,8 +383,10 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         let box = SendableBox(reply)
         Task {
             do {
-                if let record = await targets.all().first(where: { $0.id == id }) {
-                    try await remove(record)
+                // Preserve the app's ID-based repair path, including duplicate IDs.
+                let owner = self.owner
+                try await targets.remove(id: id) {
+                    try KeychainStore.deleteAllSecrets(for: id, owner: owner)
                 }
                 box.value(nil)
             } catch {
@@ -406,6 +408,9 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     }
 
     private func remove(_ record: TargetRecord) async throws {
+        // Secrets first: a keychain refusal must leave the record available
+        // for retry. Deleting the record first would lose the only pointer to
+        // credentials that could be inherited by a later target using its ID.
         let targets = self.targets
         let owner = self.owner
         try await core.withTargetRemoval(record: record) {

@@ -255,6 +255,38 @@ struct KeychainStoreTests {
         #expect(fake.count == 0)
     }
 
+    @Test(arguments: [true, false])
+    func removingOneTwinPreservesTheOthersSecret(checked: Bool) async throws {
+        let fake = FakeKeychain()
+        let previous = KeychainStore.backend
+        KeychainStore.backend = fake
+        defer { KeychainStore.backend = previous }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("targets.json")
+        let first = TargetRecord(id: "first", displayName: "NAS", host: "nas", port: 4420,
+                                 targetIQN: "nqn.test:disk", lun: 1)
+        var twin = first
+        twin.id = "second"
+        try TargetStore.write([first, twin], to: file)
+        let store = TargetStore(url: file)
+        let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _, _ in
+            throw TransportError.connectFailed("no connection expected")
+        }
+        let service = ISCSIXPCService(core: core, targets: store)
+        try KeychainStore.store("first-secret-long", for: first.id, owner: testOwner)
+        try KeychainStore.store("second-secret-long", for: twin.id, owner: testOwner)
+        if checked {
+            let data = try JSONEncoder().encode(first)
+            #expect(await reply { service.deleteTargetIfUnchanged(data, reply: $0) } == nil)
+        } else {
+            #expect(await reply { service.deleteTarget(id: first.id, reply: $0) } == nil)
+        }
+        #expect(await store.all() == [twin])
+        #expect(KeychainStore.chapSecret(for: first.id, owner: testOwner) == nil)
+        #expect(KeychainStore.chapSecret(for: twin.id, owner: testOwner) == "second-secret-long")
+    }
+
     @Test func anUnavailableKeychainIsItsOwnFailure() throws {
         try withFake { fake in
             fake.nextStoreStatus = errSecNotAvailable

@@ -86,7 +86,7 @@ struct TargetRemovalTests {
         #expect(await store.all().isEmpty)
     }
 
-    @Test func legacyDuplicatesAreRejectedWithoutDeletingEitherRecord() async throws {
+    @Test func duplicateNamespacesCanBeDeletedOneAtATime() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }
         let file = url.appendingPathComponent("targets.json")
@@ -94,10 +94,10 @@ struct TargetRemovalTests {
         twin.id = "duplicate"
         try TargetStore.write([record, twin], to: file)
         let store = TargetStore(url: file)
-        await #expect(throws: TargetRemovalError.duplicates) {
-            try await store.delete(expected: record) { Issue.record("Must not delete credentials") }
-        }
-        #expect(await store.all().count == 2)
+        try await store.delete(expected: record)
+        #expect(await store.all() == [twin])
+        try await store.delete(expected: twin)
+        #expect(await store.all().isEmpty)
     }
 
     @Test func deletedConfigurationCannotBeUsedByDelayedLogin() async throws {
@@ -180,5 +180,26 @@ struct TargetRemovalTests {
         #expect(await store.all() == records)
         #expect(try TargetStore.decode(contentsOf: file) == records)
     }
+    @Test func legacyXPCDeletionRepairsDuplicateIDs() async throws {
+        let (core, cleanup) = DaemonCoreTests().makeDaemon()
+        defer { cleanup() }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let file = url.appendingPathComponent("targets.json")
+        var other = record
+        other.targetIQN = "nqn.test:other"
+        var unrelated = record
+        unrelated.id = "keep"
+        unrelated.targetIQN = "nqn.test:keep"
+        try TargetStore.write([record, other, unrelated], to: file)
+        let store = TargetStore(url: file)
+        let service = ISCSIXPCService(core: core, targets: store)
+        let error: Error? = await withCheckedContinuation { continuation in
+            service.deleteTarget(id: record.id) { continuation.resume(returning: $0) }
+        }
+        #expect(error == nil)
+        #expect(await store.all() == [unrelated])
+    }
+
 
 }

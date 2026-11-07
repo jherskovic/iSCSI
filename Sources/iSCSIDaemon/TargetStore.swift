@@ -85,8 +85,11 @@ public actor TargetStore {
             && a.lun == b.lun
     }
 
-    public func delete(id: String) throws {
-        try persist(all().filter { $0.id != id })
+    /// Legacy ID-based removal intentionally repairs all records sharing an ID.
+    public func remove(id: String, beforeDelete: @Sendable () throws -> Void) throws {
+        let records = all()
+        try beforeDelete()
+        try persist(records.filter { $0.id != id })
     }
 
     /// Compare and delete in one actor turn, including credential cleanup.
@@ -98,9 +101,6 @@ public actor TargetStore {
             throw TargetRemovalError.changed
         }
         guard current == expected else { throw TargetRemovalError.changed }
-        guard records.filter({ Self.isSameTarget($0, expected) }).count == 1 else {
-            throw TargetRemovalError.duplicates
-        }
         try beforeDelete()
         try persist(records.filter { $0.id != expected.id })
     }
@@ -187,13 +187,12 @@ public actor TargetStore {
 }
 
 public enum TargetRemovalError: Error, LocalizedError, Equatable {
-    case inUse, changed, duplicates, duplicateID
+    case inUse, changed, duplicateID
     public var errorDescription: String? {
         switch self {
         case .inUse: "Device is in use; cannot remove namespace. Detach it first."
         case .changed: "Target configuration changed. Refresh and retry."
-        case .duplicateID: "Multiple saved records share this target ID. Resolve duplicate IDs before removing it."
-        case .duplicates: "Multiple saved records match this namespace. Resolve duplicate records before removing it."
+        case .duplicateID: "Multiple saved records share this target ID. Remove the target in the app to resolve the duplicate ID."
         }
     }
 }

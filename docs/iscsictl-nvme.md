@@ -35,9 +35,9 @@ and prevents new logins during deletion. The CLI and daemon must both be updated
 remove uses a checked deletion interface and never falls back to unchecked deletion.
 
 The exact saved record is checked again before deletion. Concurrent configuration
-changes, duplicate matching records, and duplicate IDs cause an error before
-credentials or records are deleted. Resolve duplicates or refresh the configuration
-before retrying. An orphaned `lun0.img` under another valid mount tag in this
+changes cause an error before deletion. Duplicate namespace records with distinct
+IDs can be removed one at a time. Duplicate IDs are refused before credentials or
+records are deleted; remove that target in the app to repair them. An orphaned `lun0.img` under another valid mount tag in this
 account's namespace cache also blocks removal. Its error reports the actual disk
 and image path for inspection and detachment. Ordinary files named `lun0.img`
 outside those managed paths do not block removal; arbitrary old mount paths
