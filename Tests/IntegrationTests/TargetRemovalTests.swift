@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import iSCSIDaemon
 import iSCSIKit
+import MockTarget
 
 private actor RemovalGate {
     var entered = false
@@ -35,7 +36,7 @@ struct TargetRemovalTests {
 
     @Test func pendingLoginBlocksRemovalAndFailedLoginReleasesReservation() async throws {
         let gate = RemovalGate()
-        let core = DaemonCore(initiatorName: "iqn.test:host") { _, _, _ in
+        let core = DaemonCore(initiatorName: "iqn.test:host", unitClaimWait: .milliseconds(200)) { _, _, _ in
             try await gate.hold()
             throw TransportError.connectFailed("test failure")
         }
@@ -58,7 +59,7 @@ struct TargetRemovalTests {
         defer { cleanup() }
         let removal = Task { try await core.withTargetRemoval(record: record) { try await gate.hold() } }
         try await gate.waitForEntry()
-        await #expect(throws: TargetRemovalError.inUse) {
+        await #expect(throws: TargetRemovalError.beingRemoved) {
             try await core.login(host: record.host, port: record.port,
                                  targetIQN: record.targetIQN, lun: record.lun)
         }
@@ -180,6 +181,36 @@ struct TargetRemovalTests {
         #expect(await store.all() == records)
         #expect(try TargetStore.decode(contentsOf: file) == records)
     }
+
+    @Test func removalWaitsForSlowLogout() async throws {
+        var config = MockTargetConfig()
+        config.faults.responseDelay = .milliseconds(200)
+        let (core, cleanup) = DaemonCoreTests().makeDaemon(config: config, unitClaimWait: .seconds(2))
+        defer { cleanup() }
+        let handle = try await core.login(host: record.host, port: record.port,
+                                         targetIQN: record.targetIQN, lun: record.lun)
+        let logout = Task { try await core.logout(handle) }
+        // logout removes the registry entry before awaiting the delayed reply.
+        while !(await core.sessionHandles()).isEmpty { await Task.yield() }
+        try await core.withTargetRemoval(record: record) {}
+        try await logout.value
+    }
+
+    @Test func removalTimesOutWhileSessionRemainsActive() async throws {
+        let wait: Duration = .milliseconds(200)
+        let (core, cleanup) = DaemonCoreTests().makeDaemon(unitClaimWait: wait)
+        defer { cleanup() }
+        let handle = try await core.login(host: record.host, port: record.port,
+                                         targetIQN: record.targetIQN, lun: record.lun)
+        let started = ContinuousClock.now
+        await #expect(throws: TargetRemovalError.inUse) {
+            try await core.withTargetRemoval(record: record) { Issue.record("Must not remove active target") }
+        }
+        #expect(ContinuousClock.now - started >= wait)
+        try await core.logout(handle)
+        try await core.withTargetRemoval(record: record) {}
+    }
+
     @Test func legacyXPCDeletionRepairsDuplicateIDs() async throws {
         let (core, cleanup) = DaemonCoreTests().makeDaemon()
         defer { cleanup() }
@@ -201,5 +232,11 @@ struct TargetRemovalTests {
         #expect(await store.all() == [unrelated])
     }
 
+    @Test func removalErrorsDescribeTheirOperation() {
+        #expect(TargetRemovalError.inUse.localizedDescription.contains("Target"))
+        #expect(!TargetRemovalError.inUse.localizedDescription.contains("namespace"))
+        #expect(TargetRemovalError.beingRemoved.localizedDescription.contains("cannot log in"))
+        #expect(TargetRemovalError.duplicateID.localizedDescription.contains("in the app"))
+    }
 
 }

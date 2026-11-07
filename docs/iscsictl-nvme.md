@@ -30,9 +30,16 @@ account and must run without sudo. Remove refuses with a device-in-use error
 and preserves the configuration if the namespace is still mounted or its disk
 is still attached. Run `nvme detach` successfully before removing it. A busy
 disk that cannot be detached cannot be removed either.
-The daemon also refuses deletion while a login, session, or logout is in progress,
-and prevents new logins during deletion. The CLI and daemon must both be updated:
-remove uses a checked deletion interface and never falls back to unchecked deletion.
+The daemon waits up to its unit-claim timeout (10 seconds by default) for a
+login, session, or logout to finish before refusing deletion. This lets a remove
+immediately after detach wait for the daemon's final flush and logout. New
+logins are blocked while deletion itself is running. The busy check is
+daemon-wide and keyed by target name and unit: a session belonging to another
+account or using another portal can also block removal. That session must close
+before retrying; the current user may not be able to detach it.
+
+The CLI and daemon must both be updated: remove uses a checked deletion
+interface and never falls back to unchecked deletion.
 
 The exact saved record is checked again before deletion. Concurrent configuration
 changes cause an error before deletion. Duplicate namespace records with distinct

@@ -72,9 +72,12 @@ public actor DaemonCore {
     public func withTargetRemoval(record: TargetRecord,
                                   operation: @Sendable () async throws -> Void) async throws {
         let key = UnitKey(targetIQN: record.targetIQN, lun: record.lun)
-        guard unitUsers[key, default: 0] == 0, !removingUnits.contains(key) else {
-            throw TargetRemovalError.inUse
+        let deadline = ContinuousClock.now.advanced(by: unitClaimWait)
+        while unitUsers[key, default: 0] > 0 || removingUnits.contains(key) {
+            guard ContinuousClock.now < deadline else { throw TargetRemovalError.inUse }
+            try await Task.sleep(for: .milliseconds(100))
         }
+        try Task.checkCancellation()
         removingUnits.insert(key)
         defer { removingUnits.remove(key) }
         try await operation()
@@ -219,7 +222,7 @@ public actor DaemonCore {
         // life (`claimedUnits`). Reserved before the first suspension, or a
         // second login could pass the check while this one is still connecting.
         let key = UnitKey(targetIQN: targetIQN, lun: lun)
-        guard !removingUnits.contains(key) else { throw TargetRemovalError.inUse }
+        guard !removingUnits.contains(key) else { throw TargetRemovalError.beingRemoved }
         unitUsers[key, default: 0] += 1
         var keptUser = false
         defer { if !keptUser { unitUsers[key, default: 0] -= 1 } }

@@ -187,10 +187,11 @@ public actor TargetStore {
 }
 
 public enum TargetRemovalError: Error, LocalizedError, Equatable {
-    case inUse, changed, duplicateID
+    case inUse, beingRemoved, changed, duplicateID
     public var errorDescription: String? {
         switch self {
-        case .inUse: "Device is in use; cannot remove namespace. Detach it first."
+        case .inUse: "Target is in use; cannot remove it. Wait for active sessions to close and retry."
+        case .beingRemoved: "Target is being removed; cannot log in. Retry after removal completes."
         case .changed: "Target configuration changed. Refresh and retry."
         case .duplicateID: "Multiple saved records share this target ID. Remove the target in the app to resolve the duplicate ID."
         }
