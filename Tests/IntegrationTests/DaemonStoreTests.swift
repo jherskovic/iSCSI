@@ -108,6 +108,7 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     func refreshFSKitEnablement(reply: @escaping (Error?) -> Void) { reply(nil) }
     func listTargets(reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func saveTarget(_ record: Data, reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
+    func deleteTargetIfUnchanged(_ record: Data, reply: @escaping (Error?) -> Void) { reply(nil) }
     func deleteTarget(id: String, reply: @escaping (Error?) -> Void) { reply(nil) }
     func setCHAPSecret(targetID: String, secret: String, reply: @escaping (Error?) -> Void) { reply(nil) }
     func deleteCHAPSecret(targetID: String, reply: @escaping (Error?) -> Void) { reply(nil) }

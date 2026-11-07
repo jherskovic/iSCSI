@@ -207,7 +207,7 @@ LUN ──► shared-memory ring ──► iSCSIDext virtual SCSI HBA       (Bac
   target does not, so `swift run` keeps them and the safe build is the default.
   `release.sh` asserts that, and the signing identifier the daemon's allowlist
   matches on: a tool gets one from an Info.plist embedded in the binary, and
-  `PRODUCT_BUNDLE_IDENTIFIER` alone does nothing. `nvme add`, `attach` and
+  `PRODUCT_BUNDLE_IDENTIFIER` alone does nothing. `nvme add`, `remove`, `attach` and
   `detach` do ship: they go through the daemon and `mount -F`, as the logged-in
   account and never root (`docs/iscsictl-nvme.md`). Setup offers a link at
   `/usr/local/bin/iscsictl` (`CommandLineTool`), its one optional step:

@@ -113,7 +113,7 @@ struct TargetStoreTests {
         var b = sample("b"); b.host = "nas-two.local"
         try await store.save(a)
         try await store.save(b)
-        try await store.delete(id: "a")
+        try await store.delete(expected: a)
         #expect(await store.all().map(\.id) == ["b"])
     }
 

@@ -85,8 +85,34 @@ public actor TargetStore {
             && a.lun == b.lun
     }
 
-    public func delete(id: String) throws {
-        try persist(all().filter { $0.id != id })
+    /// Legacy ID-based removal intentionally repairs all records sharing an ID.
+    public func remove(id: String, beforeDelete: @Sendable () throws -> Void) throws {
+        let records = all()
+        try beforeDelete()
+        try persist(records.filter { $0.id != id })
+    }
+
+    /// Compare and delete in one actor turn, including credential cleanup.
+    public func delete(expected: TargetRecord, beforeDelete: @Sendable () throws -> Void = {}) throws {
+        let records = all()
+        let matchingIDs = records.filter { $0.id == expected.id }
+        guard matchingIDs.count <= 1 else { throw TargetRemovalError.duplicateID }
+        guard let current = matchingIDs.first else {
+            throw TargetRemovalError.changed
+        }
+        guard current == expected else { throw TargetRemovalError.changed }
+        try beforeDelete()
+        try persist(records.filter { $0.id != expected.id })
+    }
+
+    /// Account erasure must invalidate the shared cache in the same actor turn.
+    public func removeConfiguration(_ removeFiles: @Sendable () throws -> Void) throws {
+        try removeFiles()
+        cache = []
+    }
+
+    public func validate(_ expected: TargetRecord) throws {
+        guard all().contains(expected) else { throw TargetRemovalError.changed }
     }
 
     // MARK: - Disk
@@ -157,5 +183,17 @@ public actor TargetStore {
         // The atomic write lands a fresh inode with umask permissions; the
         // 0700 directory is what closes that pre-chmod window.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+}
+
+public enum TargetRemovalError: Error, LocalizedError, Equatable {
+    case inUse, beingRemoved, changed, duplicateID
+    public var errorDescription: String? {
+        switch self {
+        case .inUse: "Target is in use; cannot remove it. Wait for active sessions to close and retry."
+        case .beingRemoved: "Target is being removed; cannot log in. Retry after removal completes."
+        case .changed: "Target configuration changed. Refresh and retry."
+        case .duplicateID: "Multiple saved records share this target ID. Remove the target in the app to resolve the duplicate ID."
+        }
     }
 }

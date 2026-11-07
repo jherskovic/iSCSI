@@ -1,6 +1,6 @@
 # NVMe namespace commands
 
-The CLI can save a namespace target, expose it as a disk, and detach it.
+The CLI can save a namespace target, expose it as a disk, detach it, and remove its saved configuration.
 The iSCSI Initiator app, enabled FSKit extension, and daemon must be installed.
 
 ## Usage
@@ -15,12 +15,41 @@ Run these commands as the logged-in user. Replace the placeholder values first:
 iscsictl nvme add '<target-host>' --port '<target-port>' --subsystem '<subsystem-nqn>' --nsid '<namespace-id>'
 iscsictl nvme attach '<target-host>' --port '<target-port>' --subsystem '<subsystem-nqn>' --nsid '<namespace-id>'
 iscsictl nvme detach '<target-host>' --port '<target-port>' --subsystem '<subsystem-nqn>' --nsid '<namespace-id>'
+iscsictl nvme remove '<target-host>' --port '<target-port>' --subsystem '<subsystem-nqn>' --nsid '<namespace-id>'
 ```
 
 Add uses the daemon's XPC interface and preserves an existing matching record.
 An existing target reports its saved ID. The --name option applies to new targets.
 Configuration belongs to the logged-in account. Run without sudo.
 The next FSKit login reads the saved configuration without a daemon restart.
+
+Remove uses the same host, port, subsystem NQN, and namespace ID to find and
+delete the saved target through the daemon's XPC interface. It prints the removed
+ID; an absent target is a successful no-op. Like add, it belongs to the logged-in
+account and must run without sudo. Remove refuses with a device-in-use error
+and preserves the configuration if the namespace is still mounted or its disk
+is still attached. Run `nvme detach` successfully before removing it. A busy
+disk that cannot be detached cannot be removed either.
+The daemon waits up to its unit-claim timeout (10 seconds by default) for a
+login, session, or logout to finish before refusing deletion. This lets a remove
+immediately after detach wait for the daemon's final flush and logout. New
+logins are blocked while deletion itself is running. The busy check is
+daemon-wide and keyed by target name and unit: a session belonging to another
+account or using another portal can also block removal. That session must close
+before retrying; the current user may not be able to detach it.
+
+The CLI and daemon must both be updated: remove uses a checked deletion
+interface and never falls back to unchecked deletion. The exact saved record is
+checked again before deletion; concurrent configuration changes cause an error.
+Duplicate namespace records with distinct IDs can be removed one at a time.
+Duplicate IDs are refused before credentials or records are deleted because they
+may identify another namespace too; remove that target in the app to repair them.
+Only this namespace's own backing image is checked, so an unrelated stale image
+does not prevent removal.
+
+If XPC disconnects or times out, the command reports that the result could not be
+confirmed; deletion may already have completed. Refresh the saved target list or
+retry `nvme remove` (an absent target remains a successful no-op).
 
 Attach uses FSKit and hdiutil with -nomount. Both a new attachment and an
 existing attachment print only the whole-disk path to stdout. The backing
@@ -41,5 +70,5 @@ or killed, like anything else that touches the volume.
 
 `discover`, `verify` and the benches take `--log-level`, which writes timestamped
 lines to stderr. Level 1 summarizes connection setup and each command with its
-outcome. Level 2 adds the fields of every PDU. `add`, `attach` and `detach` have
+outcome. Level 2 adds the fields of every PDU. `add`, `remove`, `attach` and `detach` have
 no trace, because the daemon does that work.
