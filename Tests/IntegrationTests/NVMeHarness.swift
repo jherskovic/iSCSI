@@ -39,7 +39,15 @@ actor NVMeFleet {
     }
 
     /// Tear down every connection served so far, as a target reboot would.
-    func shutdown() async {
+    /// Also the point where every test using a fleet checks that the host
+    /// broke no rule the mock enforces: a violation is refused the way
+    /// nvmet refuses it, and the recovery that follows can otherwise hide
+    /// it. Tests that commit one on purpose pass `expectingViolations`.
+    func shutdown(expectingViolations: Bool = false, sourceLocation: SourceLocation = #_sourceLocation) async {
+        if !expectingViolations {
+            let violations = await subsystem.protocolViolations
+            #expect(violations.isEmpty, "host protocol violations: \(violations)", sourceLocation: sourceLocation)
+        }
         for t in transports { await t.close() }
         for task in serveTasks { task.cancel() }
         transports = []
