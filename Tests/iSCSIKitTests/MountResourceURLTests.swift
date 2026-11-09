@@ -70,4 +70,39 @@ struct MountResourceURLTests {
     func invalidHost() {
         #expect(MountResourceURL.make(host: "", port: 4420, target: "nqn.test:disk0", lun: 1) == nil)
     }
+
+    @Test("what make builds, parse reads back, IPv6 and NVMe included")
+    func roundTrip() throws {
+        for (host, port, target, unit) in [
+            ("192.168.20.1", UInt16(3260), "iqn.2005-10.org.freenas.ctl:disk", UInt64(0)),
+            ("fe80::1%en0", 3261, "iqn.2005-10.org.freenas.ctl:disk", 7),
+            ("nas.local", 4420, "nqn.2011-06.com.truenas:uuid:1:disk", 1),
+        ] {
+            let url = try #require(MountResourceURL.make(host: host, port: port, target: target, lun: unit))
+            #expect(MountResourceURL.parse(url) == .daemon(host: host, port: Int(port),
+                                                            target: target, unit: unit))
+        }
+    }
+
+    @Test("host proto is the local prototype, whatever its path")
+    func prototype() throws {
+        #expect(MountResourceURL.parse(try #require(URL(string: "iscsi://proto/lun0"))) == .prototype)
+    }
+
+    @Test("a malformed or missing unit, or no host, is refused rather than guessed")
+    func malformed() throws {
+        for raw in [
+            "iscsi://nas/iqn.x/1a",
+            "iscsi://nas/iqn.x/-1",
+            "iscsi://nas/iqn.x/",
+            "iscsi://nas/iqn.x",
+            "iscsi://nas/iqn.x/0/extra",
+            "iscsi://nas/iqn.x/\u{0661}",   // an Arabic-Indic one: a digit, not ASCII
+            "iscsi:/iqn.x/0",
+            "iscsi:///iqn.x/0",
+        ] {
+            let url = try #require(URL(string: raw), "\(raw) is not a URL at all")
+            #expect(MountResourceURL.parse(url) == nil, "\(raw)")
+        }
+    }
 }
