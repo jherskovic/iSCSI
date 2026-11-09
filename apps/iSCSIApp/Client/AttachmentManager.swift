@@ -39,6 +39,12 @@ struct Attachment: Identifiable, Equatable, Sendable {
     /// The FSKit mount's source URL, kept for an orphan: with no record
     /// behind it, this is the only thing that says what it is.
     var mountSource: String? = nil
+    /// Whether the disk's first MiB is all zeros (`PartitionTableProbe.isBlank`),
+    /// as read when this app attached it; nil when not read. Only a blank
+    /// disk is called "not formatted": one that holds anything else and did
+    /// not mount may be data macOS cannot read — ext4, ZFS, a locked volume —
+    /// and must never be met with advice to erase it.
+    var isBlank: Bool? = nil
 
     var isFullyAttached: Bool { device != nil && !volumePaths.isEmpty }
     /// Mounted by this app, but no record derives its mount point any more:
@@ -275,7 +281,7 @@ final class AttachmentManager: ObservableObject {
         // detach` both hang indefinitely under a wedged NAS). On `@MainActor`
         // that is a beach-balled app, so the blocking sequence runs on a
         // detached task over `Sendable` inputs and only the result crosses back.
-        let probe: (device: String?, volumes: [String]) = try await Task.detached {
+        let probe: (device: String?, volumes: [String], isBlank: Bool?) = try await Task.detached {
             // Idempotent: attaching something already attached should report the
             // existing volume, not stack a second mount on the same path.
             let fskitWasMounted = Self.isMounted(hiddenPath)
@@ -308,7 +314,7 @@ final class AttachmentManager: ObservableObject {
             case .reuse(let existing):
                 let volumes = Self.mountPoints(ofDevice: existing)
                 Self.disableAccessTimes(on: volumes)
-                return (existing, volumes)
+                return (existing, volumes, nil)
             case .replaceStale(let stale):
                 // Left by a logout that took the FSKit mount down but not the
                 // device; it serves nothing, so forcing it off loses nothing.
@@ -321,7 +327,7 @@ final class AttachmentManager: ObservableObject {
             // default of 512 (GitHub issue #2), and a blank 4Kn LUN should be
             // partitioned at 4096; see PartitionTableProbe. Every other disk
             // gets the default.
-            let blockSize = Self.attachBlockSize(image: imagePath, volume: hiddenPath)
+            let (blockSize, isBlank) = Self.attachBlockSize(image: imagePath, volume: hiddenPath)
 
             var attached: (device: String?, volumes: [String])?
             if engine == .diskImages2 {
@@ -340,14 +346,15 @@ final class AttachmentManager: ObservableObject {
             }
             let result = try attached ?? Self.attachWithHdiutil(image: imagePath, blockSize: blockSize)
             Self.disableAccessTimes(on: result.volumes)
-            return result
+            return (result.device, result.volumes, isBlank)
         }.value
 
         // Recorded before anything else can go wrong: throwing after the
         // layers are up leaves them mounted but invisible — not listed, not
         // detachable.
         let attachment = Attachment(tag: tag, targetID: targetID, hiddenPath: hiddenPath,
-                                    device: probe.device, volumePaths: probe.volumes)
+                                    device: probe.device, volumePaths: probe.volumes,
+                                    isBlank: probe.isBlank)
         attachments.removeAll { $0.tag == tag }
         attachments.append(attachment)
         attachmentsGeneration &+= 1
@@ -515,23 +522,28 @@ final class AttachmentManager: ObservableObject {
     /// through FSKit to the target like the attach that follows — and the
     /// LUN's block size, which the FSKit volume reports as its own (statfs
     /// `f_bsize`, iSCSIFSExtension `volumeStatistics`). nil if either read
-    /// fails, which leaves the attach exactly as it was.
-    nonisolated private static func attachBlockSize(image: String, volume: String) -> Int? {
-        guard let handle = FileHandle(forReadingAtPath: image) else { return nil }
+    /// fails, which leaves the attach exactly as it was. The same read says
+    /// whether the disk is blank; nil when it could not be read.
+    nonisolated private static func attachBlockSize(
+        image: String, volume: String
+    ) -> (blockSize: Int?, isBlank: Bool?) {
+        guard let handle = FileHandle(forReadingAtPath: image) else { return (nil, nil) }
         defer { try? handle.close() }
         guard let prefix = try? handle.read(upToCount: PartitionTableProbe.prefixLength) else {
-            return nil
+            return (nil, nil)
         }
         var stats = statfs()
         let lunBlockSize = statfs(volume, &stats) == 0 ? Int(stats.f_bsize) : nil
         let chosen = PartitionTableProbe.attachBlockSize(prefix: prefix, lunBlockSize: lunBlockSize)
+        let isBlank = PartitionTableProbe.isBlank(prefix)
         attachLog.log("""
             block size: read \(prefix.count, privacy: .public) bytes, \
             GPT at \(PartitionTableProbe.gptBlockSize(prefix: prefix).map(String.init) ?? "none", privacy: .public), \
-            LUN \(lunBlockSize.map(String.init) ?? "unknown", privacy: .public) → \
+            LUN \(lunBlockSize.map(String.init) ?? "unknown", privacy: .public), \
+            blank \(isBlank, privacy: .public) → \
             \(chosen.map { "-blocksize \($0)" } ?? "default", privacy: .public)
             """)
-        return chosen
+        return (chosen, isBlank)
     }
 
     /// The DiskImages engine, as every release before macOS 27 did it.

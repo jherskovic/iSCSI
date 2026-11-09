@@ -9,6 +9,17 @@
 //  So installation is postponed while anything is attached, and automatic
 //  installation is off entirely. The cost is that updates land later.
 //
+//  Postponing the relaunch is not enough on its own. Once Sparkle has prepared
+//  an update, its installer finishes the job when the app terminates, whatever
+//  the user answered: "Later" in the dialog below, or dismissing Sparkle's own
+//  ready-to-install prompt (SPUUpdaterDelegate.h, `userDidMakeChoice`: "the
+//  update is still set to install on application termination"). So a quit
+//  with an update prepared and a volume attached is the same hazard, and
+//  `replyToTermination` asks for a detach first.
+//
+//  "Attached" means anything this app mounted, in any account: there is one
+//  bundle and one extension for the Mac (`AppReplacement`).
+//
 //  Nothing here handles the *post*-update repair. It does not need to: replacing
 //  the bundle drops the extension's registration, and the setup machine
 //  re-checks every condition on every launch — a Sparkle relaunch is a launch.
@@ -40,6 +51,10 @@ final class UpdateController: NSObject, ObservableObject {
     @Published private(set) var canCheckForUpdates = false
     /// Non-nil when an update is downloaded and waiting for volumes to go away.
     @Published private(set) var pendingUpdateVersion: String?
+    /// Set once Sparkle has an update extracted and its installer waiting:
+    /// from then on, quitting installs it. Cleared only by Skip, which is the
+    /// one answer that cancels the installer.
+    private(set) var preparedUpdateVersion: String?
 
     private var controller: SPUStandardUpdaterController!
     /// Sparkle's resume block. @unchecked Sendable: the block is not typed
@@ -68,6 +83,59 @@ final class UpdateController: NSObject, ObservableObject {
 
     func checkForUpdates() {
         controller.checkForUpdates(nil)
+    }
+
+    /// The app delegate's answer to a quit. A quit with a prepared update
+    /// installs it (see the file header), so with anything attached the user
+    /// is asked to detach first, or to keep the app open.
+    ///
+    /// A logout, restart or shutdown is let through: everything is going down
+    /// anyway, and a cancelled quit would cancel the logout.
+    func replyToTermination() -> NSApplication.TerminateReply {
+        guard let version = preparedUpdateVersion ?? pendingUpdateVersion,
+              isAnythingAttached(), !Self.isSystemQuit else { return .terminateNow }
+
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Quitting now installs version \(version)"
+        alert.informativeText = """
+            The update installs when the app quits, and installing replaces the \
+            filesystem extension that \(subjectForAlert()) is using.
+
+            Detach first, or keep the app open and quit later.
+            """
+        alert.addButton(withTitle: "Detach and Quit")
+        alert.addButton(withTitle: "Don't Quit")
+        guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await detachEverything()
+            guard isAnythingAttached() else {
+                NSApp.reply(toApplicationShouldTerminate: true)
+                return
+            }
+            NSApp.reply(toApplicationShouldTerminate: false)
+            let still = NSAlert()
+            still.alertStyle = .informational
+            still.messageText = "The app is staying open"
+            still.informativeText = """
+                Still attached: \(subjectForAlert()). Quitting would install the \
+                update under it. Detach it — in each account that has one — and \
+                quit again.
+                """
+            still.runModal()
+        }
+        return .terminateLater
+    }
+
+    /// A quit sent by loginwindow carries why: logout, restart or shutdown.
+    private static var isSystemQuit: Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventClass == AEEventClass(kCoreEventClass),
+              event.eventID == AEEventID(kAEQuitApplication) else { return false }
+        return event.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) != nil
     }
 
     /// Called after a detach, in case an update has been waiting for one.
@@ -100,17 +168,42 @@ extension UpdateController: SPUUpdaterDelegate {
             return true
         }
     }
+
+    /// From here Sparkle's installer is waiting, and installs on quit.
+    nonisolated func updater(_ updater: SPUUpdater, didExtractUpdate item: SUAppcastItem) {
+        let version = item.displayVersionString
+        MainActor.assumeIsolated { preparedUpdateVersion = version }
+    }
+
+    /// Also reached by an update resumed from an earlier launch, which never
+    /// passes through extraction in this process.
+    nonisolated func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
+        let version = item.displayVersionString
+        MainActor.assumeIsolated { preparedUpdateVersion = version }
+    }
+
+    /// Skip cancels the installer; Dismiss leaves it set to install on quit.
+    nonisolated func updater(_ updater: SPUUpdater, userDidMake choice: SPUUserUpdateChoice,
+                             forUpdate updateItem: SUAppcastItem, state: SPUUserUpdateState) {
+        guard choice == .skip else { return }
+        MainActor.assumeIsolated { preparedUpdateVersion = nil }
+    }
 }
 
 // MARK: - Saying so
 
 private extension UpdateController {
     /// The dialog the user gets instead of silence.
-    func explainPostponement(version: String) {
+    /// What is attached, for a sentence: the names, or a stand-in.
+    func subjectForAlert() -> String {
         let names = attachedVolumeNames()
-        let subject = names.isEmpty
+        return names.isEmpty
             ? "a volume that is attached"
             : ListFormatter.localizedString(byJoining: names.map { "“\($0)”" })
+    }
+
+    func explainPostponement(version: String) {
+        let subject = subjectForAlert()
 
         NSApp.activate()
 
@@ -124,8 +217,8 @@ private extension UpdateController {
             would lose the process answering its reads and writes.
 
             The update is downloaded and ready. It will install itself and \
-            relaunch the app as soon as the last volume is detached, or the \
-            next time you launch.
+            relaunch the app as soon as the last volume is detached. Quitting \
+            the app installs it too, so a quit asks you to detach first.
             """
         alert.addButton(withTitle: "Detach and Install")
         alert.addButton(withTitle: "Later")

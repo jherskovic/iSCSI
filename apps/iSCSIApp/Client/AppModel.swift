@@ -29,16 +29,29 @@ final class AppModel: ObservableObject {
         // the FSKit volume alone, an attach or detach still in flight — not
         // only a mounted filesystem: an update replaces the extension serving
         // every one of them.
+        //
+        // The mount table decides, not only the attachment list: that list
+        // is this account's alone, empty until the first reconcile, and was
+        // never filled while setup reported anything unsatisfied — which is
+        // what a relaunch after an update often reports. Another account's
+        // volume is served by the same extension.
         updates.isAnythingAttached = { [weak self] in
             guard let self else { return false }
             return !attachments.attachments.isEmpty || !busy.isEmpty
+                || !AppReplacement.mountsItWouldDisconnect(AttachmentManager.mountTable()).isEmpty
         }
         updates.attachedVolumeNames = { [weak self] in
             guard let self else { return [] }
-            return rows.filter { $0.attachment != nil }.map { row in
+            let listed = rows.filter { $0.attachment != nil }.map { row in
                 row.volumePath.map { URL(fileURLWithPath: $0).lastPathComponent }
                     ?? row.target.displayName
             } + orphans.map(Self.orphanTitle)
+            let ownRoot = AttachmentManager.cacheRoot.path + "/"
+            let mounted = AppReplacement.mountsItWouldDisconnect(AttachmentManager.mountTable())
+            // Another account's by whose they are; this account's own only
+            // when the list has not caught up with them.
+            let unlisted = mounted.filter { !$0.on.hasPrefix(ownRoot) || listed.isEmpty }
+            return listed + unlisted.map(FSKitRestart.describe)
         }
         updates.detachEverything = { [weak self] in
             // "Detach and Install" was the consent to eject; a volume
@@ -196,6 +209,11 @@ final class AppModel: ObservableObject {
         await setup.checkAll()
         guard setup.isReady else {
             sessions = []
+            // What is mounted is still worth knowing: Detach All, the update
+            // gate and Uninstall all read this list, and a relaunch after an
+            // update often finds setup unsatisfied with volumes still up.
+            // Without targets they show as orphans, which can be detached.
+            await attachments.reconcile(targets: targets)
             return false
         }
         return await readTargets(reportingErrors: reportingErrors)
@@ -360,15 +378,29 @@ final class AppModel: ObservableObject {
             let attachment = try await withBusy(target.id) { try await performAttach(target) }
             clearAutoAttachFailure(for: target.id)
 
-            // Attached with nothing on it: how every brand-new LUN looks — a
-            // normal outcome, not a failure.
+            // Attached with nothing mounted. Blank — how every brand-new LUN
+            // looks — is a normal outcome, not a failure. Anything else may be
+            // data macOS cannot mount (ext4, ZFS, a locked or still-checking
+            // volume), so it is never met with advice to erase.
             if !attachment.isFullyAttached, let device = attachment.device {
-                lastError = PresentableError(
-                    title: "“\(target.displayName)” is connected but not formatted",
-                    message: "The LUN is attached as \(device) and has no filesystem "
-                           + "on it yet, which is normal for a new LUN.",
-                    suggestion: "Open Disk Utility, select it, and erase it as APFS "
-                              + "or ExFAT. It will mount by itself afterwards.")
+                let unit = target.isNVMe ? "namespace" : "LUN"
+                if attachment.isBlank == true {
+                    lastError = PresentableError(
+                        title: "“\(target.displayName)” is connected but not formatted",
+                        message: "The \(unit) is attached as \(device) and has no filesystem "
+                               + "on it yet, which is normal for a new \(unit).",
+                        suggestion: "Open Disk Utility, select it, and erase it as APFS "
+                                  + "or ExFAT. It will mount by itself afterwards.")
+                } else {
+                    lastError = PresentableError(
+                        title: "“\(target.displayName)” is connected, but nothing mounted",
+                        message: "The \(unit) is attached as \(device), and it is not empty, "
+                               + "but macOS did not mount a volume from it. It may use a "
+                               + "filesystem macOS cannot read, be encrypted and locked, or "
+                               + "still be checking.",
+                        suggestion: "Disk Utility shows what is on it. Do not erase it "
+                                  + "unless you mean to delete what it holds.")
+                }
             }
         } catch {
             present(error, doing: "Attaching “\(target.displayName)”")

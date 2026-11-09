@@ -31,7 +31,13 @@
 //  Except step 1. A volume that will not detach stops everything: the steps
 //  after it delete the daemon serving that volume and the extension under its
 //  filesystem, which is exactly the data loss the order exists to prevent.
-//  The user closes whatever is using it and runs the removal again.
+//  The user closes whatever is using it and runs the removal again. That
+//  includes another account's volume: the daemon and the extension are the
+//  Mac's, not this account's, so the mount table decides, not the app's list.
+//
+//  And step 2. If the secrets could not be deleted, unregistering the daemon
+//  would leave them in the System keychain with nothing left that can name
+//  them; the daemon keeps the list so a second run can finish the job.
 //
 
 import AppKit
@@ -53,18 +59,19 @@ final class Uninstaller: ObservableObject {
         case done(String)
         /// Not fatal — later steps still run, because a partial uninstall that
         /// stops at the first problem is worse than one that finishes and says
-        /// what it could not do. The detach step is the exception.
+        /// what it could not do. The detach and secrets steps are the
+        /// exceptions (see the file header).
         case failed(String)
-        /// Not run, because a volume did not detach.
+        /// Not run, because an earlier step stopped the run.
         case skipped
     }
 
     @Published private(set) var steps: [Step] = []
     @Published private(set) var isRunning = false
     @Published private(set) var finished = false
-    /// The run stopped at the detach step; nothing after it ran, and the
+    /// The run stopped early, and why; nothing after that step ran, and the
     /// removal can be started again.
-    @Published private(set) var stoppedForVolumes = false
+    @Published private(set) var stoppedBecause: String?
 
     private let model: AppModel
 
@@ -73,7 +80,7 @@ final class Uninstaller: ObservableObject {
     func run() async {
         isRunning = true
         finished = false
-        stoppedForVolumes = false
+        stoppedBecause = nil
         // A login-time run still retrying would mount behind "Detach volumes".
         model.autoAttacher.cancelAll()
         steps = [
@@ -88,12 +95,15 @@ final class Uninstaller: ObservableObject {
 
         await step(0) { try await self.detachEverything() }
         if case .failed = steps[0].outcome {
-            for index in steps.indices.dropFirst() { steps[index].outcome = .skipped }
-            stoppedForVolumes = true
-            isRunning = false
+            stop(after: 0, because: "nothing else is removed while a volume is in use.")
             return
         }
         await step(1) { try await self.removeDaemonData() }
+        if case .failed = steps[1].outcome {
+            stop(after: 1, because: "the background service is kept until it has deleted "
+                 + "the saved passwords. Try again.")
+            return
+        }
         await step(2) { try await self.unregisterLoginItem() }
         await step(3) { try await self.unregisterDaemon() }
         await step(4) { try await self.disableExtension() }
@@ -102,6 +112,12 @@ final class Uninstaller: ObservableObject {
 
         isRunning = false
         finished = true
+    }
+
+    private func stop(after index: Int, because reason: String) {
+        for later in steps.indices where later > index { steps[later].outcome = .skipped }
+        stoppedBecause = reason
+        isRunning = false
     }
 
     private func step(_ index: Int, _ work: @escaping () async throws -> String) async {
@@ -121,8 +137,12 @@ final class Uninstaller: ObservableObject {
     /// "uninstall the app" is never worth that. Better to stop and say which
     /// volume is in use.
     private func detachEverything() async throws -> String {
+        // `cancelAll` stops the login-time run starting anything new; an
+        // attach already under way would still finish behind this step.
+        try await waitForAttachesInFlight()
+        // Fresh, not whatever the last foreground refresh saw.
+        await model.attachments.reconcile(targets: model.targets)
         let attached = model.attachments.attachments
-        guard !attached.isEmpty else { return "nothing was attached" }
 
         var detached = 0
         var busy: [String] = []
@@ -138,7 +158,23 @@ final class Uninstaller: ObservableObject {
         if !busy.isEmpty {
             throw UninstallError.volumesBusy(busy)
         }
-        return "detached \(detached)"
+        // Whatever the list did not hold: another account's volumes, or one
+        // of this account's that came up since.
+        let remaining = AppReplacement.mountsItWouldDisconnect(AttachmentManager.mountTable())
+        if !remaining.isEmpty {
+            throw UninstallError.stillMounted(remaining.map(FSKitRestart.describe))
+        }
+        return attached.isEmpty ? "nothing was attached" : "detached \(detached)"
+    }
+
+    /// Until no row is busy, for at most a minute — longer than an attach
+    /// to an answering target takes.
+    private func waitForAttachesInFlight() async throws {
+        let deadline = ContinuousClock.now + .seconds(60)
+        while !model.busy.isEmpty {
+            guard ContinuousClock.now < deadline else { throw UninstallError.operationsInFlight }
+            try await Task.sleep(for: .milliseconds(200))
+        }
     }
 
     private func removeDaemonData() async throws -> String {
@@ -332,6 +368,8 @@ final class Uninstaller: ObservableObject {
 
 enum UninstallError: LocalizedError {
     case volumesBusy([String])
+    case stillMounted([String])
+    case operationsInFlight
     case daemonStillRegistered(SMAppService.Status)
     case loginItemStillRegistered(SMAppService.Status)
     case commandLineLinkKept(String)
@@ -342,6 +380,10 @@ enum UninstallError: LocalizedError {
         switch self {
         case .volumesBusy(let paths):
             return "still in use: \(paths.joined(separator: ", "))"
+        case .stillMounted(let disks):
+            return "still attached: \(disks.joined(separator: "; "))"
+        case .operationsInFlight:
+            return "an attach or detach is still running"
         case .daemonStillRegistered(let status),
              .loginItemStillRegistered(let status):
             return "the system still reports it as registered (status \(status.rawValue))"
@@ -363,6 +405,10 @@ enum UninstallError: LocalizedError {
         case .volumesBusy:
             return "Close anything using the volume — including Finder windows and "
                  + "Terminal sessions inside it — and try again."
+        case .stillMounted:
+            return "Detach them — in each account that has one — and try again."
+        case .operationsInFlight:
+            return "Wait for it to finish and try again."
         case .daemonStillRegistered:
             return "Remove it in System Settings → General → Login Items & Extensions."
         case .loginItemStillRegistered:

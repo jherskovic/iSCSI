@@ -41,6 +41,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    /// A prepared update installs when the app quits, so this is the update
+    /// rule's second gate (`UpdateController.replyToTermination`).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        model.updates.replyToTermination()
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows: Bool) -> Bool {
         if !hasVisibleWindows { model.wantsMainWindow = true }

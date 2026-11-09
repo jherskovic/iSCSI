@@ -111,8 +111,8 @@ struct UninstallView: View {
                      ? "Some things could not be removed."
                      : "Everything has been removed.")
                     .font(.callout).foregroundStyle(.secondary)
-            } else if uninstaller.stoppedForVolumes {
-                Text("Stopped: nothing else is removed while a volume is in use.")
+            } else if let reason = uninstaller.stoppedBecause {
+                Text("Stopped: \(reason)")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Spacer()

@@ -121,7 +121,8 @@ final class FSKitProbe: ObservableObject {
 
 /// The M0-b observation panel: module state, every installed module for context,
 /// and a way to reach the switch. Deliberately plain — it is a measuring
-/// instrument that ships only in the probe build.
+/// instrument. It ships under Setup's Diagnostics, read-only; the enablement
+/// write is in Debug builds alone.
 struct FSKitProbeView: View {
     @StateObject private var probe = FSKitProbe()
 
@@ -151,10 +152,13 @@ struct FSKitProbeView: View {
                         .textSelection(.enabled)
                 }
 
+                #if DEBUG
                 Divider()
 
                 // M0-b.2. Separated from the state display above because it is
-                // the only control here that changes anything.
+                // the only control here that changes anything. Debug builds
+                // only: in a shipped app it would bypass the consent Setup's
+                // Enable step asks for before the same write.
                 HStack(spacing: 8) {
                     Text("macOS 26.x fallback")
                         .font(.caption).foregroundStyle(.secondary)
@@ -163,6 +167,7 @@ struct FSKitProbeView: View {
                         Task { await probe.attemptEnablementWrite() }
                     }
                 }
+                #endif
 
                 if let report = probe.writeReport {
                     // fixedSize(vertical:) or the VStack compresses this to two

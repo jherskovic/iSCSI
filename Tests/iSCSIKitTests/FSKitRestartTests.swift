@@ -24,6 +24,19 @@ struct FSKitRestartTests {
         #expect(FSKitRestart.mountsItWouldDisconnect([apfs, autofs]).isEmpty)
     }
 
+    @Test("an update or uninstall counts this app's mounts in every account, and nobody else's")
+    func whatReplacingTheAppWouldDisconnect() {
+        let usb = MountTableEntry(from: "/dev/disk9s1", on: "/Volumes/USBSTICK", isFSKit: true)
+        let unflagged = MountTableEntry(from: "nvme://192.168.20.1:4420/nqn.2011-06.com.truenas:uuid:1:disk/1",
+                                        on: "/Users/herko/Library/Caches/me.herko.iSCSIInitiator/0123")
+        // The APFS volume DiskImages mounts from lun0.img is not one: the
+        // FSKit mount under it is, and stays up as long as it does.
+        let image = MountTableEntry(from: "/dev/disk12s1", on: "/Volumes/Planet Express")
+        #expect(AppReplacement.mountsItWouldDisconnect([ours, usb, unflagged, image])
+                == [ours, unflagged])
+        #expect(AppReplacement.mountsItWouldDisconnect([usb, image]).isEmpty)
+    }
+
     @Test("the refusal names this app's disks and whose they are, and anything else by where it is")
     func theRefusalSaysWhat() {
         let usb = MountTableEntry(from: "/dev/disk9s1", on: "/Volumes/USBSTICK", isFSKit: true)

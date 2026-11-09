@@ -382,8 +382,10 @@ private struct TargetRow: View {
     private var subtitle: String {
         if let path = row.volumePath { return path }
         if let failure { return "Could not attach at login — \(failure.message)" }
-        if let device = row.attachment?.device {
-            return "connected as \(device) — not formatted yet"
+        if let attachment = row.attachment, let device = attachment.device {
+            return attachment.isBlank == true
+                ? "connected as \(device) — not formatted yet"
+                : "connected as \(device) — no volume mounted"
         }
         if let bytes = row.session?.byteCount {
             return "\(row.target.host) — "
