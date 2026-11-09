@@ -132,7 +132,11 @@ targets:
     type: tool
     platform: macOS
     sources:
-      - ../Sources/iscsid
+      # No intermediate groups: xcodegen would name the `..` group after the
+      # checkout directory and hash every child's ID through it, so a clone
+      # under another name rewrote 61 lines of the project (CLAUDE.md).
+      - path: ../Sources/iscsid
+        createIntermediateGroups: false
     dependencies:
       - package: iSCSI
         product: iSCSIKit
@@ -166,7 +170,11 @@ targets:
     type: tool
     platform: macOS
     sources:
-      - ../Sources/iscsictl
+      # No intermediate groups: xcodegen would name the `..` group after the
+      # checkout directory and hash every child's ID through it, so a clone
+      # under another name rewrote 61 lines of the project (CLAUDE.md).
+      - path: ../Sources/iscsictl
+        createIntermediateGroups: false
     dependencies:
       - package: iSCSI
         product: iSCSIKit

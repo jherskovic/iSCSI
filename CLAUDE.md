@@ -68,13 +68,16 @@ CI also pins xcodegen itself (2.46.0, in `scripts/install-build-tools.sh`,
 which the release job uses for `create-dmg` too); regenerate with that
 version, because a different xcodegen can rewrite the file just as well.
 
-**Regenerate from a checkout directory named `iSCSI`.** xcodegen names the
-`..` folder reference after the checkout's basename, so a clone called
-`iSCSI2` regenerates with an `iSCSI` → `iSCSI2` group rename that CI (whose
-checkout is `iSCSI`) will flag as drift. A symlink does not help; xcodegen
-resolves it. When the clone has another name, regenerate in a throwaway local
-clone named `iSCSI` and copy the `.pbxproj` back — the diff should then be
-exactly the lines you meant to change.
+**Regenerate from a checkout directory named `iSCSI-NVMe-TCP`.** xcodegen
+names the local package's `..` reference after the checkout's basename, and
+CI's checkout is named after the repository, so a clone under any other name
+(`iSCSI`, as clones made before the rename are) regenerates with a three-line
+rename that CI flags as drift. Since the rename the committed project follows
+the repository's name; before it, CI's checkout was `iSCSI`, and the first
+dry run after the rename failed on exactly this. A symlink does not help;
+xcodegen resolves it. When the clone has another name, regenerate in a
+throwaway local clone named `iSCSI-NVMe-TCP` and copy the `.pbxproj` back —
+the diff should then be exactly the lines you meant to change.
 
 Two schemes. **iSCSI Initiator** is what ships (app + FSKit extension +
 `iscsid` and `iscsictl` inside the bundle). **iSCSIDext-dev** builds the parked DriverKit
