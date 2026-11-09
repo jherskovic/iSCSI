@@ -3,10 +3,23 @@ import Testing
 @testable import MockTarget
 @testable import iSCSIKit
 
+/// Every test that reads runs twice: status on the final Data-In (phase
+/// collapse), and status in a SCSI Response after the Data-In sequence. LIO
+/// sends both, so the initiator must complete a read either way.
 @Suite("Integration: happy paths", .timeLimit(.minutes(1)))
 struct HappyPathTests {
-    @Test func loginInquiryLogout() async throws {
-        let (connection, harness, result) = try await loggedInConnection()
+    static let statusModes = [false, true]
+
+    private static func config(separateStatus: Bool) -> MockTargetConfig {
+        var config = MockTargetConfig()
+        config.separateReadStatus = separateStatus
+        return config
+    }
+
+    @Test(arguments: statusModes)
+    func loginInquiryLogout(separateStatus: Bool) async throws {
+        let (connection, harness, result) = try await loggedInConnection(
+            targetConfig: Self.config(separateStatus: separateStatus))
         #expect(result.tsih == 0x0BAD)
         #expect(!result.parameters.headerDigest)
 
@@ -24,8 +37,10 @@ struct HappyPathTests {
         await harness.finish()
     }
 
-    @Test func smallWriteReadRoundTrip() async throws {
-        let (connection, harness, _) = try await loggedInConnection()
+    @Test(arguments: statusModes)
+    func smallWriteReadRoundTrip(separateStatus: Bool) async throws {
+        let (connection, harness, _) = try await loggedInConnection(
+            targetConfig: Self.config(separateStatus: separateStatus))
         let payload = Data((0 ..< 1024).map { UInt8($0 & 0xFF) })
 
         let write = try await connection.execute(SCSITask(
@@ -45,9 +60,10 @@ struct HappyPathTests {
         await harness.finish()
     }
 
-    @Test func largeWriteExercisesR2T() async throws {
+    @Test(arguments: statusModes)
+    func largeWriteExercisesR2T(separateStatus: Bool) async throws {
         // Small bursts force: immediate data + unsolicited tail + several R2Ts.
-        var targetConfig = MockTargetConfig()
+        var targetConfig = Self.config(separateStatus: separateStatus)
         targetConfig.firstBurstLength = 4096
         targetConfig.maxBurstLength = 8192
         targetConfig.maxRecvDataSegmentLength = 4096
@@ -72,10 +88,11 @@ struct HappyPathTests {
         await harness.finish()
     }
 
-    @Test func solicitedOnlyWritePath() async throws {
+    @Test(arguments: statusModes)
+    func solicitedOnlyWritePath(separateStatus: Bool) async throws {
         // Target insists InitialR2T=Yes and ImmediateData=No: every byte moves
         // via R2T-solicited Data-Out.
-        var targetConfig = MockTargetConfig()
+        var targetConfig = Self.config(separateStatus: separateStatus)
         targetConfig.preferInitialR2T = true
         targetConfig.preferImmediateData = false
         let (connection, harness, result) = try await loggedInConnection(targetConfig: targetConfig)
@@ -100,8 +117,9 @@ struct HappyPathTests {
         await harness.finish()
     }
 
-    @Test func digestsNegotiatedAndUsed() async throws {
-        var targetConfig = MockTargetConfig()
+    @Test(arguments: statusModes)
+    func digestsNegotiatedAndUsed(separateStatus: Bool) async throws {
+        var targetConfig = Self.config(separateStatus: separateStatus)
         targetConfig.digestPick = "CRC32C"
         let (connection, harness, result) = try await loggedInConnection(targetConfig: targetConfig) {
             $0.desired.offerDigests = true
@@ -121,9 +139,11 @@ struct HappyPathTests {
         await harness.finish()
     }
 
-    @Test func readCapacityAndTestUnitReady() async throws {
+    @Test(arguments: statusModes)
+    func readCapacityAndTestUnitReady(separateStatus: Bool) async throws {
         let disk = RAMDisk(blockSize: 512, capacityBlocks: 4096)
-        let (connection, harness, _) = try await loggedInConnection(disk: disk)
+        let (connection, harness, _) = try await loggedInConnection(
+            targetConfig: Self.config(separateStatus: separateStatus), disk: disk)
 
         let tur = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
         #expect(tur.isGood)
@@ -247,8 +267,10 @@ struct HappyPathTests {
         await harness.finish()
     }
 
-    @Test func concurrentCommandsInterleave() async throws {
-        let (connection, harness, _) = try await loggedInConnection()
+    @Test(arguments: statusModes)
+    func concurrentCommandsInterleave(separateStatus: Bool) async throws {
+        let (connection, harness, _) = try await loggedInConnection(
+            targetConfig: Self.config(separateStatus: separateStatus))
         // Several tasks in flight at once; all must complete correctly.
         try await withThrowingTaskGroup(of: Void.self) { group in
             for i in 0 ..< 8 {

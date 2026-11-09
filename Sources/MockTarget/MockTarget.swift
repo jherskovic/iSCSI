@@ -81,6 +81,11 @@ public struct MockTargetConfig: Sendable {
     public var tsih: UInt16 = 0x0BAD
     /// Targets advertised by SendTargets.
     public var discoveryTargets: [(name: String, addresses: [String])] = []
+    /// Send read status in a SCSI Response PDU after the Data-In sequence,
+    /// rather than on its final Data-In (phase collapse). LIO does both: it
+    /// collapses GOOD status and sends a separate response when there is
+    /// sense data to carry.
+    public var separateReadStatus = false
     /// What REPORT LUNS answers. Every LUN serves the same `RAMDisk`; the
     /// list only decides which numbers the initiator is told exist. Empty
     /// answers with a zero-length list, the way a target with nothing mapped
@@ -913,10 +918,13 @@ public actor MockTarget {
         let chunkLimit = faults.oversizeDataIn
             ? payload.count
             : max(1, Int(initiatorMRDSL))
+        let separate = config.separateReadStatus
         var offset = 0
         var dataSN: UInt32 = 0
         var sent = 0
-        while offset < payload.count || payload.isEmpty {
+        // With separate status and nothing to send, the response alone ends
+        // the task; a phase-collapsed one needs its Data-In to carry status.
+        while offset < payload.count || (payload.isEmpty && !separate) {
             let end = min(offset + chunkLimit, payload.count)
             let isLast = end == payload.count
             var pdu = DataInPDU()
@@ -928,7 +936,7 @@ public actor MockTarget {
             let w = window()
             pdu.expCmdSN = w.expCmdSN
             pdu.maxCmdSN = w.maxCmdSN
-            if isLast {
+            if isLast && !separate {
                 pdu.statusPresent = true
                 pdu.status = 0x00
                 pdu.statSN = takeStatSN()
@@ -946,6 +954,22 @@ public actor MockTarget {
             dataSN &+= 1
             offset = end
             if payload.isEmpty { break }
+        }
+        if separate {
+            var resp = SCSIResponsePDU()
+            resp.response = .commandCompleted
+            resp.status = 0x00
+            resp.initiatorTaskTag = command.initiatorTaskTag
+            resp.statSN = takeStatSN()
+            let w = window()
+            resp.expCmdSN = w.expCmdSN
+            resp.maxCmdSN = w.maxCmdSN
+            resp.expDataSN = dataSN                 // Data-In PDUs sent for the task
+            if underflow {
+                resp.residualUnderflow = true
+                resp.residualCount = UInt32(expected - payload.count)
+            }
+            try await send(resp)
         }
     }
 
