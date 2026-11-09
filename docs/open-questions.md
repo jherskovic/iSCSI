@@ -227,9 +227,16 @@ Management notification can be waited on properly.
   (2026-10-22) in the app, after login, through the user's `fskit_agent`, so
   this stays moot
   (`docs/superpowers/specs/2026-10-22-auto-attach-at-login-design.md`).
-- **The death latch.** Three unanswered daemon calls mark a volume dead and fail
-  everything after immediately. Built in response to the eight-hour wedge,
-  reasoned about carefully, and never triggered in anger.
+- **The death latch.** Three unanswered daemon stalls mark a volume dead and
+  fail everything after immediately. Built in response to the eight-hour wedge,
+  reasoned about carefully, and never triggered in anger. Since 2026-11-09 it
+  counts *stalls*, not calls: a timeout counts only if its call started after
+  the last counted one fired, so a single pause that times out every concurrent
+  DiskImages2 read counts once. One unanswered **write** latches it at once,
+  because the daemon may still land that write after a later read or write
+  (§8a). A dropped daemon connection latches it too, and ends the calls in
+  flight instead of letting each wait out its timeout. Store-level tests now
+  cover all of it (`DaemonStoreDeathLatchTests`).
 
 ## 7a. RFC-compliance strictness deliberately not taken (2026-08-25)
 
@@ -335,6 +342,16 @@ Worth fixing as either a timeout that exceeds the recovery budget, or a signal
 that recovery is in progress so the wait can be extended rather than abandoned.
 The second is better and costs an XPC message.
 
+**For writes it was worse than a spurious EIO** (review, 2026-11-09). The
+daemon keeps retrying a write the extension has given up on, for up to three
+30 s attempts plus a recovery. Meanwhile the range became cacheable again, so a
+read could cache the old bytes and keep serving them after the write landed;
+and a newer write to the same blocks could be acknowledged before the
+abandoned one landed on top of it. Since then an unanswered write latches the
+volume dead (fail-stop): a stall long enough to time out a write now costs a
+detach and re-attach, instead of a guess about what the media holds. The
+recovery-in-progress signal above would make that rarer, not unnecessary.
+
 Silver lining: this is the first time ERL0 session recovery has run against real
 hardware in anger. It worked. `docs/test-playbook.md` had it as MockTarget-only.
 
@@ -406,10 +423,11 @@ Still open, in cost order:
   changed the *timescale* the extension sees, not just the eventual outcome:
   before it, each new I/O re-entered recovery and a returning NAS could heal
   the mount transparently after the window; now the daemon returns the failure
-  **instantly**. A speculative readahead that gets that instant error is
-  indistinguishable from an unanswered one at the cache boundary, so it counts
-  toward the death latch — three of them mark the volume dead within a few
-  operations and the extension unmounts, where a ~70 s blip used to self-heal.
+  **instantly**. (This paragraph once said a speculative readahead that gets
+  that instant error counts toward the death latch. It does not: a failed
+  speculative chunk is purged and the read retried synchronously; only an
+  unanswered call counts. The failure still reaches APFS as EIO, and repeated
+  ones unmount the volume, where a ~70 s blip used to self-heal.)
   Direct reads/writes throw the error straight to APFS rather than tripping the
   latch, but the user-visible result is the same: exhaustion now means a fast
   unmount and re-attach, not a beach-balled heal. A background retry with capped

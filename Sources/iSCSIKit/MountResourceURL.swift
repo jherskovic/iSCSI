@@ -31,6 +31,33 @@ public enum MountResourceURL {
         return components.url
     }
 
+    /// What a mount URL asks the extension for.
+    public enum Destination: Equatable, Sendable {
+        /// Host `proto`: the local sparse file, for telling FSKit problems
+        /// from network ones.
+        case prototype
+        /// A session through the daemon. `host` is `url.host`: brackets
+        /// dropped and `%25` decoded, which is the record's spelling.
+        case daemon(host: String, port: Int, target: String, unit: UInt64)
+    }
+
+    /// Reads back what `make` built; nil for anything else. Strict on
+    /// purpose: `mount(8)` needs no privilege, so this is caller input, and
+    /// the old reading turned a malformed unit ("1a", "-1") or a missing one
+    /// into LUN 0, and a URL with no host into the prototype's local file —
+    /// each one a volume that looks attached and is something else.
+    public static func parse(_ url: URL) -> Destination? {
+        guard let host = url.host, !host.isEmpty else { return nil }
+        if host == "proto" { return .prototype }
+        // /<target>/<unit>: an IQN and LUN, or an NQN and namespace ID.
+        // Neither name contains a slash. The scheme is not consulted; the
+        // daemon tells the protocols apart by the name's prefix.
+        let parts = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard parts.count == 2, !parts[0].isEmpty,
+              parts[1].allSatisfy(\.isASCII), let unit = UInt64(parts[1]) else { return nil }
+        return .daemon(host: host, port: url.port ?? 3260, target: parts[0], unit: unit)
+    }
+
     /// Darwin's `inet_pton` accepts a `%zone` suffix, and agrees with what
     /// `NWEndpoint.Host` treats as an address rather than a name to resolve.
     private static func isIPv6Literal(_ host: String) -> Bool {

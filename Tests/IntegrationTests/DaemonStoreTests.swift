@@ -35,6 +35,10 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     /// Runs at the start of every read, before it is answered — for holding
     /// reads inside the daemon to see how many can be there at once.
     var onRead: (() -> Void)?
+    /// When set, reads or writes arrive and are never answered — a session
+    /// stalled inside the daemon. Writes are not applied either.
+    var silentReads = false
+    var silentWrites = false
 
     init(byteCount: Int) { bytes = Data(count: byteCount) }
 
@@ -47,6 +51,7 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
               reply: @escaping (Data?, Error?) -> Void) {
         onRead?()
         lock.lock()
+        if silentReads { lock.unlock(); return }
         let start = offset.uint64Value
         let end = min(start + length.uint64Value, UInt64(bytes.count))
         let slice = start >= UInt64(bytes.count)
@@ -60,6 +65,7 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
                reply: @escaping (Error?) -> Void) {
         onWrite?()
         lock.lock()
+        if silentWrites { lock.unlock(); return }
         if failNextWrite {
             failNextWrite = false
             lock.unlock()
@@ -142,11 +148,13 @@ struct DaemonStoreTests {
     private static let blockSize: UInt64 = 4096
     private static let capacity = 8 << 20        // 8 MiB
 
-    private func makeStore() -> (DaemonStore, FakeDaemon) {
+    private func makeStore(callTimeout: TimeInterval = DaemonStore.defaultTimeout)
+        -> (DaemonStore, FakeDaemon) {
         let daemon = FakeDaemon(byteCount: Self.capacity)
         let store = DaemonStore(daemon: daemon, session: "s1",
                                 blockSize: Self.blockSize,
-                                byteCount: UInt64(Self.capacity))
+                                byteCount: UInt64(Self.capacity),
+                                callTimeout: callTimeout)
         return (store, daemon)
     }
 
@@ -332,6 +340,95 @@ struct DaemonStoreTests {
         #expect(store.fetchesInFlight.peak == readers)
         #expect(store.readsInFlight.current == 0)
         #expect(store.summary.contains("inflight=\(readers)/\(readers) "))
+    }
+}
+
+/// The death latch: what turns an unanswered daemon into a volume that fails
+/// at once rather than one that costs every caller a full timeout. Run with a
+/// 0.2 s call timeout.
+@Suite("Daemon store: the death latch", .serialized)
+struct DaemonStoreDeathLatchTests {
+    static let blockSize: UInt64 = 4096
+    static let capacity = 8 << 20
+    static let timeout: TimeInterval = 0.2
+
+    private func makeStore() -> (DaemonStore, FakeDaemon) {
+        let daemon = FakeDaemon(byteCount: Self.capacity)
+        let store = DaemonStore(daemon: daemon, session: "s1", blockSize: Self.blockSize,
+                                byteCount: UInt64(Self.capacity), callTimeout: Self.timeout)
+        return (store, daemon)
+    }
+
+    private func read(_ store: DaemonStore, at offset: UInt64) throws {
+        var out = Data(count: 4096)
+        _ = try out.withUnsafeMutableBytes { raw in
+            try store.read(into: raw, at: offset, length: 4096)
+        }
+    }
+
+    private func code(of body: () throws -> Void) -> POSIXErrorCode? {
+        do { try body(); return nil } catch let error as POSIXError { return error.code } catch { return nil }
+    }
+
+    /// The daemon keeps retrying a write the extension gave up on, and it can
+    /// land later — after a read cached the old bytes, or after a newer write.
+    @Test func aWriteTheDaemonNeverAnsweredStopsTheVolume() {
+        let (store, daemon) = makeStore()
+        daemon.silentWrites = true
+        #expect(code { _ = try store.write(Data(repeating: 1, count: 4096), at: 0) } == .EIO)
+        #expect(store.hasFailed)
+
+        daemon.silentWrites = false
+        #expect(code { try read(store, at: 0) } == .EIO)
+        #expect(code { _ = try store.write(Data(repeating: 2, count: 4096), at: 0) } == .EIO)
+        #expect(daemon.log.isEmpty, "a dead volume still reached the daemon")
+    }
+
+    @Test func threeStallsInARowStopTheVolume() {
+        let (store, daemon) = makeStore()
+        daemon.silentReads = true
+        #expect(code { try read(store, at: 0) } == .ETIMEDOUT)
+        #expect(code { try read(store, at: 1 << 20) } == .ETIMEDOUT)
+        #expect(code { try read(store, at: 2 << 20) } == .EIO)
+        #expect(store.hasFailed)
+    }
+
+    @Test func anAnswerBetweenStallsStartsTheCountAgain() throws {
+        let (store, daemon) = makeStore()
+        daemon.silentReads = true
+        _ = code { try read(store, at: 0) }
+        _ = code { try read(store, at: 1 << 20) }
+        daemon.silentReads = false
+        try read(store, at: 2 << 20)
+        daemon.silentReads = true
+        _ = code { try read(store, at: 3 << 20) }
+        _ = code { try read(store, at: 4 << 20) }
+        #expect(!store.hasFailed)
+    }
+
+    /// One stall times out every read in flight at once (DiskImages2 reads
+    /// concurrently). Counted per call, six of them killed a volume whose
+    /// session came back a moment later.
+    @Test func readsTimingOutInOneStallCountOnce() throws {
+        let (store, daemon) = makeStore()
+        daemon.silentReads = true
+        let box = StoreBox(store)
+        let finished = DispatchGroup()
+        for i in 0 ..< 6 {
+            finished.enter()
+            Thread {
+                var out = Data(count: 4096)
+                _ = try? out.withUnsafeMutableBytes { raw in
+                    try box.store.read(into: raw, at: UInt64(i) << 20, length: 4096)
+                }
+                finished.leave()
+            }.start()
+        }
+        #expect(finished.wait(timeout: .now() + 10) == .success)
+        #expect(!store.hasFailed)
+
+        daemon.silentReads = false
+        try read(store, at: 7 << 20)
     }
 }
 
