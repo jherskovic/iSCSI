@@ -32,7 +32,7 @@ diskutil mount "$VOL" || { echo MOUNT-FAILED; exit 1; }
 MNT="/Volumes/$VOL"
 echo "=== mounted at $MNT"
 
-# Same escalation, same order, same markers as vm-apfs-mount-only.sh, so the
+# Same escalation, same order, same markers as parked/vm-apfs-mount-only.sh, so the
 # two runs can be compared line for line.
 probe() {
   echo "=== PROBE: $1"

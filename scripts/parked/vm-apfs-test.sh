@@ -1,4 +1,6 @@
 #!/bin/bash
+# PARKED with Backend B. Needs `swift build -c release -Xswiftc -DISCSI_BACKEND_B`
+# on the VM: a plain build's iscsictl has no dext-attach.
 # vm-apfs-test.sh — run ON the VM as root. Does APFS actually work now that
 # flushes reach the device?
 #
@@ -8,7 +10,7 @@
 # instead of hanging forever.
 #
 # RUN IT STREAMED, NOT DETACHED:
-#     ssh VM "sudo -S zsh iSCSI/scripts/vm-apfs-test.sh" <<< PASS | tee local.log
+#     ssh VM "sudo -S zsh iSCSI/scripts/parked/vm-apfs-test.sh" <<< PASS | tee local.log
 # When this test fails it can take the whole box down, and anything buffered in
 # a VM-side file is then lost to the power-cycle — /tmp is wiped on boot and a
 # page-cached tail never reaches disk. Lines that already crossed the ssh

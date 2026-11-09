@@ -1,4 +1,6 @@
 #!/bin/bash
+# PARKED with Backend B. Needs `swift build -c release -Xswiftc -DISCSI_BACKEND_B`
+# on the VM: a plain build's iscsictl has no dext-attach.
 # vm-apfs-mount-only.sh — run ON the VM as root, STREAMED over ssh (see
 # vm-apfs-test.sh's header for why streamed and not detached).
 #
