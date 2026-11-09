@@ -226,9 +226,9 @@ public actor MockTarget {
                     return try AnyPDU.decode(raw)
                 }
             } catch PDUError.dataSegmentTooLarge(let length, let limit) {
-                // Past our MaxRecvDataSegmentLength. LIO rejects the PDU and
-                // dumps the payload; the connection is dropped here instead,
-                // which an initiator cannot mistake for anything else.
+                // Past the MaxRecvDataSegmentLength we declared, which RFC
+                // 7143 §13.12 forbids. Dropped, so an initiator cannot
+                // mistake it for anything else.
                 try drop("data segment of \(length) bytes, MaxRecvDataSegmentLength is \(limit)")
             }
             guard let chunk = try await transport.receive() else { return nil }
@@ -701,8 +701,8 @@ public actor MockTarget {
             let edtl = Int(command.expectedDataTransferLength)
             let firstBurst = min(Int(negotiated.firstBurstLength), edtl)
             // iscsit_setup_scsi_cmd's checks, each a Reject that discards
-            // the command. (LIO answers some with reason Bookmark Invalid;
-            // Protocol Error is what RFC 7143 §11.17.1 has for all of them.)
+            // the command. (LIO gives some of them reason Bookmark Invalid;
+            // this mock says Protocol Error for all.)
             if immediate > 0 && !negotiated.immediateData {
                 try await reject(.protocolError, command, "immediate data (\(immediate) bytes) with ImmediateData=No")
                 return
