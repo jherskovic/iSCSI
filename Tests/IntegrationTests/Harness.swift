@@ -24,6 +24,18 @@ struct TargetHarness {
         let serve = Task { await target.run() }
         return TargetHarness(transport: initiatorSide, target: target, serveTask: serve)
     }
+
+    /// End the test's use of the target, checking first that the initiator
+    /// broke no rule the mock enforces. A violation is refused the way LIO
+    /// refuses it, and whatever recovery follows can hide it; tests that
+    /// commit one on purpose pass `expectingViolations`.
+    func finish(expectingViolations: Bool = false, sourceLocation: SourceLocation = #_sourceLocation) async {
+        if !expectingViolations {
+            let violations = await target.protocolViolations
+            #expect(violations.isEmpty, "initiator protocol violations: \(violations)", sourceLocation: sourceLocation)
+        }
+        serveTask.cancel()
+    }
 }
 
 func standardLogin(

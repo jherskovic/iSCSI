@@ -21,7 +21,7 @@ struct HostileTargetTests {
         } catch ConnectionError.loginFailed(.loginFailed(let statusClass, let statusDetail)) {
             #expect(statusClass == 2 && statusDetail == 1)
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func loginRedirectSurfacesAddress() async throws {
@@ -36,7 +36,7 @@ struct HostileTargetTests {
             #expect(address == "10.9.9.9:3260,1")
             #expect(permanent)
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func wrongTargetNameRefused() async throws {
@@ -51,7 +51,7 @@ struct HostileTargetTests {
         } catch ConnectionError.loginFailed(.loginFailed(let statusClass, let statusDetail)) {
             #expect(statusClass == 2 && statusDetail == 3) // target not found
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     // MARK: Sequence-number attacks
@@ -63,7 +63,7 @@ struct HostileTargetTests {
         await #expect(throws: ConnectionError.self) {
             _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func duplicateStatSNKillsConnection() async throws {
@@ -73,7 +73,7 @@ struct HostileTargetTests {
         await #expect(throws: ConnectionError.self) {
             _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     // MARK: Digest corruption
@@ -93,7 +93,7 @@ struct HostileTargetTests {
                 lun: 0, cdb: CDB.read16(lba: 0, blocks: 1), direction: .read(expectedLength: 512)
             ))
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func corruptionInvisibleWithoutDigest() async throws {
@@ -109,7 +109,7 @@ struct HostileTargetTests {
         #expect(read.isGood)
         let clean = await disk.read(lba: 0, blocks: 1)!
         #expect(read.data != clean) // silently corrupted — digests are the defense
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func corruptedHeaderDetectedByHeaderDigest() async throws {
@@ -122,7 +122,7 @@ struct HostileTargetTests {
         await #expect(throws: ConnectionError.self) {
             _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     // MARK: Data-path violations
@@ -136,7 +136,7 @@ struct HostileTargetTests {
                 lun: 0, cdb: CDB.read16(lba: 0, blocks: 1), direction: .read(expectedLength: 512)
             ))
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func oversizedDataInRejected() async throws {
@@ -151,7 +151,7 @@ struct HostileTargetTests {
                 lun: 0, cdb: CDB.read16(lba: 0, blocks: 32), direction: .read(expectedLength: 16384)
             ))
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func rejectPDUFailsOnlyThatTask() async throws {
@@ -166,7 +166,7 @@ struct HostileTargetTests {
         }
         // Connection survives a task-scoped Reject: NOP still works.
         try await connection.ping()
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func checkConditionCarriesSense() async throws {
@@ -179,7 +179,7 @@ struct HostileTargetTests {
         let sense = try #require(SenseData(senseBytes))
         #expect(sense.key == 0x05) // ILLEGAL REQUEST
         #expect(sense.asc == 0x20) // INVALID COMMAND OPERATION CODE
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     // MARK: Stalls and timeouts
@@ -201,7 +201,7 @@ struct HostileTargetTests {
         #expect(await harness.target.stalledITTs.isEmpty)
         // The connection is still healthy after the abort.
         try await connection.ping()
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func lunResetClearsStalledTasks() async throws {
@@ -222,7 +222,7 @@ struct HostileTargetTests {
         // Tear down so the hung initiator-side tasks resolve rather than leak.
         await connection.close()
         for task in hung { _ = await task.value }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func writeStallAfterR2TTimesOut() async throws {
@@ -240,7 +240,7 @@ struct HostileTargetTests {
                 ))
             }
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func frozenCommandWindowBlocksSubmission() async throws {
@@ -253,7 +253,7 @@ struct HostileTargetTests {
                 _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
             }
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     // MARK: Connection drops
@@ -270,7 +270,7 @@ struct HostileTargetTests {
                 lun: 0, cdb: CDB.read16(lba: 0, blocks: 64), direction: .read(expectedLength: 32768)
             ))
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func abruptDropFailsAllInFlightOperations() async throws {
@@ -299,6 +299,6 @@ struct HostileTargetTests {
             return all
         }
         #expect(results.allSatisfy { $0 })
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 }

@@ -26,8 +26,14 @@ actor TargetFleet {
         return harness.transport
     }
 
-    func shutdown() async {
+    /// Also where every session test checks that the initiator broke no
+    /// rule the mock enforces (see `TargetHarness.finish`).
+    func shutdown(expectingViolations: Bool = false, sourceLocation: SourceLocation = #_sourceLocation) async {
         for h in harnesses {
+            if !expectingViolations {
+                let violations = await h.target.protocolViolations
+                #expect(violations.isEmpty, "initiator protocol violations: \(violations)", sourceLocation: sourceLocation)
+            }
             await h.target.stop()
             h.serveTask.cancel()
         }

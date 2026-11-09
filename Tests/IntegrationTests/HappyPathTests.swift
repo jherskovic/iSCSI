@@ -21,7 +21,7 @@ struct HappyPathTests {
 
         let logout = try await connection.logout()
         #expect(logout.response == .success)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func smallWriteReadRoundTrip() async throws {
@@ -42,7 +42,7 @@ struct HappyPathTests {
         ))
         #expect(read.isGood)
         #expect(read.data == payload)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func largeWriteExercisesR2T() async throws {
@@ -69,7 +69,7 @@ struct HappyPathTests {
             direction: .read(expectedLength: 65536)
         ))
         #expect(read.data == payload)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func solicitedOnlyWritePath() async throws {
@@ -97,7 +97,7 @@ struct HappyPathTests {
             direction: .read(expectedLength: 8192)
         ))
         #expect(read.data == payload)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func digestsNegotiatedAndUsed() async throws {
@@ -118,7 +118,7 @@ struct HappyPathTests {
             lun: 0, cdb: CDB.read16(lba: 0, blocks: 4), direction: .read(expectedLength: 2048)
         ))
         #expect(read.data == payload)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func readCapacityAndTestUnitReady() async throws {
@@ -134,7 +134,7 @@ struct HappyPathTests {
         #expect(capacity.isGood)
         #expect(capacity.data.beU64(0) == 4095) // last LBA
         #expect(capacity.data.beU32(8) == 512) // block size
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func synchronizeCacheReachesDisk() async throws {
@@ -143,14 +143,14 @@ struct HappyPathTests {
         _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.synchronizeCache16()))
         _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.synchronizeCache16()))
         #expect(await disk.flushCount == 2)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func nopPingRoundTrip() async throws {
         let (connection, harness, _) = try await loggedInConnection()
         try await connection.ping(payload: Data("hello".utf8))
         try await connection.ping()
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func targetInitiatedPingIsEchoed() async throws {
@@ -162,7 +162,7 @@ struct HappyPathTests {
         try await Task.sleep(for: .milliseconds(50))
         let echoes = await harness.target.pingEchoes
         #expect(echoes == [Data("mock-ping".utf8)])
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func chapLoginSucceeds() async throws {
@@ -177,7 +177,7 @@ struct HappyPathTests {
         #expect(result.tsih != 0)
         let tur = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
         #expect(tur.isGood)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func mutualChapVerifiesTarget() async throws {
@@ -195,7 +195,7 @@ struct HappyPathTests {
             )
         )
         _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func chapWrongSecretFails() async throws {
@@ -211,7 +211,7 @@ struct HappyPathTests {
         await #expect(throws: ConnectionError.self) {
             _ = try await connection.login()
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func discoverySendTargets() async throws {
@@ -228,7 +228,7 @@ struct HappyPathTests {
         #expect(targets.count == 2)
         #expect(targets[0].name == "iqn.2026-08.test.example:disk0")
         #expect(targets[1].addresses == ["10.0.0.5:3260,1", "10.0.0.6:3260,2"])
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func discoveryTextContinuationReassembled() async throws {
@@ -244,7 +244,7 @@ struct HappyPathTests {
             initiatorName: "iqn.2026-08.com.example:initiator"
         )
         #expect(targets.count == 2)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func concurrentCommandsInterleave() async throws {
@@ -270,6 +270,6 @@ struct HappyPathTests {
             }
             try await group.waitForAll()
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 }
