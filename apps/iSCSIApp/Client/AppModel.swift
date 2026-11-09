@@ -384,7 +384,18 @@ final class AppModel: ObservableObject {
             // volume), so it is never met with advice to erase.
             if !attachment.isFullyAttached, let device = attachment.device {
                 let unit = target.isNVMe ? "namespace" : "LUN"
-                if attachment.isBlank == true {
+                if !attachment.lockedVolumes.isEmpty {
+                    let names = ListFormatter.localizedString(
+                        byJoining: attachment.lockedVolumes.map { "“\($0)”" })
+                    lastError = PresentableError(
+                        title: "“\(target.displayName)” is encrypted",
+                        message: "The \(unit) is attached as \(device). It holds the encrypted "
+                               + "volume \(names), which stays locked until its password is "
+                               + "entered.",
+                        suggestion: "Enter the password when macOS asks for it, or open Disk "
+                                  + "Utility, select the volume and click Mount. It appears "
+                                  + "here once it is mounted.")
+                } else if attachment.isBlank == true {
                     lastError = PresentableError(
                         title: "“\(target.displayName)” is connected but not formatted",
                         message: "The \(unit) is attached as \(device) and has no filesystem "
