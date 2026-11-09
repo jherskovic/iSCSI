@@ -166,6 +166,11 @@ struct XPCServiceTests {
 
         await confirmation("each call is refused", expectedCount: 6) { refused in
             await withCheckedContinuation { c in
+                stranger.localCacheBytes(session: handle) { _, e in
+                    if e != nil { refused() }; c.resume()
+                }
+            }
+            await withCheckedContinuation { c in
                 stranger.capacity(session: handle) { _, _, e in
                     if e != nil { refused() }; c.resume()
                 }
@@ -182,11 +187,6 @@ struct XPCServiceTests {
             }
             await withCheckedContinuation { c in
                 stranger.flush(session: handle) { e in
-                    if e != nil { refused() }; c.resume()
-                }
-            }
-            await withCheckedContinuation { c in
-                stranger.reportLUNs(session: handle) { _, e in
                     if e != nil { refused() }; c.resume()
                 }
             }
@@ -240,24 +240,17 @@ struct XPCServiceTests {
     // feature that silently does nothing in the app, so each is decoded rather
     // than merely checked non-nil.
 
-    @Test("listSessions reports an open handle and forgets it after logout")
-    func listSessionsTracksLifetime() async throws {
+    @Test("logout releases the handle in the core")
+    func logoutReleasesTheHandle() async throws {
         let (core, _harness, store, _) = try await makeCore()
         let service = ISCSIXPCService(core: core, targets: store)
         let handle = try await login(service)
-
-        var open = await withCheckedContinuation { c in
-            service.listSessions { c.resume(returning: $0) }
-        }
-        #expect(open.contains(handle))
+        #expect(await core.sessionHandles().contains(handle))
 
         _ = await withCheckedContinuation { c in
             service.logout(session: handle) { c.resume(returning: $0) }
         }
-        open = await withCheckedContinuation { c in
-            service.listSessions { c.resume(returning: $0) }
-        }
-        #expect(!open.contains(handle))
+        #expect(await !core.sessionHandles().contains(handle))
     }
 
     @Test("listSessionsDetailed decodes and carries the negotiated parameters")
@@ -274,20 +267,6 @@ struct XPCServiceTests {
         let mine = try #require(infos.first { $0.handle == handle })
         #expect(!mine.negotiated.isEmpty,
                 "the diagnostics pane exists to show these; empty means nothing to show")
-    }
-
-    @Test("reportLUNs decodes to at least the LUN that was logged into")
-    func reportLUNsDecodes() async throws {
-        let (core, _harness, store, _) = try await makeCore()
-        let service = ISCSIXPCService(core: core, targets: store)
-        let handle = try await login(service)
-
-        let (data, error) = await withCheckedContinuation { c in
-            service.reportLUNs(session: handle) { c.resume(returning: ($0, $1)) }
-        }
-        #expect(error == nil)
-        let luns = try JSONDecoder().decode([LUNInfo].self, from: #require(data))
-        #expect(luns.contains { $0.lun == 0 })
     }
 
     // MARK: - The target store, over XPC

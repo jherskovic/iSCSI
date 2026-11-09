@@ -62,8 +62,9 @@ final class UnlinkedFile: ChunkFile, @unchecked Sendable {
 
 /// Chunks on local disk, keyed by their LUN offset. Bytes arrive only by
 /// `spill` — from the RAM tier, so they have already passed its write
-/// generation guard — and leave by eviction, by `invalidate` (every write, at
-/// both edges), or by failing authentication.
+/// generation guard — and leave by eviction, by the fence every write puts
+/// up (`beginWrite`) and takes down (`endWrite`), dropping the range at both
+/// edges, or by failing authentication.
 ///
 /// Each slot is `chunkBytes` of AES-GCM ciphertext and its 16-byte tag in a
 /// page of its own. The key lives only in this object; the nonce is the slot
@@ -363,7 +364,8 @@ public final class DiskChunkTier: @unchecked Sendable {
 
     /// Forget every chunk overlapping `[offset, offset + length)` and cancel
     /// any spill queued for one. Synchronous: no read after this returns can
-    /// find the old bytes.
+    /// find the old bytes. Tests use it directly; the store's writes go
+    /// through `beginWrite`/`endWrite`, which also fence the range.
     func invalidate(offset: UInt64, length: Int) {
         forEachChunk(offset: offset, length: length) { dropLocked($0) }
     }

@@ -43,7 +43,7 @@ The JSON is a cached snapshot, so confirm against the live portal when it matter
 | iSCSIFSExtension | `com.apple.security.app-sandbox` | no |
 | iSCSIFSExtension | `com.apple.security.network.client` | no |
 | iSCSIFSExtension | `…temporary-exception.mach-lookup.global-name` (the daemon) | no |
-| iSCSIApp | `com.apple.developer.system-extension.install` | no (dext only — droppable in v1) |
+| iSCSIApp | `com.apple.developer.system-extension.install` | no (dext only; dropped from the shipping app 2026-11-09 — a Backend B build adds it back) |
 | iSCSIDext | `com.apple.developer.driverkit` | **yes** |
 | iSCSIDext | `com.apple.developer.driverkit.family.scsicontroller` | **yes** |
 | iSCSIDext | `com.apple.developer.driverkit.allow-any-userclient-access` | **yes** |

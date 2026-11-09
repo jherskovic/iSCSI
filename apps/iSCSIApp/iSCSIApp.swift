@@ -183,7 +183,6 @@ struct MainWindow: View {
                 .notice("main window shown by URL")
         }
         .task {
-            FSKitSettingsLinkCheck.verify()
             await model.refresh()
             chooseLandingSection()
         }

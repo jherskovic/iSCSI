@@ -132,27 +132,9 @@ public actor TargetStore {
     private func load() -> [TargetRecord] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         do {
-            let records = try Self.decode(contentsOf: url)
-
-            // Retire any `workloadProfile` left by the removed workload
-            // picker: nothing can clear one now, and a stale value pins that
-            // volume's readahead depth. Rewritten to disk, or the next daemon
-            // start would pin it again.
-            let stale = records.filter { $0.workloadProfile != nil }
-            guard stale.isEmpty else {
-                let cleaned = records.map { record -> TargetRecord in
-                    var r = record
-                    r.workloadProfile = nil
-                    return r
-                }
-                // Best-effort: if the rewrite fails the daemon still runs with
-                // the cleared values, and tries again next load.
-                try? persist(cleaned)
-                DaemonLog.lifecycle("cleared a stale workload profile from \(stale.count) "
-                              + "target(s); readahead depth is chosen automatically")
-                return cleaned
-            }
-            return records
+            // A `workloadProfile` key left by an old release is ignored here
+            // and dropped by the next write: the property is gone.
+            return try Self.decode(contentsOf: url)
         } catch {
             let quarantined = url.appendingPathExtension("corrupt")
             try? FileManager.default.removeItem(at: quarantined)

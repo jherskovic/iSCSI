@@ -415,12 +415,11 @@ final class ModuleEnablement: SetupStep {
     }
 
     private func openSettings() {
-        // Reached by selector so this builds against the macOS 26 SDK; see
-        // FSKitSettingsLink. Returns false on macOS 26, where the API does not
-        // exist, and the URL fallback below runs instead.
-        if FSKitSettingsLink.open() { return }
-        // Only reached on 26.x, where this is known not to navigate — kept so
-        // the button does *something* rather than appearing dead. R7.
+        // macOS 27's own link to the switch. The app builds against the 27
+        // SDK, so this is a direct, availability-gated call.
+        if #available(macOS 27, *), FSClient.shared.openFileSystemExtensionsSettings() { return }
+        // macOS 26.x, or a refusal: the URL scheme, known not to navigate on
+        // 26 — kept so the button does *something* rather than appearing dead.
         for raw in ["x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
                     "x-apple.systempreferences:"] {
             if let url = URL(string: raw), NSWorkspace.shared.open(url) { return }

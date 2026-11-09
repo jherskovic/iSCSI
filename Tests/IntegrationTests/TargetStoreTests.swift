@@ -137,8 +137,10 @@ struct TargetStoreTests {
 
     /// The workload picker is gone, so nothing can show or clear this field —
     /// a stale value would silently pin the volume's readahead depth forever.
-    @Test("a stale workload profile is cleared when the store loads")
-    func staleWorkloadProfileIsCleared() async throws {
+    /// The per-target readahead override is gone. A file written by a
+    /// release that had it still decodes, and the key goes on the next write.
+    @Test("an old workload profile key decodes and is dropped by the next write")
+    func oldWorkloadProfileKeyIsDropped() async throws {
         let url = temporaryURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
@@ -152,13 +154,15 @@ struct TargetStoreTests {
         try Data(golden.utf8).write(to: url)
 
         let store = TargetStore(url: url)
-        #expect(await store.all().first?.workloadProfile == nil)
+        let loaded = await store.all()
+        #expect(loaded.map(\.id) == ["t1"])
 
-        // Gone from disk too, or the next daemon start pins the volume again.
-        let onDisk = try JSONDecoder().decode(
-            [TargetRecord].self, from: try Data(contentsOf: url))
-        #expect(onDisk.first?.workloadProfile == nil)
-        #expect(onDisk.first?.id == "t1", "clearing the field must not disturb the record")
+        var edited = try #require(loaded.first)
+        edited.displayName = "NAS 2"
+        try await store.save(edited)
+        let onDisk = try String(contentsOf: url, encoding: .utf8)
+        #expect(!onDisk.contains("workloadProfile"))
+        #expect(onDisk.contains("NAS 2"))
     }
 
     /// Discover mints a fresh UUID per add, so the same portal added twice
@@ -292,54 +296,14 @@ struct XPCModelWireTests {
         #expect(FlushPolicy(intervalSeconds: -5) == .writeThrough)
     }
 
-    /// Absent must pin nothing (the depth controller steers): an installed
-    /// target must not change I/O behaviour merely by being upgraded.
-    @Test("a record without a workload profile decodes as mixed")
-    func workloadProfileAbsentIsMixed() throws {
-        let golden = """
-            {"autoAttach":true,"chapUser":"initiator","displayName":"NAS",
-             "host":"192.168.0.101","id":"t1","lun":0,"port":3260,
-             "targetIQN":"iqn.2026-08.me.herko:disk0"}
-            """
-        let record = try JSONDecoder().decode(TargetRecord.self, from: Data(golden.utf8))
-        #expect(record.workloadProfile == nil)
-        // nil is not a profile: nothing pinned, the controller steers.
-        #expect(WorkloadProfile(rawValue: record.workloadProfile ?? "") == nil)
-    }
-
-    @Test("each workload profile round-trips and maps to its readahead budget")
-    func workloadProfileRoundTrips() throws {
-        var record = TargetRecord(id: "t1", displayName: "NAS", host: "192.168.0.101",
-                                  targetIQN: "iqn.2026-08.me.herko:disk0")
-
-        record.workloadProfile = "random"
-        var decoded = try JSONDecoder().decode(
-            TargetRecord.self, from: JSONEncoder().encode(record))
-        #expect(decoded.workloadProfile == "random")
+    @Test("each workload profile maps to its readahead budget")
+    func workloadProfileBudgets() {
         #expect(WorkloadProfile(rawValue: "random") == .randomAccess)
         #expect(WorkloadProfile.randomAccess.readaheadBudgetBytes == 512 << 10)
-
-        record.workloadProfile = "sequential"
-        decoded = try JSONDecoder().decode(
-            TargetRecord.self, from: JSONEncoder().encode(record))
-        #expect(decoded.workloadProfile == "sequential")
+        #expect(WorkloadProfile(rawValue: "mixed") == .mixed)
+        #expect(WorkloadProfile.mixed.readaheadBudgetBytes == 2 << 20)
         #expect(WorkloadProfile(rawValue: "sequential") == .sequential)
         #expect(WorkloadProfile.sequential.readaheadBudgetBytes == 4 << 20)
-
-        record.workloadProfile = "mixed"
-        decoded = try JSONDecoder().decode(
-            TargetRecord.self, from: JSONEncoder().encode(record))
-        #expect(decoded.workloadProfile == "mixed")
-        #expect(WorkloadProfile(rawValue: "mixed") == .mixed)
-    }
-
-    /// A typo in the hand-editable file must not silently pin a depth.
-    @Test("an unrecognised workload profile pins nothing")
-    func workloadProfileUnknownPinsNothing() {
-        #expect(WorkloadProfile.pinnedBudgetBytes(stored: "turbo") == nil)
-        #expect(WorkloadProfile.pinnedBudgetBytes(stored: "") == nil)
-        #expect(WorkloadProfile.pinnedBudgetBytes(stored: nil) == nil)
-        #expect(WorkloadProfile.pinnedBudgetBytes(stored: "sequential") == 4 << 20)
     }
 
     @Test("DaemonInfo decodes from a committed golden payload")

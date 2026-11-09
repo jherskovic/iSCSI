@@ -45,8 +45,4 @@ struct BHSBuilder {
     mutating func setDataSegmentLength(_ n: Int) {
         bytes.setBE24(UInt32(n), 5)
     }
-
-    mutating func setTotalAHSLength(words: Int) {
-        bytes.setU8(UInt8(words), 4)
-    }
 }

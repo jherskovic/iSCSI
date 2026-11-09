@@ -95,8 +95,6 @@ public actor DaemonCore {
     /// per attach (admin queue, I/O queue) and twice per recovery; the
     /// binding is the target's interface pin, nil for macOS routing.
     private let transportFactory: @Sendable (String, UInt16, InterfaceBinding?) async throws -> any ConnectionTransport
-    /// Whether writes carry FUA. See the note at the call site in `login`.
-    private let writeThrough: Bool
     /// Keepalive cadence, recovery backoff, and the per-task deadline. One
     /// policy for both protocols: NVMe's Keep Alive runs on `nopInterval`.
     private let policy: SessionPolicy
@@ -108,7 +106,6 @@ public actor DaemonCore {
 
     public init(
         initiatorName: String,
-        writeThrough: Bool = true,
         policy: SessionPolicy = SessionPolicy(),
         hostIdentity: NVMeHostIdentity? = nil,
         slowOperationThreshold: Duration = .seconds(1),
@@ -119,7 +116,6 @@ public actor DaemonCore {
         self.unitClaimWait = unitClaimWait
         self.initiatorName = initiatorName
         self.hostIdentity = hostIdentity ?? HostIdentity.nvmeHost()
-        self.writeThrough = writeThrough
         self.policy = policy
         self.transportFactory = transportFactory
     }
@@ -213,7 +209,7 @@ public actor DaemonCore {
         targetIQN: String,
         lun: UInt64,
         chap: CHAP.Credentials? = nil,
-        flushPolicy: FlushPolicy? = nil,
+        flushPolicy: FlushPolicy = .writeThrough,
         binding: InterfaceBinding? = nil,
         claimingUnit: Bool = false,
         validateConfiguration: @Sendable () async throws -> Void = {}
@@ -232,13 +228,12 @@ public actor DaemonCore {
         var registered = false
         defer { if let claim, !registered { claimedUnits[claim] = nil } }
 
-        // A record's stored policy wins; nil is a record-less login
-        // (iscsictl direct), which follows the ISCSI_WRITE_THROUGH default.
-        let durability = flushPolicy ?? (writeThrough ? FlushPolicy.writeThrough : FlushPolicy.never)
-        // Write-through by default: FSKit delivers no barrier signal, so a
+        // The record's stored policy, always passed by the XPC login. Write-
+        // through when none is given: FSKit delivers no barrier signal, so a
         // volatile target cache can lose an acknowledged write APFS believes
         // was barriered. FUA trades throughput for crash consistency; it is a
         // no-op when the target's cache is already disabled.
+        let durability = flushPolicy
         let writeThrough = durability == .writeThrough
 
         // The one place the protocol is decided: an NQN attaches over

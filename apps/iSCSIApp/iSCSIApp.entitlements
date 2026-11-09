@@ -2,11 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Install/manage system extensions (the dext). Provisionable with a
-         paid Developer Program team. The driverkit.userclient-access
-         entitlement is added back once we open the user client. -->
-    <key>com.apple.developer.system-extension.install</key>
-    <true/>
+    <!-- No com.apple.developer.system-extension.install: only the parked
+         Backend B (ISCSI_BACKEND_B, ExtensionController) installs a system
+         extension, and nothing that ships does. A Backend B build that needs
+         it adds it back with the flag (docs/entitlements.md). -->
     <key>com.apple.security.app-sandbox</key>
     <false/>
 </dict>

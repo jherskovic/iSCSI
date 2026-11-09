@@ -14,7 +14,7 @@
 //      swift build -Xswiftc -DISCSI_BACKEND_B
 //      xcodebuild ... SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) ISCSI_BACKEND_B'
 //
-//  See scripts/vm-deploy-dext.sh for the rest of what re-enabling needs.
+//  See scripts/parked/vm-deploy-dext.sh for the rest of what re-enabling needs.
 //
 
 #if ISCSI_BACKEND_B

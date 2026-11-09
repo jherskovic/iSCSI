@@ -88,10 +88,6 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
 
     func logout(session: String, reply: @escaping (Error?) -> Void) { reply(nil) }
 
-    func readaheadBudget(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
-        reply(0, nil)
-    }
-
     func localCacheBytes(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
         guard answersLocalCache else { return }
         reply(NSNumber(value: localCache), nil)
@@ -107,9 +103,7 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
 
     func login(host: String, port: NSNumber, targetIQN: String, lun: NSNumber,
                reply: @escaping (String?, Error?) -> Void) { reply(nil, nil) }
-    func discover(host: String, port: NSNumber, reply: @escaping ([String]?, Error?) -> Void) { reply(nil, nil) }
     func capacity(session: String, reply: @escaping (NSNumber, NSNumber, Error?) -> Void) { reply(0, 0, nil) }
-    func listSessions(reply: @escaping ([String]) -> Void) { reply([]) }
     func daemonInfo(reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func refreshFSKitEnablement(reply: @escaping (Error?) -> Void) { reply(nil) }
     func listTargets(reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
@@ -127,7 +121,6 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
         reply(nil, nil)
     }
 
-    func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func removeAllData(reply: @escaping (Error?) -> Void) { reply(nil) }
     func otherAccountsWithData(reply: @escaping (NSNumber) -> Void) { reply(0) }

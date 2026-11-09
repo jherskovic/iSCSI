@@ -21,7 +21,7 @@ else turns the LUN (or namespace) into a block device. Two things follow from th
 
 ```sh
 swift build
-swift test                                # both test targets
+swift test                                # all four test targets
 swift test --filter iSCSIKitTests         # one target
 swift test --filter Digest                # regex over suite and test names
 swift test --filter NVMe                  # everything NVMe/TCP, unit and integration

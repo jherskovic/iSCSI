@@ -91,7 +91,7 @@ final class ProtoItem: FSItem {
     let name: FSFileName
     let itemType: FSItem.ItemType
     let itemID: FSItem.Identifier
-    var size: UInt64
+    let size: UInt64
 
     init(name: String, type: FSItem.ItemType, id: FSItem.Identifier, size: UInt64) {
         self.name = FSFileName(string: name)
@@ -139,14 +139,11 @@ private let kVolumeUUID = UUID(uuidString: "6F1C2B14-9A4E-4E31-B1E2-4C7A9D0E5B33
 
 final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
 
-    /// Resolves the backing path from whichever resource kind FSKit hands us.
-    /// The URL is caller-influenced, so the generic branch goes through
-    /// `safeTag` and cannot escape the fixed directory.
+    /// Resolves the backing path for the URL FSKit hands us. The URL is
+    /// caller-influenced, so it goes through `safeTag` and cannot escape the
+    /// fixed directory. A path resource is refused: Info.plist turns them off
+    /// (`FSSupportsPathURLs`), and one would name a caller-chosen file.
     private func backingPath(for resource: FSResource) -> String? {
-        if let pathURL = resource as? FSPathURLResource {
-            fsLog.log("resource: FSPathURLResource \(redact(pathURL.url), privacy: .public)")
-            return pathURL.url.path
-        }
         if let generic = resource as? FSGenericURLResource {
             let url = generic.url
             fsLog.log("resource: FSGenericURLResource \(redact(url), privacy: .public)")
@@ -402,10 +399,10 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
                             packer: FSDirectoryEntryPacker,
                             replyHandler reply: @escaping (FSDirectoryVerifier, (any Error)?) -> Void) {
         // Per the header: pack "." and ".." only when `attributes` is nil.
-        var next: UInt64 = cookie.rawValue
         let verifierOut = FSDirectoryVerifier(rawValue: 1)
 
-        if next == 0 {
+        // One pass packs everything; any later cookie has nothing left.
+        if cookie.rawValue == 0 {
             if attributes == nil {
                 _ = packer.packEntry(name: FSFileName(string: "."), itemType: .directory,
                                      itemID: .rootDirectory, nextCookie: FSDirectoryCookie(rawValue: 1),
@@ -417,7 +414,6 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
             _ = packer.packEntry(name: image.name, itemType: .file, itemID: kImageItemID,
                                  nextCookie: FSDirectoryCookie(rawValue: 3),
                                  attributes: attributes.map { image.attributes(matching: $0) })
-            next = 3
         }
         reply(verifierOut, nil)
     }

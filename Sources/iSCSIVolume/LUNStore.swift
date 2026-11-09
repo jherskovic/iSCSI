@@ -522,19 +522,6 @@ public final class DaemonStore: LUNStore {
         let (product, overflowed) = bs.multipliedReportingOverflow(by: count)
         guard !overflowed, product > 0 else { throw POSIXError(.EIO) }
 
-        // Readahead budget: 0 unless the target record pins an explicit
-        // `workloadProfile` override; otherwise depth is adaptive. Failure is
-        // deliberately not fatal — a mount must not die for a tuning
-        // parameter.
-        var budgetReply: NSNumber = 0
-        try? Self.blocking { done in
-            proxy.readaheadBudget(session: handle) { bytes, error in
-                if error == nil { budgetReply = bytes }
-                done()
-            }
-        }
-        let pinned = budgetReply.intValue > 0
-        let budgetBytes = pinned ? budgetReply.intValue : Self.readaheadBytes
         // Local disk cache: best effort. Anything short of a usable tier
         // mounts without one and says why. Asked only of a daemon that has the
         // method: one that lacks it drops this connection, and with it the
@@ -562,7 +549,7 @@ public final class DaemonStore: LUNStore {
         }
         self.init(connection: xpc, injectedDaemon: nil, session: handle,
                   blockSize: bs, byteCount: product,
-                  budgetBytes: budgetBytes, pinned: pinned,
+                  budgetBytes: Self.readaheadBytes, pinned: false,
                   ramCacheBytes: Self.maxCachedBytes, diskTier: tier, diskTierOff: tierOff)
     }
 
@@ -955,11 +942,6 @@ public final class DaemonStore: LUNStore {
             """)
     }
 }
-
-// MARK: - Items
-
-/// A file or directory in the prototype volume. The volume is flat: a root
-/// directory containing exactly one file.
 
 /// A completion that runs at most once, whichever of the reply and the
 /// connection's error handler gets there first.

@@ -89,7 +89,6 @@ public actor ISCSIConnection {
     // Sequence numbers (RFC 7143 §10.1)
     private var cmdSN: UInt32
     private var maxCmdSN: UInt32
-    private var expCmdSNSeen: UInt32 = 0
     private var expStatSN: UInt32 = 0
 
     // Outstanding operations by ITT
@@ -159,7 +158,6 @@ public actor ISCSIConnection {
                 parameters = result.parameters
                 expStatSN = result.expStatSN
                 maxCmdSN = result.maxCmdSN
-                expCmdSNSeen = result.expCmdSN
                 // Login is always digest-free; digests turn on now.
                 let digests = DigestConfig(
                     headerDigest: parameters.headerDigest,
@@ -562,8 +560,9 @@ public actor ISCSIConnection {
         expStatSN &+= 1
     }
 
-    private func updateWindow(expCmdSN: UInt32, maxCmdSN newMax: UInt32) {
-        if Serial.lt(expCmdSNSeen, expCmdSN) { expCmdSNSeen = expCmdSN }
+    /// ExpCmdSN is accepted and not tracked: at ERL0 nothing here acts on
+    /// which commands the target has seen, only on how far the window runs.
+    private func updateWindow(expCmdSN _: UInt32, maxCmdSN newMax: UInt32) {
         if Serial.lt(maxCmdSN, newMax) {
             maxCmdSN = newMax
             let waiters = windowWaiters

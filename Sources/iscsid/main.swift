@@ -13,13 +13,6 @@ let initiatorName = IQN.defaultInitiatorName(
     hostIdentifier: Host.current().localizedName ?? "mac"
 )
 
-// Write-through (FUA on every WRITE) defaults on: Backend A receives no barrier
-// signal, so durability cannot be deferred to a flush we never get. Settable at
-// runtime because it roughly halves write throughput, and because turning it
-// off is how the crash-consistency negative control is run.
-//   ISCSI_WRITE_THROUGH=0  -> disable
-let writeThrough = (ProcessInfo.processInfo.environment["ISCSI_WRITE_THROUGH"] ?? "1") != "0"
-
 // A task unanswered for this long is aborted and retried on a fresh session
 // rather than waited on forever. Without it, a target that accepts commands
 // and never answers them wedges APFS instead of failing an I/O — and the NOP
@@ -36,7 +29,6 @@ let nvmeHost = HostIdentity.nvmeHost()
 
 let core = DaemonCore(
     initiatorName: initiatorName,
-    writeThrough: writeThrough,
     policy: policy,
     hostIdentity: nvmeHost
 ) { host, port, binding in
@@ -50,10 +42,13 @@ listener.resume()
 
 // Built in pieces: the Swift type checker fails on this as a single
 // interpolated expression (it reports "failed to produce diagnostic").
-let wtLabel = writeThrough ? "on" : "off"
+// Durability is per target (`FlushPolicy`, from its record); the crash-
+// consistency negative control is a target set to never flush. The daemon-
+// wide ISCSI_WRITE_THROUGH switch that once did that had stopped reaching any
+// filesystem session, and was removed.
 let toLabel = policy.taskTimeout.map { "\($0)" } ?? "none"
 var banner = "iscsid: listening on " + iscsiDaemonServiceName
-banner += " (writeThrough=" + wtLabel + ", taskTimeout=" + toLabel + ")"
+banner += " (taskTimeout=" + toLabel + ")"
 DaemonLog.lifecycle(banner)
 DaemonLog.lifecycle("iscsid: initiator " + initiatorName + ", NVMe host " + nvmeHost.nqn)
 dispatchMain()

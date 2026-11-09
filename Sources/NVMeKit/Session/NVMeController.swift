@@ -404,7 +404,7 @@ public actor NVMeController {
                 try Task.checkCancellation()
                 do {
                     try await self.establishForRecovery()
-                    onEvent?(.recovered(totalRecoveries: await self.recoveryCount))
+                    onEvent?(.recovered(totalRecoveries: self.recoveryCount))
                     return
                 } catch SessionError.loggedOut {
                     throw SessionError.loggedOut

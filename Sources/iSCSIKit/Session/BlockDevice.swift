@@ -45,8 +45,9 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     private var cachedBlockCount: UInt64 = 0
     private var capacityKnown = false
 
-    /// Cap per-SCSI-command transfer. Kept ≤ negotiated MaxBurstLength; also
-    /// bounds memory per request. 256 KiB, not 1 MiB: large commands collapse
+    /// Cap per-SCSI-command transfer; also bounds memory per request. Not
+    /// tied to MaxBurstLength, and need not be: a command larger than a burst
+    /// is simply answered with several R2Ts. 256 KiB, not 1 MiB: large commands collapse
     /// under queue depth on real targets, and 256 KiB was never slower
     /// anywhere tested. See docs/queue-depth.md.
     private let maxTransferBytes: Int

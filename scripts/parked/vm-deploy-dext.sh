@@ -22,7 +22,10 @@
 # ...then `cd apps && xcodegen generate`. Do NOT commit that with a release:
 # the DriverKit entitlements are approval-gated, so their presence makes every
 # Developer ID export fail at profile resolution. The guard below refuses to run
-# rather than deploy an app with no dext inside it.
+# rather than deploy an app with no dext inside it. The same local edit must add
+# com.apple.developer.system-extension.install back to
+# apps/iSCSIApp/iSCSIApp.entitlements: the shipping app dropped it on 2026-11-09,
+# and activation needs it.
 #
 # Requires: ssh key auth to the VM; the VM password in $ISCSI_VM_PASS (for
 # sudo reboot + keychain unlock); UTM hosting the VM if you want auto-recovery.

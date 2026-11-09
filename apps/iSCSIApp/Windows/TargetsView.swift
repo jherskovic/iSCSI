@@ -941,9 +941,6 @@ struct TargetEditor: View {
             mutualChapUser: (isNVMe || mutualChapUser.isEmpty) ? nil : mutualChapUser,
             autoAttach: autoAttach,
             flushIntervalSeconds: flushInterval,
-            // No UI: readahead depth adapts. An override hand-written into
-            // targets.json is carried through an edit rather than erased by it.
-            workloadProfile: existing?.workloadProfile,
             networkInterface: networkInterface,
             interfaceFallback: networkInterface == nil ? nil : interfaceFallback,
             localCacheGB: localCacheGB)

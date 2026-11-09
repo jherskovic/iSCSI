@@ -102,7 +102,6 @@ enum AttachmentError: LocalizedError {
     case fskitMountFailed(String, duplicates: [String])
     case noImageServed(String)
     case imageAttachFailed(String)
-    case blankLUN(device: String)
     /// The same unit is mounted elsewhere already. `ownAccount`: by this
     /// user, under a mount point the record no longer derives.
     case alreadyAttached(at: String, ownAccount: Bool)
@@ -123,8 +122,6 @@ enum AttachmentError: LocalizedError {
             return "The filesystem extension mounted but produced no LUN file at \(path)."
         case .imageAttachFailed(let detail):
             return "Could not attach the LUN as a disk: \(detail)"
-        case .blankLUN(let device):
-            return "The LUN attached as \(device) but has not been formatted yet."
         case .alreadyAttached(_, let ownAccount):
             return ownAccount
                 ? "This disk is already attached, under the settings the target had before it was edited."
@@ -152,8 +149,6 @@ enum AttachmentError: LocalizedError {
             return "The connection to the target may have dropped. Try again."
         case .imageAttachFailed:
             return nil
-        case .blankLUN:
-            return "Use Disk Utility to erase and format it, then attach again."
         case .alreadyAttached(_, let ownAccount):
             return ownAccount
                 ? "Detach it under Other Attached Disks, then attach again."

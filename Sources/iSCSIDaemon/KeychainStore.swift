@@ -170,9 +170,9 @@ public enum KeychainStore {
     /// Which half of a mutual CHAP pair a secret is.
     ///
     /// Separate accounts rather than a second service, so one target's two
-    /// secrets stay adjacent and `removeAll` can still find them by service. The
-    /// initiator account is the bare id, unprefixed, so items written before
-    /// mutual CHAP existed keep resolving.
+    /// secrets stay adjacent under the account's service. The initiator
+    /// account is the bare id, unprefixed, so items written before mutual
+    /// CHAP existed keep resolving.
     public enum Kind: Sendable {
         /// What we prove to the target.
         case initiator

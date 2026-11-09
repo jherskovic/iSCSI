@@ -131,7 +131,7 @@ power with a volatile write cache):
 
 ```bash
 swift run iscsi-target-sim --port 3260 --capacity-mib 1024 &
-swift run iscsictl iscsi verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --write
+swift run iscsictl iscsi verify 127.0.0.1 --target iqn.2026-08.me.herko.sim:lun0 --write
 printf 'crash\n' | nc 127.0.0.1 3262     # target power loss, on demand
 
 swift run iscsi-target-sim --nvme --capacity-mib 1024 &     # the same, as NVMe/TCP on 4420

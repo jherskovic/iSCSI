@@ -58,14 +58,13 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         self.store = targets ?? TargetStore(url: account.targetsURL)
     }
 
-    /// Readahead budget and local cache size per owned handle, resolved once
-    /// at login (like `FlushPolicy`): editing a target takes effect on the
-    /// next attach, not under a live session.
+    /// Local cache size per owned handle, resolved once at login (like
+    /// `FlushPolicy`): editing a target takes effect on the next attach, not
+    /// under a live session.
     private let budgets = OSAllocatedUnfairLock(initialState: [String: SessionBudgets]())
 
     /// What the extension asks for after login, resolved once from the record.
     private struct SessionBudgets {
-        var readahead: Int
         var localCache: Int
     }
 
@@ -95,19 +94,6 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                 context: "Session \(handle) does not belong to this connection")
         }
         return nil
-    }
-
-    public func discover(host: String, port: NSNumber, reply: @escaping ([String]?, Error?) -> Void) {
-        let box = SendableBox(reply)
-        Task {
-            do {
-                let targets = try await core.discover(host: host, port: port.uint16Value)
-                box.value(targets.map { "\($0.name)\t\($0.addresses.joined(separator: ","))" }, nil)
-            } catch {
-                box.value(nil, ISCSIError.nsError(from: error,
-                                                  context: "Discovering targets at \(host)"))
-            }
-        }
     }
 
     /// Resolve a portal to the configured target and *that* target's
@@ -174,7 +160,6 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                     validateConfiguration: { [targets = self.targets] in try await targets.validate(record) }
                 )
                 guard self.claim(handle, budgets: SessionBudgets(
-                    readahead: WorkloadProfile.pinnedBudgetBytes(stored: record.workloadProfile) ?? 0,
                     localCache: record.localCacheBytes)) else {
                     // The client went away mid-login. Nobody can use or
                     // release this session, and it holds the unit.
@@ -251,14 +236,6 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                                                    context: "Reading the device size"))
             }
         }
-    }
-
-    public func readaheadBudget(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
-        if let denied = checkOwned(session) { reply(0, denied); return }
-        // 0 means nothing pinned, adapt — also the right answer for a missing
-        // entry; failing a mount over a tuning parameter would be worse.
-        let bytes = budgets.withLock { $0[session]?.readahead } ?? 0
-        reply(NSNumber(value: bytes), nil)
     }
 
     public func localCacheBytes(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
@@ -386,11 +363,6 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
             DaemonLog.error("refreshFSKitEnablement failed: \(error)")
             reply(error)
         }
-    }
-
-    public func listSessions(reply: @escaping ([String]) -> Void) {
-        let box = SendableBox(reply)
-        Task { box.value(await core.sessionHandles()) }
     }
 
     // MARK: - Configured targets
@@ -607,15 +579,6 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         }
         return try await credentials(host: host, port: port, targetIQN: targetIQN,
                                      lun: record.lun).chap
-    }
-
-    public func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void) {
-        if let denied = checkOwned(session) { reply(nil, denied); return }
-        let box = SendableBox(reply)
-        Task {
-            do { box.value(try JSONEncoder().encode(await core.reportLUNs(session)), nil) }
-            catch { box.value(nil, ISCSIError.nsError(from: error, context: "Listing LUNs")) }
-        }
     }
 
     public func testConnection(host: String, port: NSNumber, targetIQN: String,
