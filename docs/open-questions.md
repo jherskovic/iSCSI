@@ -971,20 +971,30 @@ this Mac's page cache and the NAS's ARC. One mount per job:
     acknowledges a raw write before the target has it, by about 50 ms, and
     honours flushes. That is a correction to how write-through has been
     described: FUA governs the target's cache, not DiskImages'.
-  - **What happens to those dirty pages if the target goes away: the loss
-    is silent** (measured 2026-11-09 on macOS 26.7.2, build 54.1, the
-    `hdiutil` engine, the simulator with commands stalled). A 1 MiB `dd` to
-    the raw device blocked for the extension's whole 30 s timeout; the
-    extension refused the write and latched the volume dead; `dd` still exited
-    0. Once the volume was dead, further raw writes returned success at once,
-    with or without `fsync` (`F_FULLFSYNC` is ENOTTY on a raw device), so
-    `hdiutil` does not fail the next write either. The refusal does come back
-    through FSKit, but only at the image file's next flush or close: written
-    directly, `lun0.img` gave EIO on `F_FULLFSYNC` and again on `close`. A
-    raw-device writer that never flushes is never told. The same day an APFS
-    volume on the same path got EIO from a stalled metadata read and failed
-    the allocation, and its writer (no `fsync`) still saw success. Whether
-    APFS sees a failed *write* through `hdiutil`'s flush is still untested.
+  - **What happens to those writes if the target goes away: on the default
+    `hdiutil` engine the loss is silent, `F_FULLFSYNC` included; DiskImages2
+    reports it.** Measured 2026-11-09 against the simulator with commands
+    stalled past the extension's 30 s timeout (macOS 26.7.2 with build 54.1,
+    macOS 27.2 with 53.13; the difference between those builds is only
+    whether one unanswered write latches the volume dead):
+
+    | path | raw-device write | APFS write + `F_FULLFSYNC` | after a fresh attach |
+    |---|---|---|---|
+    | `hdiutil`, 26.7.2 | `dd` waited 30 s, exited 0; later writes to the dead volume succeeded at once | **returned success** after 60 s (one failed read, one failed write) and again after 30 s (one failed 1 MiB write) | the flushed file is gone; `fsck_apfs` OK |
+    | `hdiutil`, 27.2 | — | **returned success** after 90 s (three failed reads) | the flushed file is gone; `fsck_apfs` OK |
+    | DiskImages2 (`engine=diskimages2`, `writeThrough` granted), 27.2 | `dd`: **EIO** after 30 s | **EIO** after 60 s (two failed reads) | — |
+    | `lun0.img` written directly, 26.7.2 | — | `write` succeeded; **`F_FULLFSYNC` EIO** at 30 s, `close` EIO | — |
+
+    The last row places it: FSKit does deliver the extension's refusal to
+    whoever flushes `lun0.img`, so it is DiskImages under `hdiutil` that drops
+    its backing file's error and acknowledges the client's flush anyway.
+    Nothing in the extension can make that engine report it. What follows:
+    on a target that stalls past the timeout, an `fsync`ed write can be
+    acknowledged to the application and lost, on both OS versions, unless
+    the volume is attached with DiskImages2 (opt-in on 27, absent on 26).
+    APFS stays consistent (it rolls back to its last good checkpoint); the
+    file contents written since are what is lost. `F_FULLFSYNC` is ENOTTY on
+    a raw device, so a raw-device writer has no flush to ask.
 
 **The write window closes if the volume sets the kernel's cache policy
 itself, 2026-10-31.** The page cache that held those writes is this volume's
