@@ -57,7 +57,10 @@ public struct MockNVMeHostility: Sendable {
     public var terminateOnFirstIOCommand = false
     /// Before every I/O completion, complete a CID nobody submitted.
     public var completeUnknownCID = false
-    /// Send one C2HData past the end of the read buffer.
+    /// I/O reads only: after the real data, one more C2HData of 512 bytes
+    /// at the next offset, carrying LAST_PDU. Contiguous on purpose, so the
+    /// host's offset check passes and its read-buffer bounds check is what
+    /// has to catch it.
     public var c2hDataOverrun = false
     /// Ask, by R2T, for more bytes than the write carries.
     public var r2tOverrun = false
@@ -235,6 +238,32 @@ actor MockNVMeQueue {
             // Connection torn down by the fault script or the peer.
         }
         await transport.close()
+        await drainTerminationRequests()
+    }
+
+    /// A host that detects a fatal error sends an H2CTermReq and closes. If
+    /// this side failed first — typically a send into the closed connection
+    /// — that request is still buffered unread; record it anyway, so tests
+    /// asserting on `h2cTermReqsReceived` do not depend on which side lost
+    /// the race. Runs after `close()`, so `receive()` only returns what is
+    /// already buffered and then EOF. In-process pipes only: a cancelled TCP
+    /// connection has already discarded whatever was unread.
+    private func drainTerminationRequests() async {
+        guard transport is MemoryPipe else { return }
+        while true {
+            do {
+                if let raw = try deframer.next() {
+                    if case .h2cTermReq(let term) = try AnyNVMeTCPPDU.decode(raw) {
+                        await subsystem.noteH2CTermReq(term.fes)
+                    }
+                    continue
+                }
+                guard let chunk = try await transport.receive(), !chunk.isEmpty else { return }
+                deframer.append(chunk)
+            } catch {
+                return
+            }
+        }
     }
 
     func stop() async {
@@ -284,8 +313,9 @@ actor MockNVMeQueue {
     }
 
     /// Read data as C2HData PDUs, then the completion — unless SUCCESS on the
-    /// last data PDU stood in for it.
-    private func sendReadData(cid: UInt16, data: Data) async throws {
+    /// last data PDU stood in for it. `overrun` bytes beyond `data` follow
+    /// in a PDU of their own, which then carries LAST_PDU instead.
+    private func sendReadData(cid: UInt16, data: Data, overrun: Int = 0) async throws {
         let chunk = max(1, config.c2hChunkBytes)
         let hostile = queueID != 0 ? config.hostility : MockNVMeHostility()
         var offset = 0
@@ -293,7 +323,7 @@ actor MockNVMeQueue {
         var completed = false
         while offset < data.count {
             let end = min(offset + chunk, data.count)
-            let last = end == data.count
+            let last = end == data.count && overrun == 0
             var flagLast = last || (hostile.lastPDUTooEarly && index == 0)
             var success = last && config.emitSuccessFlag
             if hostile.successWithoutLast {
@@ -307,6 +337,11 @@ actor MockNVMeQueue {
             completed = success
             offset = end
             index += 1
+        }
+        if overrun > 0 {
+            try await send(C2HDataPDU(cccid: cid, dataOffset: UInt32(data.count), data: Data(count: overrun),
+                                      last: true, success: config.emitSuccessFlag).encode())
+            completed = config.emitSuccessFlag
         }
         if !completed { try await respond(cid: cid) }
     }
@@ -586,11 +621,7 @@ actor MockNVMeQueue {
                 try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x80, dnr: true))   // LBA out of range
                 return
             }
-            if config.hostility.c2hDataOverrun {
-                try await send(C2HDataPDU(cccid: cid, dataOffset: UInt32(payload.count),
-                                          data: Data(count: 512), last: false, success: false).encode())
-            }
-            try await sendReadData(cid: cid, data: payload)
+            try await sendReadData(cid: cid, data: payload, overrun: config.hostility.c2hDataOverrun ? 512 : 0)
         case NVMeOpcode.NVM.write:
             let slba = sqe.bytes.leU64(40)
             let blocks = Int(sqe.bytes.leU16(48)) + 1
