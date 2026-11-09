@@ -971,9 +971,20 @@ this Mac's page cache and the NAS's ARC. One mount per job:
     acknowledges a raw write before the target has it, by about 50 ms, and
     honours flushes. That is a correction to how write-through has been
     described: FUA governs the target's cache, not DiskImages'.
-  - **Unverified: what happens to those dirty pages if the target goes away.**
-    A page-cache writeback that fails has no caller to tell, so the loss may
-    be silent where `hdiutil` would fail the next write. Untested.
+  - **What happens to those dirty pages if the target goes away: the loss
+    is silent** (measured 2026-11-09 on macOS 26.7.2, build 54.1, the
+    `hdiutil` engine, the simulator with commands stalled). A 1 MiB `dd` to
+    the raw device blocked for the extension's whole 30 s timeout; the
+    extension refused the write and latched the volume dead; `dd` still exited
+    0. Once the volume was dead, further raw writes returned success at once,
+    with or without `fsync` (`F_FULLFSYNC` is ENOTTY on a raw device), so
+    `hdiutil` does not fail the next write either. The refusal does come back
+    through FSKit, but only at the image file's next flush or close: written
+    directly, `lun0.img` gave EIO on `F_FULLFSYNC` and again on `close`. A
+    raw-device writer that never flushes is never told. The same day an APFS
+    volume on the same path got EIO from a stalled metadata read and failed
+    the allocation, and its writer (no `fsync`) still saw success. Whether
+    APFS sees a failed *write* through `hdiutil`'s flush is still untested.
 
 **The write window closes if the volume sets the kernel's cache policy
 itself, 2026-10-31.** The page cache that held those writes is this volume's
