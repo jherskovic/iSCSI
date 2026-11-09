@@ -31,8 +31,8 @@ public enum RedirectingLogin {
     ///   arbitrary address.
     /// - Parameter loginTimeout: how long each connection's login exchange
     ///   may take once connected (`SessionPolicy.loginTimeout`). A login that
-    ///   runs out has its connection closed and throws
-    ///   `DeadlineError.timedOut`; nil waits as long as the target does.
+    ///   runs out throws `DeadlineError.timedOut`; nil waits as long as the
+    ///   target does. Whatever a login fails with, its connection is closed.
     ///
     /// An address we cannot read surfaces the redirect too: a guessed port
     /// connects to the wrong service, and the error that comes back blames
@@ -55,6 +55,7 @@ public enum RedirectingLogin {
                 }
                 return Outcome(connection: connection, result: result, movedPermanentlyTo: moved)
             } catch let ConnectionError.redirected(address, permanent) {
+                await connection.close()
                 guard followRedirects, hops < maxRedirects,
                       let next = TargetPortal(targetAddress: address) else {
                     throw ConnectionError.redirected(address: address, permanent: permanent)
@@ -62,6 +63,13 @@ public enum RedirectingLogin {
                 hops += 1
                 if permanent { moved = next }
                 portal = next
+            } catch {
+                // Every failed login closes what it opened: a malformed
+                // response, a refused one, a cancelled one. An abandoned
+                // connection keeps its socket, and the target its session
+                // slot, for every attempt of every recovery.
+                await connection.close()
+                throw error
             }
         }
     }

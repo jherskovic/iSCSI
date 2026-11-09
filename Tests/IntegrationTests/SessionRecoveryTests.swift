@@ -154,6 +154,39 @@ struct SessionRecoveryTests {
         await fleet.shutdown()
     }
 
+    /// The user detaches while recovery is reconnecting. Before the fix the
+    /// recovery logged in after `logout` returned and kept that session —
+    /// connected, pinging, holding the target — with nothing that would ever
+    /// log it out.
+    @Test func logoutDuringRecoveryLeavesNoSession() async throws {
+        let disk = RAMDisk()
+        let gate = ConnectGate()
+        let harnesses = HarnessList()
+        let session = ISCSISession(login: standardLogin(), policy: testPolicy(), transportFactory: {
+            if await harnesses.count >= 1 { await gate.pass() }
+            let harness = TargetHarness.start(disk: disk)
+            await harnesses.add(harness)
+            return harness.transport
+        })
+        try await session.activate()
+        await harnesses.first?.target.stop()
+
+        let io = Task { try await session.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady())) }
+        #expect(await eventually { await gate.isHeld })
+        let logout = Task { try await session.logout() }
+        try await Task.sleep(for: .milliseconds(50))
+        await gate.open()
+        try await logout.value
+
+        await #expect(throws: (any Error).self) { _ = try await io.value }
+        let reconnected = try #require(await harnesses.last)
+        let ended = EndedFlag()
+        Task { await reconnected.serveTask.value; await ended.set() }
+        #expect(await eventually { await ended.value },
+                "the connection recovery opened after logout is still being served")
+        await harnesses.shutdown()
+    }
+
     @Test func chapSurvivesRecovery() async throws {
         var chapTarget = MockTargetConfig()
         chapTarget.requireChap = true
@@ -214,4 +247,23 @@ struct SessionRecoveryTests {
         }
         await fleet.shutdown()
     }
+}
+
+actor HarnessList {
+    private var harnesses: [TargetHarness] = []
+    var count: Int { harnesses.count }
+    var first: TargetHarness? { harnesses.first }
+    var last: TargetHarness? { harnesses.last }
+    func add(_ harness: TargetHarness) { harnesses.append(harness) }
+    func shutdown() async {
+        for harness in harnesses {
+            await harness.target.stop()
+            harness.serveTask.cancel()
+        }
+    }
+}
+
+actor EndedFlag {
+    private(set) var value = false
+    func set() { value = true }
 }

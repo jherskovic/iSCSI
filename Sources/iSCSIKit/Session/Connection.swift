@@ -166,10 +166,13 @@ public actor ISCSIConnection {
                     dataDigest: parameters.dataDigest
                 )
                 serializer = PDUSerializer(digests: digests)
-                deframer = PDUDeframer(
-                    digests: digests,
-                    maxDataSegmentLength: Int(parameters.initiatorMaxRecvDataSegmentLength)
-                )
+                // Reconfigured, not replaced: a target may send its first
+                // full-feature PDU (a NOP-In, an Async Message) in the same
+                // TCP segment as the final Login Response, and a fresh
+                // deframer would drop those bytes and lose framing.
+                deframer.digests = digests
+                deframer.maxDataSegmentLength = min(
+                    Int(parameters.initiatorMaxRecvDataSegmentLength), 1 << 24)
                 state = .fullFeature
                 startReadLoop()
                 return result
@@ -200,6 +203,12 @@ public actor ISCSIConnection {
     public func execute(_ task: SCSITask) async throws -> SCSITaskResult {
         try ensureOpen()
         try await waitForWindow()
+        // Last chance to give up for free. Once a CmdSN is taken the command
+        // has to reach the wire, or the target waits on the gap forever; so a
+        // cancellation after this point tears the connection down (see
+        // `NetworkTransport.send`). A sibling chunk cancelled by its task
+        // group usually lands here, and costs nothing.
+        try Task.checkCancellation()
 
         let itt = allocateITT()
         let pending = PendingTask(task: task, cmdSN: cmdSN)
@@ -423,9 +432,30 @@ public actor ISCSIConnection {
         waiter.complete(.failure(CancellationError()))
     }
 
+    /// The send most recently handed out. Each send waits for the one
+    /// before it, so PDUs reach the transport in the order this actor issued
+    /// them. `transport.send` is nonisolated, and two calls made in order
+    /// from here could otherwise reach `NWConnection.send` in either order —
+    /// CmdSN n+1 ahead of n, which RFC 7143 §4.2.2.1 says MUST NOT happen.
+    private var lastSend: Task<Void, any Error>?
+
     private func sendRaw(_ bytes: Data) async throws {
-        do {
+        let previous = lastSend
+        let transport = self.transport
+        let send = Task {
+            _ = await previous?.result
             try await transport.send(bytes)
+        }
+        lastSend = send
+        do {
+            // Cancellation still reaches the transport, which tears a stuck
+            // send down (and with it the connection) rather than block every
+            // command and the keepalive behind it.
+            try await withTaskCancellationHandler {
+                try await send.value
+            } onCancel: {
+                send.cancel()
+            }
         } catch {
             await close(reason: .connectionLost("send failed: \(error)"))
             throw closeReason ?? ConnectionError.closed
@@ -441,14 +471,16 @@ public actor ISCSIConnection {
     private func runReadLoop() async {
         do {
             while state == .fullFeature {
+                // Drain first: login may have left a whole PDU buffered.
+                while let raw = try deframer.next() {
+                    try await handle(raw)
+                }
+                guard state == .fullFeature else { return }
                 guard let chunk = try await transport.receive() else {
                     await close(reason: .connectionLost("EOF"))
                     return
                 }
                 deframer.append(chunk)
-                while let raw = try deframer.next() {
-                    try await handle(raw)
-                }
             }
         } catch let error as PDUError {
             await close(reason: .protocolError("\(error)"))
@@ -563,8 +595,12 @@ public actor ISCSIConnection {
             // accounting claims; anything less is a hole the pre-zeroed
             // buffer would silently paper over.
             if resp.status == 0x00 && pending.receivedBytes != valid {
-                throw ConnectionError.protocolError(
+                // Already out of `pendingTasks`, so `close` will not fail it:
+                // fail it here, or its caller waits out the task timeout.
+                let error = ConnectionError.protocolError(
                     "read completed GOOD with \(pending.receivedBytes) of \(valid) bytes delivered")
+                pending.completion.complete(.failure(error))
+                throw error
             }
         }
         if resp.status == 0x02 { result.sense = resp.senseData }
@@ -618,8 +654,10 @@ public actor ISCSIConnection {
                 result.data = pending.readBuffer.prefix(valid)
             }
             if dataIn.status == 0x00 && pending.receivedBytes != valid {
-                throw ConnectionError.protocolError(
+                let error = ConnectionError.protocolError(
                     "read completed GOOD with \(pending.receivedBytes) of \(valid) bytes delivered")
+                pending.completion.complete(.failure(error))
+                throw error
             }
             pending.completion.complete(.success(result))
         }

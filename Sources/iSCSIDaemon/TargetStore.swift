@@ -17,15 +17,24 @@ import iSCSIKit
 public actor TargetStore {
     private let url: URL
     private var cache: [TargetRecord]?
+    /// What the file was when `cache` was read or written. The file is not
+    /// only this actor's: legacy adoption writes an account's file directly
+    /// (`write(_:to:)`), and when an adoption that failed once is resumed,
+    /// this store has already cached the list from before it. Without the
+    /// check, the next save wrote that stale list over the adopted targets
+    /// and orphaned their secrets.
+    private var cacheStamp: FileStamp?
 
     public init(url: URL) {
         self.url = url
     }
 
     public func all() -> [TargetRecord] {
-        if let cache { return cache }
+        let stamp = FileStamp(url)
+        if let cache, stamp == cacheStamp { return cache }
         let loaded = load()
         cache = loaded
+        cacheStamp = FileStamp(url)
         return loaded
     }
 
@@ -109,6 +118,7 @@ public actor TargetStore {
     public func removeConfiguration(_ removeFiles: @Sendable () throws -> Void) throws {
         try removeFiles()
         cache = []
+        cacheStamp = FileStamp(url)
     }
 
     public func validate(_ expected: TargetRecord) throws {
@@ -156,6 +166,7 @@ public actor TargetStore {
     private func persist(_ records: [TargetRecord]) throws {
         try Self.write(records, to: url)
         cache = records
+        cacheStamp = FileStamp(url)
     }
 
     static func decode(contentsOf url: URL) throws -> [TargetRecord] {
@@ -183,6 +194,29 @@ public actor TargetStore {
         // The atomic write lands a fresh inode with umask permissions; the
         // 0700 directory is what closes that pre-chmod window.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+}
+
+/// Enough of a file's identity to notice that someone else replaced it: an
+/// atomic write is a new inode. nil fields mean the file is absent.
+struct FileStamp: Equatable {
+    let device: dev_t
+    let inode: ino_t
+    let modified: timespec
+    let size: off_t
+
+    init?(_ url: URL) {
+        var info = stat()
+        guard stat(url.path, &info) == 0 else { return nil }
+        device = info.st_dev
+        inode = info.st_ino
+        modified = info.st_mtimespec
+        size = info.st_size
+    }
+
+    static func == (a: FileStamp, b: FileStamp) -> Bool {
+        a.device == b.device && a.inode == b.inode && a.size == b.size
+            && a.modified.tv_sec == b.modified.tv_sec && a.modified.tv_nsec == b.modified.tv_nsec
     }
 }
 

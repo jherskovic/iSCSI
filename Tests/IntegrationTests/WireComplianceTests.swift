@@ -48,7 +48,10 @@ final class ScriptedTarget: @unchecked Sendable {
     /// Minimal conforming login: security-stage transit, then straight to
     /// full-feature phase with every operational key left at its RFC default
     /// (target MRDSL 8192, MaxBurstLength 262144, InitialR2T=Yes).
-    func performLogin() async throws {
+    ///
+    /// `coalesced` goes out in the same write as the final Login Response, as
+    /// a target that sends its first full-feature PDU at once may do.
+    func performLogin(coalescing coalesced: (any ProtocolDataUnit)? = nil) async throws {
         guard case .loginRequest(let req1) = try await nextPDU() else {
             throw ScriptError.unexpectedPDU("expected first login request")
         }
@@ -77,7 +80,9 @@ final class ScriptedTarget: @unchecked Sendable {
         r2.statSN = takeStatSN()
         r2.expCmdSN = expCmdSN
         r2.maxCmdSN = maxCmdSN
-        try await send(r2)
+        var bytes = serializer.serialize(r2.encode())
+        if let coalesced { bytes.append(serializer.serialize(coalesced.encode())) }
+        try await pipe.send(bytes)
     }
 
     /// Serve one initiator ping: NOP-Out in, echo NOP-In out.
@@ -108,6 +113,7 @@ final class ScriptedTarget: @unchecked Sendable {
 }
 
 private func scriptedSession(
+    coalescing coalesced: (any ProtocolDataUnit)? = nil,
     tune: (inout LoginConfig) -> Void = { _ in }
 ) async throws -> (ISCSIConnection, ScriptedTarget) {
     let (initiatorSide, targetSide) = MemoryPipe.pair()
@@ -121,7 +127,7 @@ private func scriptedSession(
     tune(&config)
     let connection = ISCSIConnection(transport: initiatorSide, login: config)
     async let loginResult = connection.login()
-    try await script.performLogin()
+    try await script.performLogin(coalescing: coalesced)
     _ = try await loginResult
     return (connection, script)
 }
@@ -150,6 +156,47 @@ struct WireComplianceTests {
 
     /// §11.7.1: DataSegmentLength must not exceed the MRDSL for the direction
     /// sent — the echo of a target ping is clipped to the target's MRDSL.
+    @Test func aPDUInTheSameSegmentAsTheFinalLoginResponseIsKept() async throws {
+        // A target ping (TTT 7) that arrives glued to the last Login
+        // Response. The deframer used to be replaced at that point, losing
+        // the ping and the connection's framing with it.
+        var pingIn = NopInPDU()
+        pingIn.initiatorTaskTag = 0xFFFF_FFFF
+        pingIn.targetTransferTag = 7
+        pingIn.statSN = 0x102 // after the two login responses
+        pingIn.expCmdSN = 1 // the login's CmdSN, which login does not consume
+        pingIn.maxCmdSN = 101
+        let (connection, script) = try await scriptedSession(coalescing: pingIn)
+
+        guard case .nopOut(let reply) = try await script.nextPDU() else {
+            Issue.record("expected the NOP-Out answering the coalesced ping")
+            return
+        }
+        #expect(reply.targetTransferTag == 7)
+        await connection.close()
+    }
+
+    /// GOOD with fewer Data-In bytes than promised is a protocol error that
+    /// closes the connection. The task was already out of the pending map,
+    /// so `close` did not fail it, and its caller waited out its deadline —
+    /// or, on a bare connection, forever.
+    @Test func aGoodReadWithMissingBytesFailsItsCallerAtOnce() async throws {
+        let (connection, script) = try await scriptedSession()
+        let read = Task {
+            try await withDeadline(.seconds(2)) {
+                try await connection.execute(SCSITask(
+                    lun: 0, cdb: CDB.read16(lba: 0, blocks: 1), direction: .read(expectedLength: 512)))
+            }
+        }
+        guard case .scsiCommand(let command) = try await script.nextPDU() else {
+            Issue.record("expected the READ")
+            return
+        }
+        try await script.send(script.goodResponse(itt: command.initiatorTaskTag))
+        await #expect(throws: ConnectionError.self) { _ = try await read.value }
+        await connection.close()
+    }
+
     @Test func nopEchoClippedToTargetMRDSL() async throws {
         let (connection, script) = try await scriptedSession()
         var pingIn = NopInPDU()
@@ -526,5 +573,58 @@ struct WireComplianceTests {
         #expect(outcome.residualCount == 512)
         #expect(outcome.data.count == 1024)
         await connection.close()
+    }
+}
+
+/// Delays each send by a random few hundred microseconds before passing it
+/// on, and records the CmdSN of every SCSI Command in the order it is passed
+/// on — which is the order the target sees.
+final class JitteringTransport: ConnectionTransport, @unchecked Sendable {
+    private let inner: MemoryPipe
+    private let lock = NSLock()
+    private var commandSNs: [UInt32] = []
+
+    init(_ inner: MemoryPipe) { self.inner = inner }
+
+    var cmdSNsOnTheWire: [UInt32] { lock.withLock { commandSNs } }
+
+    func send(_ data: Data) async throws {
+        try await Task.sleep(for: .microseconds(Int.random(in: 0 ... 800)))
+        if data.count >= 48, data[data.startIndex] & 0x3F == 0x01 {
+            let sn = data.beU32(24)
+            lock.withLock { commandSNs.append(sn) }
+        }
+        try await inner.send(data)
+    }
+
+    func receive() async throws -> Data? { try await inner.receive() }
+    func close() async { await inner.close() }
+}
+
+@Suite("Wire compliance: CmdSN order", .timeLimit(.minutes(1)))
+struct CmdSNOrderTests {
+    /// RFC 7143 §4.2.2.1: commands go out in CmdSN order. CmdSN is taken on
+    /// the connection actor, but the send hops off it; before sends were
+    /// chained, concurrent commands could reach the wire in either order.
+    @Test func concurrentCommandsReachTheWireInCmdSNOrder() async throws {
+        let harness = TargetHarness.start()
+        let jitter = JitteringTransport(harness.transport)
+        let connection = ISCSIConnection(transport: jitter, login: standardLogin())
+        _ = try await connection.login()
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0 ..< 64 {
+                group.addTask {
+                    _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        let sent = jitter.cmdSNsOnTheWire
+        #expect(sent.count == 64)
+        #expect(sent == sent.sorted(), "CmdSNs on the wire: \(sent)")
+        await connection.close()
+        await harness.target.stop()
     }
 }

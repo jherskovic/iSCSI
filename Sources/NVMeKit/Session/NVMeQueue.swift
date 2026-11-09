@@ -169,7 +169,10 @@ public actor NVMeQueue {
         maxH2CData = icresp.maxH2CData
         // Digests apply from the first PDU after the IC exchange.
         serializer = NVMeTCPSerializer(digests: digests)
-        deframer = NVMeTCPDeframer(digests: digests, maxPDUBytes: maxPDUBytes)
+        // Reconfigured, not replaced: anything the controller sent in the
+        // same segment as the ICResp (a C2HTermReq, say) is already buffered.
+        deframer.digests = digests
+        deframer.maxPDUBytes = maxPDUBytes
         state = .connected
         startReadLoop()
 
@@ -228,6 +231,15 @@ public actor NVMeQueue {
     private func submit(_ sqe: SQE, data: Data, expectedRead: Int, forceInCapsule: Bool) async throws -> NVMeCompletion {
         try ensureOpen()
         try await waitForSlot()
+        // Cancelled while waiting for a slot (or before): give the slot back
+        // and stop, rather than reach `NetworkTransport.send`, whose
+        // cancellation tears the whole connection down.
+        do {
+            try Task.checkCancellation()
+        } catch {
+            releaseSlot()
+            throw error
+        }
 
         let cid = allocateCID()
         var sqe = sqe
@@ -349,14 +361,16 @@ public actor NVMeQueue {
     private func runReadLoop() async {
         do {
             while state == .connected {
+                // Drain first: the IC exchange may have left a PDU buffered.
+                while let raw = try deframer.next() {
+                    try await handle(raw)
+                }
+                guard state == .connected else { return }
                 guard let chunk = try await transport.receive() else {
                     await close(reason: .connectionLost("EOF"))
                     return
                 }
                 deframer.append(chunk)
-                while let raw = try deframer.next() {
-                    try await handle(raw)
-                }
             }
         } catch let error as FatalTransportError {
             await terminate(fes: error.fes, fei: error.fei, reason: error.reason)
@@ -427,10 +441,12 @@ public actor NVMeQueue {
         // Success promises the data phase delivered everything; anything
         // less is a hole the pre-zeroed buffer would silently paper over.
         if cqe.status.isSuccess, command.receivedBytes != command.readBuffer.count {
-            let error = fatal(.pduSequenceError,
-                "read completed successfully with \(command.receivedBytes) of \(command.readBuffer.count) bytes delivered")
-            command.completion.complete(.failure(error))
-            throw error
+            let reason = "read completed successfully with \(command.receivedBytes) of \(command.readBuffer.count) bytes delivered"
+            // The caller gets the error every other pending command gets when
+            // the connection closes, so the controller recovers and retries
+            // it; the private fatal error is for the read loop alone.
+            command.completion.complete(.failure(ConnectionError.protocolError(reason)))
+            throw fatal(.pduSequenceError, reason)
         }
         command.completion.complete(.success(NVMeCompletion(cqe: cqe, data: command.readBuffer)))
     }

@@ -125,16 +125,23 @@ public actor ISCSISession {
     @discardableResult
     public func activate() async throws -> LoginResult {
         recoveryFailed = nil
-        guard connection == nil else { return loginResult! }
         loggedOut = false
+        guard connection == nil else { return loginResult! }
         let result = try await establish()
         return result
     }
 
+    /// Ends the session, including a recovery in progress: without stopping
+    /// it, a recovery that was backing off when the user detached logged in
+    /// again afterwards and left a live session nothing would ever log out.
     public func logout() async throws {
         loggedOut = true
         keepaliveTask?.cancel()
         keepaliveTask = nil
+        if let recovery = recoveryTask {
+            recovery.cancel()
+            _ = try? await recovery.value
+        }
         guard let connection else { return }
         // Bounded (`SessionPolicy.logoutTimeout`), and closed either way.
         _ = try? await withDeadline(policy.logoutTimeout, onTimeout: { await connection.close() }) {
@@ -167,7 +174,7 @@ public actor ISCSISession {
                 attempt += 1
                 // The connection died (or the target killed it). Recover and
                 // resubmit — safe for block I/O, which is idempotent.
-                try await recover(after: error)
+                try await recover(after: error, on: connection)
             } catch is DeadlineError {
                 try Task.checkCancellation()
                 // The deadline aborted the task at the target. Re-login rather
@@ -179,7 +186,7 @@ public actor ISCSISession {
                     throw SessionError.taskTimedOut
                 }
                 attempt += 1
-                try await recover(after: nil)
+                try await recover(after: nil, on: connection)
             }
         }
     }
@@ -221,7 +228,7 @@ public actor ISCSISession {
         if loggedOut { throw SessionError.loggedOut }
         if let recoveryFailed { throw recoveryFailed }
         if let connection { return connection }
-        try await recover(after: nil)
+        try await recover(after: nil, on: nil)
         guard let connection else { throw SessionError.notActive }
         return connection
     }
@@ -239,6 +246,15 @@ public actor ISCSISession {
         }
         if let moved = outcome.movedPermanentlyTo { movedTo = moved }
         let conn = outcome.connection
+        // Logged out while this login was under way: a session installed now
+        // would have nobody to log it out.
+        guard !loggedOut else {
+            _ = try? await withDeadline(policy.logoutTimeout, onTimeout: { await conn.close() }) {
+                try await conn.logout(reason: .closeSession)
+            }
+            await conn.close()
+            throw SessionError.loggedOut
+        }
         connection = conn
         loginResult = outcome.result
         lastTime2Wait = outcome.result.parameters.defaultTime2Wait
@@ -273,12 +289,20 @@ public actor ISCSISession {
 
     /// ERL0 session recovery: tear down, back off, re-login. Coalesces
     /// concurrent callers onto a single recovery task.
-    private func recover(after error: ConnectionError?) async throws {
+    ///
+    /// `failed` is the connection the caller's attempt ran on, nil when there
+    /// was none. If it has already been replaced, someone else's recovery
+    /// finished first, and the caller just retries on the new connection:
+    /// tearing down whatever is current would reset a healthy session for a
+    /// late failure of the old one.
+    private func recover(after error: ConnectionError?, on failed: ISCSIConnection?) async throws {
         if let recoveryFailed { throw recoveryFailed }
+        if loggedOut { throw SessionError.loggedOut }
         if let existing = recoveryTask {
             try await existing.value
             return
         }
+        if let failed, let current = connection, current !== failed { return }
         // `recoveryTask` MUST be assigned before the first suspension point.
         // Actor isolation does not span an `await`: with the teardown out here,
         // a second caller reaching the guard while this one was inside
@@ -304,6 +328,8 @@ public actor ISCSISession {
                     _ = try await self.establishForRecovery()
                     onEvent?(.recovered(totalRecoveries: await self.recoveryCount))
                     return
+                } catch SessionError.loggedOut {
+                    throw SessionError.loggedOut
                 } catch {
                     lastError = "\(error)"
                 }
@@ -318,17 +344,25 @@ public actor ISCSISession {
         } catch let failure as SessionError {
             if case .recoveryExhausted = failure { recoveryFailed = failure }
             throw failure
+        } catch {
+            // Cancelled by `logout`: say so, not "cancelled".
+            if loggedOut { throw SessionError.loggedOut }
+            throw error
         }
     }
 
     /// Delay before recovery attempt `attempt` (0-based). The first attempt
     /// respects the negotiated DefaultTime2Wait (§7.5); later attempts are
     /// already past that respite and use plain exponential backoff.
+    ///
+    /// Time2Wait is the target's to declare, up to 3600 s, and every I/O
+    /// waits behind it; so it is honoured only up to `recoveryBackoffCap`.
+    /// An hour's stall on one drop is the wedge the timeouts exist to prevent.
     static func recoveryDelay(attempt: Int, policy: SessionPolicy, time2Wait: UInt32) -> Duration {
         let factor = 1 << min(attempt, 8)
         let backoff = min(policy.recoveryBackoffBase * factor, policy.recoveryBackoffCap)
         guard attempt == 0, policy.honorTime2Wait, time2Wait > 0 else { return backoff }
-        return max(backoff, .seconds(Int(time2Wait)))
+        return max(backoff, min(.seconds(Int(time2Wait)), policy.recoveryBackoffCap))
     }
 
     private func establishForRecovery() async throws {
