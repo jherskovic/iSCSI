@@ -127,7 +127,7 @@ notarizes and staples app and DMG, signs for Sparkle, creates the GitHub
 release, and **only then** commits the appcast entry. Never commit a locally
 generated `appcast.xml`: a feed that names a file before the file exists is a
 failed download for everyone who checks in between. `docs/releasing.md` covers
-the six repository secrets.
+the eight repository secrets.
 
 `scripts/release.sh --skip-notarize` exists for iterating on that script and
 nothing else. Its output must never be installed anywhere — macOS behaves

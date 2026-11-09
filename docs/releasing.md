@@ -25,6 +25,14 @@ notarizes and staples the app, builds and notarizes the DMG, signs it for
 Sparkle, creates the GitHub release, and commits the appcast entry to `main` —
 in that order, because the feed must never promise a file that is not there yet.
 
+Before any credential reaches the runner it refuses a tag whose commit is not on
+`main` (push `main` first, then the tag) and runs `swift test --no-parallel`, as
+CI does. A manual run with **Publish** ticked has to be started from a tag too;
+a dry run can build any branch. Before anything is published, the DMG's Sparkle
+signature is checked against the `SUPublicEDKey` inside the app being shipped,
+and the app's `SUFeedURL` and `SUPublicEDKey` against the values installed
+copies trust (`scripts/check-sparkle-identity.sh`).
+
 Watch it in the Actions tab. It takes 20–40 minutes, nearly all of it waiting on
 Apple's notary service.
 
@@ -213,8 +221,9 @@ If this leaks: revoke the key in App Store Connect and generate another.
 ### `SPARKLE_ED_PRIVATE_KEY`
 
 ```sh
-"$(find ~/Library/Developer/Xcode/DerivedData \
-    -path '*/artifacts/sparkle/Sparkle/bin/generate_keys' -type f | head -1)" \
+"$(find ~/Library/Developer/Xcode/DerivedData/iSCSIInitiator-* \
+    -path '*/artifacts/sparkle/Sparkle/bin/generate_keys' -type f -print0 \
+    | xargs -0 ls -t | head -1)" \
     -x "$TMPDIR/sparkle_key"
 gh secret set SPARKLE_ED_PRIVATE_KEY < "$TMPDIR/sparkle_key"
 rm -P "$TMPDIR/sparkle_key"
@@ -245,10 +254,17 @@ scripts/release.sh --publish          # build, notarize, publish, write the feed
 git commit -m "Release 0.3.3" appcast.xml && git push
 ```
 
-Without `--publish` it stops after writing `appcast.xml` and prints the two
-commands to finish by hand. Do not commit that appcast before the release
-exists: the feed is a promise that a file is at a URL, and every installed copy
-that checks in between gets a failed download.
+`--publish` refuses a dirty working tree, since the release has to be exactly
+the commit its tag names. The one change it forgives is Xcode adding the app's
+Sparkle pin to the root `Package.resolved`, which any app build does.
+
+Without `--publish` it builds, notarizes and signs for Sparkle, publishes
+nothing, and does not touch `appcast.xml`. It checks that at the end and fails
+if the feed changed. It then prints the order in which to finish by hand:
+create the release, run `scripts/update-appcast.py`, commit the feed. Do not
+write or commit a feed entry before the release exists: the feed is a promise
+that a file is at a URL, and every installed copy that checks in between gets a
+failed download.
 
 `--skip-notarize` exists only for changing `release.sh` itself. Its output is
 named `…-UNNOTARIZED.dmg` so it cannot be confused with or overwrite a real
@@ -269,8 +285,10 @@ git push --delete origin v0.3.3 && git tag -d v0.3.3
 
 **Failed after publishing but before the appcast landed.** The release exists
 and no user has been told about it — this is the safe direction, and it is
-deliberate. Download `build/release-metadata.env` from the workflow artifacts,
-or read it from the log, and finish by hand:
+deliberate. `release-metadata.env` is in the run's `dmg` artifact next to the
+DMG (and printed in the log under "signing for Sparkle"); on a Mac it is
+`build/release-metadata.env`. It is written before anything is published, so
+every failure after publishing leaves it behind. Finish by hand:
 
 ```sh
 . release-metadata.env
