@@ -120,6 +120,39 @@ jobs:
           fi
           echo "all eight present"
 
+      # A publishing run ships whatever commit it was started on, signed with
+      # the real identity and announced to every installed copy. So it has to
+      # be a tag, and the tag has to name a commit on main: one that went
+      # through review and CI, not one pushed only as a tag. A manual run with
+      # Publish ticked on a branch would otherwise publish that branch.
+      #
+      # A dry run publishes nothing, so it may build any commit; that is how a
+      # branch gets a notarized build for the test VMs.
+      - name: Only a tag on main publishes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WANT_PUBLISH: ${{ inputs.publish }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "push" ] && [ "$WANT_PUBLISH" != "true" ]; then
+            echo "dry run on ${GITHUB_REF_NAME}: publishes nothing, so any commit may be built"
+            exit 0
+          fi
+          if [ "$IS_TAG" != "true" ]; then
+            echo "::error::Publish was ticked on ${GITHUB_REF_NAME}, which is not a tag."
+            echo "Releases come from tags: push v<version> on a commit that is on main,"
+            echo "or run this again from the tag. Leave Publish off for a dry run."
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::${GITHUB_REF_NAME} names $(git rev-parse --short HEAD), which is not on main."
+            echo "Merge it to main first, then tag the commit there."
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} is $(git rev-parse --short HEAD), which is on main"
+
       - name: Toolchain
         run: |
           xcodebuild -version
@@ -130,6 +163,18 @@ jobs:
           # app job in ci.yml runs on the same image and pin, so a break shows
           # up there first.
           ls -d /Applications/Xcode*.app 2>/dev/null || true
+
+      # The suite CI runs, the way CI runs it (serially; ci.yml says why), on
+      # the commit being released and before any credential is on the runner.
+      # Being on main says CI passed on some push of it, not that it passes on
+      # this image today, and a red release costs less than a shipped bug.
+      #
+      # Before package resolution on purpose: Xcode's resolution adds the
+      # app's Sparkle pin to the root Package.resolved, and SwiftPM, handed
+      # that file, would re-resolve. Here it builds from the committed file
+      # and leaves it as it found it.
+      - name: swift test
+        run: swift test --no-parallel
 
       # Pinned and verified (see the script), because everything from here on
       # runs on a machine that is about to hold the signing identities.
@@ -480,6 +525,34 @@ jobs:
           head -1 "$RUNNER_TEMP/asc.p8" | grep -q 'BEGIN PRIVATE KEY' \
             || { echo "::error::ASC_KEY_P8 did not decode to a PEM private key"; exit 1; }
 
+      # release.sh checks the DMG's signature against the built app's key
+      # before it publishes, which is the check that counts. But that is after
+      # an archive and two notarizations; a SPARKLE_ED_PRIVATE_KEY that is not
+      # the private half of SUPublicEDKey can be caught now, by signing a
+      # throwaway file with the same sign_update and the same key file.
+      - name: The Sparkle key is the one installed copies trust
+        run: |
+          set -euo pipefail
+          sign_update=$(find ~/Library/Developer/Xcode/DerivedData/iSCSIInitiator-* \
+            -path '*/artifacts/sparkle/Sparkle/bin/sign_update' -type f 2>/dev/null | head -1)
+          if [ -z "$sign_update" ]; then
+            echo "::error::sign_update not found in DerivedData. Package resolution should have fetched it."
+            exit 1
+          fi
+          probe="$RUNNER_TEMP/sparkle-probe.bin"
+          head -c 65536 /dev/urandom > "$probe"
+          signed=$("$sign_update" --ed-key-file "$RUNNER_TEMP/sparkle_ed_key" "$probe")
+          sig=$(sed -n 's/.*edSignature="\([^"]*\)".*/\1/p' <<<"$signed")
+          key=$(plutil -extract SUPublicEDKey raw apps/iSCSIApp/Info.plist)
+          if ! swift scripts/sparkle-verify-signature.swift "$key" "$sig" "$probe"; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY is not the private half of SUPublicEDKey in"
+            echo "apps/iSCSIApp/Info.plist. Every installed copy would refuse what it signs."
+            echo "Re-set the secret from the key that matches (docs/releasing.md); never change"
+            echo "SUPublicEDKey to fit the secret."
+            exit 1
+          fi
+          rm -f "$probe"
+
       # The one step that does anything. Everything above is environment.
       - name: Build, notarize, publish
         env:
@@ -518,24 +591,41 @@ jobs:
           # tree, because SUFeedURL points at main and main may have moved since
           # the tag was cut. Copying the tag's appcast over would silently revert
           # anything that landed in between.
-          git fetch origin main
-          git checkout -f -B publish-appcast origin/main
+          #
+          # And re-applied again if main moves between the fetch and the push,
+          # up to three times. Rebasing the commit would do the same job but can
+          # stop on a conflict in appcast.xml; re-deriving the entry from the
+          # metadata onto the new main cannot, and it is the same entry.
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git checkout -f -B publish-appcast origin/main
 
-          scripts/update-appcast.py \
-            --version "$VERSION" --build "$BUILD_NUMBER" \
-            --signature "$ED_SIGNATURE" --length "$ED_LENGTH" \
-            --url "$ASSET_URL" --min-system "$MIN_SYSTEM"
+            scripts/update-appcast.py \
+              --version "$VERSION" --build "$BUILD_NUMBER" \
+              --signature "$ED_SIGNATURE" --length "$ED_LENGTH" \
+              --url "$ASSET_URL" --min-system "$MIN_SYSTEM"
 
-          if git diff --quiet -- appcast.xml; then
-            echo "appcast already carries this release; nothing to commit"
-          else
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            if git diff --quiet -- appcast.xml; then
+              echo "appcast already carries this release; nothing to commit"
+              break
+            fi
             git add appcast.xml
             git commit -m "Release $VERSION" -m "$ASSET_URL" \
               -m "Published by .github/workflows/release.yml."
-            git push origin HEAD:main
-          fi
+            if git push origin HEAD:main; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::main kept moving; the appcast push was rejected three times."
+              echo "The release is published and the feed is not. Finish by hand with the"
+              echo "release-metadata.env in this run's artifact (docs/releasing.md)."
+              exit 1
+            fi
+            echo "push rejected (attempt $attempt of 3); re-applying the entry to the new main"
+            sleep $((attempt * 5))
+          done
           echo "APPCAST_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       # The feed is the contract with every installed copy of the app: it
@@ -566,19 +656,25 @@ jobs:
             echo "::error::the feed's newest enclosure is '${url:-nothing}', expected $ASSET_URL"
             exit 1
           fi
-          served=$(curl -sIL "$url" | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {gsub(/\r/,""); v=$2} END{print v}')
+          # tolower, not IGNORECASE: that is gawk's, and macOS awk ignores it.
+          served=$(curl -sIL "$url" | awk 'tolower($1)=="content-length:" {gsub(/\r/,""); v=$2} END{print v}')
           if [ "$served" != "$ED_LENGTH" ]; then
             echo "::error::$url serves ${served:-nothing} bytes, the feed claims $ED_LENGTH"
             exit 1
           fi
           echo "ok: users will get $served bytes from $url"
 
+      # The metadata goes with it: after a failure past publishing, it is what
+      # finishes the feed by hand without a rebuild (docs/releasing.md, "When
+      # it goes wrong"), and the runner it was written on is gone.
       - name: Keep the DMG even when something later failed
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dmg
-          path: build/*.dmg
+          path: |
+            build/*.dmg
+            build/release-metadata.env
           if-no-files-found: ignore
           retention-days: 14
 
