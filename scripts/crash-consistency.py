@@ -24,6 +24,7 @@ sizes. It must be copied OFF the LUN before the cut — verifying against a
 manifest that lived on the volume under test would prove nothing.
 """
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -35,19 +36,36 @@ def content(seed: int, size: int) -> bytes:
     return random.Random(seed).randbytes(size)
 
 
+def full_fsync(fd: int) -> None:
+    """Make fd's data durable the way macOS defines durable.
+
+    On macOS fsync(2) only hands the data to the drive, which may hold it in a
+    volatile cache; F_FULLFSYNC is the call that asks the drive to flush, and
+    it is what this test claims to have done before the power cut. Plain fsync
+    where F_FULLFSYNC does not exist (Linux), where fsync already means it.
+    """
+    if hasattr(fcntl, "F_FULLFSYNC"):
+        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+    else:
+        os.fsync(fd)
+
+
 def prepare(directory: str, manifest_path: str, count: int, size: int) -> int:
+    if count < 1:
+        print("PREPARE-FAILED: --count must be at least 1; an empty run proves nothing")
+        return 1
     os.makedirs(directory, exist_ok=True)
     entries = []
     for i in range(count):
         seed = 900000 + i
         data = content(seed, size)
         path = os.path.join(directory, f"durable-{i}.bin")
-        # Write, flush, and fsync each file individually: after fsync returns,
-        # the data is required to survive a power cut.
+        # Write, flush, and fully sync each file individually: after
+        # F_FULLFSYNC returns, the data is required to survive a power cut.
         with open(path, "wb") as f:
             f.write(data)
             f.flush()
-            os.fsync(f.fileno())
+            full_fsync(f.fileno())
         entries.append({
             "path": path,
             "seed": seed,
@@ -55,10 +73,10 @@ def prepare(directory: str, manifest_path: str, count: int, size: int) -> int:
             "sha256": hashlib.sha256(data).hexdigest(),
         })
 
-    # Also fsync the directory, so the *names* are durable, not just contents.
+    # Also sync the directory, so the *names* are durable, not just contents.
     dfd = os.open(directory, os.O_RDONLY)
     try:
-        os.fsync(dfd)
+        full_fsync(dfd)
     finally:
         os.close(dfd)
     os.sync()
@@ -73,6 +91,13 @@ def prepare(directory: str, manifest_path: str, count: int, size: int) -> int:
 def verify(directory: str, manifest_path: str) -> int:
     with open(manifest_path) as f:
         manifest = json.load(f)
+
+    # An empty manifest verifies vacuously: zero missing, zero corrupt, and a
+    # PASSED line for a run that checked nothing. Typically a prepare that
+    # never ran, or a manifest from somewhere else.
+    if not manifest.get("entries"):
+        print(f"CRASH-CONSISTENCY-FAILED: {manifest_path} lists no files, so nothing was verified")
+        return 1
 
     missing = corrupt = ok = 0
     for e in manifest["entries"]:

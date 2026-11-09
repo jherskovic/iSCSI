@@ -116,7 +116,7 @@ SOAK="$VOL/soak"
 if [ "$FORMAT" = 0 ]; then
   # Directories an earlier run of this script left behind (an ABORT keeps the
   # volume attached for inspection and never gets to its own cleanup).
-  for stale in "$VOL"/nvme-soak-2026*; do [ -d "$stale" ] && rm -rf "$stale" && status "REMOVED stale $stale"; done
+  for stale in "$VOL"/nvme-soak-20*; do [ -d "$stale" ] && rm -rf "$stale" && status "REMOVED stale $stale"; done
   SOAK="$VOL/nvme-soak-$(date +%Y%m%d-%H%M%S)"
 fi
 mkdir -p "$SOAK/soak"

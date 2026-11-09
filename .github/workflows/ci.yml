@@ -83,6 +83,13 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # Backend B ships in nothing and is compiled by nothing else, so without
+      # this it can stop building and nobody finds out until the day it is
+      # needed. CLAUDE.md asks that it be kept; this is what keeps it honest.
+      # Its own build path, so the coverage build above is not invalidated.
+      - name: The parked Backend B still compiles
+        run: swift build -Xswiftc -DISCSI_BACKEND_B --build-path "$RUNNER_TEMP/backend-b"
+
   # Derived data, not history: one orphan commit holding two shields.io
   # endpoint documents, force-pushed over whatever was there. Main only — a
   # pull request must not be able to move the numbers the README shows.
@@ -160,11 +167,22 @@ jobs:
           fi
           echo "no drift"
 
-      - name: Every plist parses
+      # Entitlements are plists too, and a malformed one fails only at signing,
+      # deep inside an archive.
+      - name: Every plist and entitlements file parses
         run: |
-          find . -name '*.plist' \
+          find . \( -name '*.plist' -o -name '*.entitlements' \) \
             -not -path './.git/*' -not -path '*/build/*' -not -path '*.xcodeproj/*' \
             -print0 | xargs -0 plutil -lint
+
+      # Every installed copy of the app polls SUFeedURL and accepts only updates
+      # signed for SUPublicEDKey, so neither may change by accident: the feed
+      # URL deliberately still names the repository's old name, which GitHub
+      # redirects, and a new key would strand every installed copy. The
+      # script's header has the whole story; release.sh runs it on the built
+      # app as well.
+      - name: Sparkle's feed URL and key are the ones installed copies trust
+        run: scripts/check-sparkle-identity.sh apps/iSCSIApp/Info.plist
 
       # There were two LaunchDaemon plists once, in different directories,
       # disagreeing about Program vs ProgramArguments and about log paths, with
@@ -235,4 +253,13 @@ jobs:
           xcodebuild -project iSCSIInitiator.xcodeproj \
             -scheme 'iSCSI Initiator' -configuration Release \
             -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO build
+
+      # The same check release.sh makes on the exported app, here on every pull
+      # request rather than at tag time. The unsigned build's tools are still
+      # linker-signed ad hoc, which is all it takes to run --help.
+      - name: The bundled iscsictl has no destructive commands
+        run: |
+          scripts/check-iscsictl-safe.sh \
+            "$RUNNER_TEMP/DerivedData/Build/Products/Release/iSCSI Initiator.app/Contents/MacOS/iscsictl"

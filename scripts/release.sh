@@ -65,8 +65,12 @@ done
 APP_NAME="iSCSI Initiator"
 SCHEME="iSCSI Initiator"
 TEAM_ID="4A27X5PJP3"
-GH_REPO="jherskovic/iSCSI"
-MIN_SYSTEM="26.0"
+# Where releases are created and downloaded from. The repository was renamed
+# from jherskovic/iSCSI, which GitHub still redirects, so the enclosure URLs
+# already in appcast.xml keep working as they are; new ones use the real name.
+# This is NOT the feed's own URL: SUFeedURL still names the old repository on
+# purpose, and scripts/check-sparkle-identity.sh holds it there.
+GH_REPO="jherskovic/iSCSI-NVMe-TCP"
 PBXPROJ="apps/iSCSIInitiator.xcodeproj/project.pbxproj"
 
 BUILD="$REPO/build"
@@ -147,7 +151,7 @@ done
 if [ "$PUBLISH" -eq 1 ]; then
     command -v gh >/dev/null || die "gh not installed (brew install gh), needed by --publish"
     gh auth status >/dev/null 2>&1 || die "gh is not authenticated; run 'gh auth login'"
-    gh release view "v$VERSION" >/dev/null 2>&1 && die \
+    gh release view "v$VERSION" --repo "$GH_REPO" >/dev/null 2>&1 && die \
 "a release v$VERSION already exists. Bump MARKETING_VERSION in apps/project.yml,
 or delete the release first if you are re-cutting it deliberately. Overwriting a
 published asset would break Sparkle for anyone who has already downloaded it:
@@ -245,7 +249,43 @@ else
     echo "  sparkle key            ${SU_KEY:0:12}…"
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
+# Under --publish the DMG has to be exactly a commit, the one the tag names, so
+# a dirty tree stops the run. One change is forgiven, and only that one: Xcode's
+# package resolution writes the app's Sparkle pin into the root
+# Package.resolved, which SwiftPM's own resolution leaves out. release.yml
+# resolves packages before this runs, and that is what made the 0.9.1 release
+# run print the dirty-tree warning this used to be (measured: a clean checkout,
+# `xcodebuild -resolvePackageDependencies`, and Package.resolved gains the
+# sparkle pin and a new originHash, nothing else). Every pin that was already
+# there must be untouched for it to count as that.
+resolved_only_gained_sparkle() {
+    local committed rc=0
+    committed=$(mktemp)
+    git show HEAD:Package.resolved >"$committed" 2>/dev/null || { rm -f "$committed"; return 1; }
+    python3 - "$committed" Package.resolved <<'PY' || rc=$?
+import json, sys
+def pins(path):
+    with open(path) as f:
+        return {p["identity"]: p for p in json.load(f).get("pins", [])}
+before, after = pins(sys.argv[1]), pins(sys.argv[2])
+kept = all(after.get(name) == pin for name, pin in before.items())
+sys.exit(0 if kept and set(after) - set(before) <= {"sparkle"} else 1)
+PY
+    rm -f "$committed"
+    return "$rc"
+}
+
+DIRTY=$(git status --porcelain)
+if [ -n "$DIRTY" ] && resolved_only_gained_sparkle; then
+    DIRTY=$(grep -v '^ M Package.resolved$' <<<"$DIRTY" || true)
+fi
+if [ -n "$DIRTY" ]; then
+    if [ "$PUBLISH" -eq 1 ]; then
+        die "the working tree is dirty, and --publish would ship it:
+$DIRTY
+A release must be exactly the commit its tag names. Commit or revert these and
+re-run."
+    fi
     printf '\033[33m  warning: working tree is dirty; the DMG will not match any commit\033[0m\n'
 fi
 
@@ -287,7 +327,9 @@ fi
 
 # --------------------------------------------------------------- 2/3. build it
 say "archiving"
-rm -rf "$ARCHIVE" "$EXPORT" "$STAGE"
+# The metadata too: one left by an earlier run describes another DMG, and a
+# failed run must not leave it behind looking like its own.
+rm -rf "$ARCHIVE" "$EXPORT" "$STAGE" "$BUILD/release-metadata.env"
 mkdir -p "$BUILD"
 xcodebuild -project apps/iSCSIInitiator.xcodeproj \
     -scheme "$SCHEME" -configuration Release \
@@ -389,43 +431,8 @@ echo "  ok  iscsictl signs as $CTL_ID"
 
 # wipe, write-bench and verify --write reach the target directly, past the
 # daemon's one-writer check. They are for `swift run`, never for the bundle.
-#
-# Ask the tool, not `strings`: an optimized build keeps a string of up to 15
-# bytes inline in the code, so a `write-bench` marker passed a binary with that
-# command in it. --help on an unknown subcommand exits 0 with its parent's help,
-# so each answer has to show it is the one asked for, or a rename would pass.
-ctl_help() {
-    local help
-    help=$("$CTL" "$@" --help) || die "iscsictl $* --help failed"
-    grep -q -e "USAGE: iscsictl $* " <<<"$help" \
-        || die "iscsictl $* --help answered for something else. Did the command move?"
-    printf '%s\n' "$help"
-}
-
-for group in iscsi nvme; do
-    commands=$(ctl_help "$group")
-    for command in wipe write-bench; do
-        if grep -q -e "$command" <<<"$commands"; then
-            die "iscsictl $group has $command, which must not be in the bundle.
-It belongs behind ISCSICTL_DESTRUCTIVE, which stays out of the Xcode target."
-        fi
-    done
-    verify=$(ctl_help "$group" verify)
-    if grep -q -e "--write" <<<"$verify"; then
-        die "iscsictl $group verify has --write, which must not be in the bundle.
-It belongs behind ISCSICTL_DESTRUCTIVE, which stays out of the Xcode target."
-    fi
-done
-
-# The compile flag itself, whatever is listed. These sit inside long strings,
-# which `strings` can see.
-for marker in DESTRUCTIVE "pass --write"; do
-    if binary_contains "$CTL" "$marker"; then
-        die "iscsictl contains \"$marker\": ISCSICTL_DESTRUCTIVE is on in the bundle.
-It must stay out of the Xcode target."
-    fi
-done
-echo "  ok  iscsictl has no destructive commands"
+# CI's app job runs the same script on its unsigned build.
+scripts/check-iscsictl-safe.sh "$CTL" || die "the bundled iscsictl has destructive commands (above)"
 
 # The DMG filename comes from project.yml; the bundle's version comes from its
 # Info.plist. Nothing tied them together, and for two releases they disagreed —
@@ -460,6 +467,20 @@ case "$SPARKLE_NAME" in
     */*) die "SUBundleName '$SPARKLE_NAME' has a slash, which fails every update download." ;;
 esac
 echo "  ok  Sparkle's name, $SPARKLE_NAME, has no slash"
+
+# The feed URL and the update key in the app users get, not in the source tree:
+# installed copies trust exactly these, and a change to either is not something
+# a release may carry by accident. CI checks the source plist the same way.
+scripts/check-sparkle-identity.sh "$APP/Contents/Info.plist" \
+    || die "the built app does not carry the feed and key installed copies trust (above)"
+
+# The feed tells Sparkle which macOS an update needs, and the app is what knows.
+# This was a literal 26.0 here, which would have gone on promising 26.0 after a
+# deployment-target change and offered the update to Macs that cannot open it.
+MIN_SYSTEM=$(plutil -extract LSMinimumSystemVersion raw "$APP/Contents/Info.plist" 2>/dev/null || echo "")
+[ -n "$MIN_SYSTEM" ] || die "the built app's Info.plist has no LSMinimumSystemVersion, so the feed
+could not say which macOS this release needs."
+echo "  ok  minimum macOS $MIN_SYSTEM, from the app"
 
 check_binary() {
     local path="$1" label="$2" out
@@ -647,8 +668,41 @@ search with SPARKLE_SIGN_UPDATE=/path/to/sign_update."
     [ -n "$ED_SIG" ] && [ -n "$ED_LEN" ] || die "could not read a signature out of: $SIGNED"
     echo "  ok  signed, $ED_LEN bytes"
 
+    # sign_update signs with whatever private key it is handed. A wrong
+    # SPARKLE_ED_PRIVATE_KEY, or a keychain holding some other project's key,
+    # produces a signature that looks fine here and that every installed copy
+    # rejects, which Sparkle reports as a failed update with no reason given.
+    # Check it the way those copies will: against the public key inside the app
+    # just built, before anything is published.
+    BUILT_ED_KEY=$(plutil -extract SUPublicEDKey raw "$APP/Contents/Info.plist")
+    xcrun swift scripts/sparkle-verify-signature.swift "$BUILT_ED_KEY" "$ED_SIG" "$DMG" \
+        || die "the DMG's Sparkle signature does not verify against the SUPublicEDKey in
+the app being shipped. The private key sign_update used is not the one installed
+copies trust; publishing this would offer every user an update they refuse.
+Nothing has been published."
+
     BUILD_NUMBER=$(plutil -extract CFBundleVersion raw "$APP/Contents/Info.plist")
     ASSET_URL="https://github.com/$GH_REPO/releases/download/v$VERSION/$(basename "$DMG")"
+
+    # Everything needed to write the feed entry, as data, and written BEFORE
+    # anything is published, so that every failure from here on leaves it
+    # behind. CI builds from a tag but the feed lives on main, so it cannot just
+    # commit the appcast.xml this script edits; it re-applies this entry to
+    # main's copy. And a run that published and then failed is finished by hand
+    # from this file without rebuilding (docs/releasing.md, "When it goes
+    # wrong"), since the signature is over bytes that already exist. release.yml
+    # keeps it in the workflow artifact next to the DMG, and it is printed
+    # below, so it survives the runner. Nothing in it is secret.
+    cat >"$BUILD/release-metadata.env" <<EOF
+VERSION='$VERSION'
+BUILD_NUMBER='$BUILD_NUMBER'
+ED_SIGNATURE='$ED_SIG'
+ED_LENGTH='$ED_LEN'
+ASSET_URL='$ASSET_URL'
+MIN_SYSTEM='$MIN_SYSTEM'
+EOF
+    echo "  $BUILD/release-metadata.env:"
+    sed 's/^/    /' "$BUILD/release-metadata.env"
 
     # ------------------------------------------------- 10. publish, then verify
     #
@@ -660,15 +714,20 @@ search with SPARKLE_SIGN_UPDATE=/path/to/sign_update."
     # reverse is a failed download for everyone.
     if [ "$PUBLISH" -eq 1 ]; then
         say "publishing v$VERSION"
+        # --target pins the tag to the commit that was built. Without it, gh
+        # creates a missing tag at the default branch's head on GitHub, which
+        # need not be what this checkout built. When the tag already exists
+        # (a CI release), GitHub keeps it, and it names this same commit.
+        TARGET_SHA=$(git rev-parse HEAD)
         NOTES=$(mktemp)
         if [ -f "docs/release-notes/$VERSION.md" ]; then
             cat "docs/release-notes/$VERSION.md" >"$NOTES"
-            gh release create "v$VERSION" --title "$VERSION" \
-                --notes-file "$NOTES" "$DMG" >/dev/null
+            gh release create "v$VERSION" --repo "$GH_REPO" --target "$TARGET_SHA" \
+                --title "$VERSION" --notes-file "$NOTES" "$DMG" >/dev/null
         else
             # No hand-written notes: let GitHub assemble them from the commits.
-            gh release create "v$VERSION" --title "$VERSION" \
-                --generate-notes "$DMG" >/dev/null
+            gh release create "v$VERSION" --repo "$GH_REPO" --target "$TARGET_SHA" \
+                --title "$VERSION" --generate-notes "$DMG" >/dev/null
         fi
         rm -f "$NOTES"
         echo "  https://github.com/$GH_REPO/releases/tag/v$VERSION"
@@ -680,8 +739,11 @@ search with SPARKLE_SIGN_UPDATE=/path/to/sign_update."
         say "verifying the URL the appcast is about to promise"
         SERVED=""
         for attempt in 1 2 3 4 5; do
+            # tolower, not IGNORECASE: that is gawk's, and macOS awk ignores
+            # it. HTTP/2 headers arrive lowercase, which is the only reason
+            # this matched at all; an HTTP/1.1 answer would have read as none.
             SERVED=$(curl -sIL "$ASSET_URL" \
-                | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {gsub(/\r/,""); v=$2} END{print v}')
+                | awk 'tolower($1)=="content-length:" {gsub(/\r/,""); v=$2} END{print v}')
             [ "$SERVED" = "$ED_LEN" ] && break
             sleep 5
         done
@@ -710,20 +772,6 @@ The release is published; the feed has NOT been updated, so no user sees this."
             --signature "$ED_SIG" --length "$ED_LEN" --url "$ASSET_URL" \
             --min-system "$MIN_SYSTEM"
     fi
-
-    # Everything needed to write the feed entry, as data. CI builds from a tag
-    # but the feed lives on main, so it cannot just commit the appcast.xml this
-    # script edited — it has to re-apply the same entry to main's copy. Writing
-    # the values down is also how a failed run can be finished by hand without
-    # rebuilding, since the signature is over bytes that already exist.
-    cat >"$BUILD/release-metadata.env" <<EOF
-VERSION='$VERSION'
-BUILD_NUMBER='$BUILD_NUMBER'
-ED_SIGNATURE='$ED_SIG'
-ED_LENGTH='$ED_LEN'
-ASSET_URL='$ASSET_URL'
-MIN_SYSTEM='$MIN_SYSTEM'
-EOF
 fi
 
 # ------------------------------------------------ 11. unregister what we built
@@ -785,7 +833,8 @@ if [ "$SKIP_NOTARIZE" -eq 0 ] && [ "$PUBLISH" -eq 0 ]; then
     echo "verifies the URL really serves these bytes, and only then writes the"
     echo "feed. Doing it by hand needs that same order:"
     echo
-    echo "    gh release create v$VERSION --title $VERSION --generate-notes \"$DMG\""
+    echo "    gh release create v$VERSION --repo $GH_REPO --target $(git rev-parse HEAD) \\"
+    echo "        --title $VERSION --generate-notes \"$DMG\""
     echo "    scripts/update-appcast.py --version $VERSION --build $BUILD_NUMBER ..."
     echo "    git commit -m 'Release $VERSION' appcast.xml"
     echo

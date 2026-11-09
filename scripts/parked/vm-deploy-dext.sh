@@ -1,9 +1,13 @@
 #!/bin/bash
+# PARKED with Backend B. The daemon it deploys is built with
+# `swift build -c release -Xswiftc -DISCSI_BACKEND_B`, below; without the flag
+# there is no DextBridge for the dext to talk to.
 # vm-deploy-dext.sh — build, install, and activate the current dext + daemon on
 # the SIP-off test VM, handling the reboot dance a virtual (always-matched) dext
-# needs to swap versions. Run from the repo root on the host.
+# needs to swap versions. Runs from the repo root on the host, wherever it is
+# started from.
 #
-#   scripts/vm-deploy-dext.sh [vm-host]
+#   scripts/parked/vm-deploy-dext.sh [vm-host]
 #
 # PARKED: Backend B is out of scope for the shipping v1 (FSKit only), so the
 # app no longer embeds the dext — and a dext can only be activated by a host app
@@ -31,6 +35,10 @@
 #    after activation; if the new version still isn't active (activation
 #    landed too late pre-reboot), we relaunch + reboot once more.
 set -euo pipefail
+
+# The rsync below mirrors the current directory with --delete, and the paths
+# under apps/ are relative, so always work from the repo root.
+cd "$(dirname "$0")/../.."
 
 VM=${1:-herko@192.168.0.34}
 PASS=${ISCSI_VM_PASS:-herko}
@@ -82,9 +90,12 @@ echo "== build app (dext) + daemon on VM"
 # rsync, not rm -rf + cp: replacing the bundle wholesale drops the pluginkit
 # registration of the embedded FSKit extension, and the enablement entry is then
 # pruned at the next boot. See docs/backend-a-fskit-notes.md:552-569.
+# Both builds need ISCSI_BACKEND_B: the app's ExtensionController (activation)
+# and the daemon's DextBridge are compiled only under it.
 ssh -o BatchMode=yes "$VM" "security unlock-keychain -p '$PASS' ~/Library/Keychains/login.keychain-db >/dev/null 2>&1;
-  cd ~/iSCSI/apps && xcodebuild -project iSCSIInitiator.xcodeproj -scheme 'iSCSI Initiator' -configuration Debug build 2>&1 | grep -E 'BUILD (SUCCEEDED|FAILED)' &&
-  cd ~/iSCSI && swift build -c release 2>&1 | tail -1 &&
+  cd ~/iSCSI/apps && xcodebuild -project iSCSIInitiator.xcodeproj -scheme 'iSCSI Initiator' -configuration Debug \
+    SWIFT_ACTIVE_COMPILATION_CONDITIONS='\$(inherited) ISCSI_BACKEND_B' build 2>&1 | grep -E 'BUILD (SUCCEEDED|FAILED)' &&
+  cd ~/iSCSI && swift build -c release -Xswiftc -DISCSI_BACKEND_B 2>&1 | tail -1 &&
   mkdir -p '/Applications/iSCSI Initiator.app' &&
   rsync -a --delete $DD/'iSCSI Initiator.app'/ '/Applications/iSCSI Initiator.app'/"
 

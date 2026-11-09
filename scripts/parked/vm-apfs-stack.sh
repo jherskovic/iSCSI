@@ -1,4 +1,6 @@
 #!/bin/bash
+# PARKED with Backend B. Needs `swift build -c release -Xswiftc -DISCSI_BACKEND_B`
+# on the VM: a plain build's iscsictl has no dext-attach.
 # vm-apfs-stack.sh — run ON the VM as root, STREAMED over ssh.
 #
 # Name the thread and the lock behind the post-mount hang.

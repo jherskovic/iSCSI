@@ -17,7 +17,7 @@
 # `mount` gates on FSModuleIdentity.isEnabled and pluginkit registration is NOT
 # sufficient; without the toggle every run stops at MODULE-DISABLED below.
 #
-# Deliberately mounts outside /Volumes, like vm-apfs-private.sh, so no system
+# Deliberately mounts outside /Volumes, like parked/vm-apfs-private.sh, so no system
 # daemon touches the volume and the sequence stays deterministic. Every step is
 # bounded: macOS has no timeout(1), and the whole point of this rig is that a
 # hang must not take the script with it.

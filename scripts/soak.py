@@ -173,8 +173,11 @@ def main():
     print(f"    written={f['written']/1e6:.1f} MB  read={f['read']/1e6:.1f} MB", flush=True)
     print(f"    files={f['files']} rmwPatches={f['rmw']} verifies={f['verifies']} "
           f"errors={f['errors']}", flush=True)
-    print("SOAK-PASSED" if f["errors"] == 0 and f["verifies"] > 0 else "SOAK-FAILED", flush=True)
-    return 0 if f["errors"] == 0 else 1
+    # A soak that verified nothing proved nothing, however few errors it saw:
+    # the exit status has to say so too, not only the marker line.
+    passed = f["errors"] == 0 and f["verifies"] > 0
+    print("SOAK-PASSED" if passed else "SOAK-FAILED", flush=True)
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

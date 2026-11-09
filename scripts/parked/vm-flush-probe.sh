@@ -1,4 +1,6 @@
 #!/bin/bash
+# PARKED with Backend B. Needs `swift build -c release -Xswiftc -DISCSI_BACKEND_B`
+# on the VM: a plain build's iscsictl has no dext-attach.
 # vm-flush-probe.sh — run ON the VM. Attaches the scratch LUN, then asks the raw
 # device to flush via ioctl, with no filesystem anywhere in the picture, and
 # reports whether the request reached the daemon as SYNCHRONIZE CACHE.

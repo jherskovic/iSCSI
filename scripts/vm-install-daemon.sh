@@ -10,6 +10,10 @@
 # "Couldn't communicate with a helper application".
 set -euo pipefail
 
+# The rsync below mirrors the current directory with --delete, so run from
+# anywhere else and it replaces the VM's tree with that directory.
+cd "$(dirname "$0")/.."
+
 VM=${1:-herko@192.168.0.34}
 PASS=${ISCSI_VM_PASS:-herko}
 LABEL=me.herko.iSCSIInitiator.daemon
