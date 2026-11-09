@@ -338,6 +338,31 @@ struct UserConfigurationTests {
         }
     }
 
+    /// The daemon keeps one store per account for its whole life, and that
+    /// store read the list while adoption was still failing. The resumed
+    /// adoption writes the file behind it; the next save must not write the
+    /// stale cache over the adopted targets.
+    @Test func aStoreThatCachedTheListBeforeAdoptionSeesTheAdoptedTargets() async throws {
+        try await withFake { fake in
+            let root = try makeRoot()
+            let adoption = LegacyConfigurationAdoption(root: root)
+            try seedLegacy(root, [record("old", iqn: "iqn.2026-08.test:old")],
+                           secrets: ["old": "initiator-secret"], fake: fake)
+            let store = TargetStore(url: root.account(alice).targetsURL)
+
+            fake.nextStoreStatus = errSecInteractionNotAllowed
+            adoption.adoptIfNeeded(by: alice)
+            #expect(await store.all().isEmpty)
+
+            adoption.adoptIfNeeded(by: alice)
+            try await store.save(record("new", iqn: "iqn.2026-08.test:new"))
+
+            #expect(await store.all().map(\.id).sorted() == ["new", "old"])
+            #expect(try TargetStore.decode(contentsOf: root.account(alice).targetsURL)
+                .map(\.id).sorted() == ["new", "old"])
+        }
+    }
+
     /// The same, with the account having re-added an old target: its own record
     /// stands, and the superseded secret does not stay behind under a dead id.
     @Test func aTargetReAddedBeforeAdoptionFinishedWins() async throws {

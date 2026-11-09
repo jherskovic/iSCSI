@@ -62,6 +62,9 @@ public actor NVMeBlockDevice: BlockDeviceBackend {
     public func read(offset: UInt64, length: Int) async throws -> Data {
         let (bs, count) = try await readCapacity()
         try validate(offset: offset, length: length, blockSize: bs, capacity: count)
+        // A Read's block count is 0-based (`NVMeCommands.read` traps on 0),
+        // so there is no zero-block command to send.
+        if length == 0 { return Data() }
         let blocksPerChunk = max(1, await maxTransferBytes() / bs)
         let firstLBA = offset / UInt64(bs)
         let totalBlocks = length / bs
@@ -165,17 +168,7 @@ public actor NVMeBlockDevice: BlockDeviceBackend {
     }
 
     private func validate(offset: UInt64, length: Int, blockSize: Int, capacity: UInt64) throws {
-        guard blockSize > 0,
-              offset % UInt64(blockSize) == 0,
-              length % blockSize == 0,
-              length >= 0
-        else {
-            throw BlockDeviceError.misaligned(offset: offset, length: length, blockSize: blockSize)
-        }
-        let lba = offset / UInt64(blockSize)
-        let blocks = UInt32(length / blockSize)
-        guard UInt64(lba) + UInt64(blocks) <= capacity else {
-            throw BlockDeviceError.outOfRange(lba: lba, blocks: blocks, capacity: capacity)
-        }
+        try BlockRequest.validate(offset: offset, length: length,
+                                  blockSize: blockSize, capacity: capacity)
     }
 }

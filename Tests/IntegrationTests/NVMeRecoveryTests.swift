@@ -137,6 +137,34 @@ struct NVMeRecoveryTests {
         await fleet.shutdown()
     }
 
+    /// The user detaches while recovery is bringing a pair up. Before the
+    /// fix that bring-up finished after `logout` returned and left two
+    /// connections and a keepalive nothing would ever stop.
+    @Test func logoutDuringRecoveryLeavesNoController() async throws {
+        let fleet = NVMeFleet()
+        let gate = ConnectGate()
+        let controller = NVMeController(config: testControllerConfig(), policy: testPolicy()) {
+            if await fleet.connectionsServed >= 2 { await gate.pass() }
+            return await fleet.makeTransport()
+        }
+        try await controller.activate()
+        await fleet.shutdown()
+
+        let io = Task { try await controller.activeNamespaces() }
+        #expect(await eventually { await gate.isHeld })
+        let logout = Task { try await controller.logout() }
+        try await Task.sleep(for: .milliseconds(50))
+        await gate.open()
+        try await logout.value
+
+        await #expect(throws: (any Error).self) { _ = try await io.value }
+        #expect(await eventually {
+            let ended = await fleet.connectionsEnded
+            return await ended == fleet.connectionsServed
+        }, "a connection recovery opened after logout is still being served")
+        await fleet.shutdown()
+    }
+
     @Test func recoveryOntoABrokenTargetSurfacesAnError() async throws {
         var rejecting = MockTargetFaults()
         rejecting.rejectLoginStatus = (class: 3, detail: 1)

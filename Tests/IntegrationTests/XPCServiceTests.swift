@@ -440,6 +440,46 @@ struct XPCServiceTests {
         #expect(await eventually { await core.sessionHandles() == [kept] })
     }
 
+    // A client that dies while its login is still connecting: the
+    // invalidation releases what it can see, which is nothing yet. Before
+    // the `invalidated` flag the login then claimed its handle on the dead
+    // connection, and the session — and the unit it holds — lived until the
+    // daemon restarted: every later attach of that LUN was refused.
+    @Test("a login that finishes after its connection dropped is logged out, not leaked")
+    func loginFinishingAfterInvalidationIsReleased() async throws {
+        let disk = RAMDisk()
+        let harnesses = HarnessBox()
+        defer { harnesses.cancelAll() }
+        let gate = ConnectGate()
+        let core = DaemonCore(initiatorName: "iqn.test:initiator") { _, _, _ in
+            await gate.pass()
+            let (initiatorSide, targetSide) = MemoryPipe.pair()
+            let target = MockTarget(config: MockTargetConfig(), disk: disk, transport: targetSide)
+            harnesses.add(Task { await target.run() })
+            return initiatorSide
+        }
+        let store = TargetStore(url: FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("targets.json"))
+        try await store.save(TargetRecord(id: UUID().uuidString, displayName: "Mock",
+                                          host: "mock", port: 3260,
+                                          targetIQN: Self.targetIQN, lun: 0))
+        let service = ISCSIXPCService(core: core, targets: store)
+
+        async let outcome = loginResult(service)
+        #expect(await eventually { await gate.isHeld })
+        service.connectionInvalidated()
+        await gate.open()
+        let (handle, error) = await outcome
+
+        #expect(handle == nil)
+        #expect(error != nil)
+        #expect(await eventually { await core.sessionHandles().isEmpty })
+        // And the unit is free: a new client can attach it.
+        let next = ISCSIXPCService(core: core, targets: store)
+        _ = try await login(next)
+    }
+
     // The identities the app shows for ACL setup must be the ones the core
     // puts on the wire, not a copy something else has to keep in step.
     @Test("daemonInfo decodes and carries the core's initiator name")
@@ -455,5 +495,23 @@ struct XPCServiceTests {
         // Wiring only: the rule (an .app reports its path, anything else nil)
         // is unit-tested in SetupAuditTests.
         #expect(info.bundlePath == DaemonPlacement.bundlePath(ofBundleAt: Bundle.main.bundleURL))
+    }
+}
+
+/// Holds the first connect until the test opens it; later ones pass.
+actor ConnectGate {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    var isHeld: Bool { !waiters.isEmpty }
+
+    func pass() async {
+        guard !opened else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        for waiter in waiters { waiter.resume() }
+        waiters = []
     }
 }

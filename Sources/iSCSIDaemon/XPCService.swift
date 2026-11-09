@@ -39,7 +39,16 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     /// connected process could use a session it did not open — and the app
     /// and extension are connected at the same time. A lock, not an actor:
     /// consulted on every read/write, per-connection so contention is nil.
-    private let owned = OSAllocatedUnfairLock(initialState: Set<String>())
+    private let owned = OSAllocatedUnfairLock(initialState: Ownership())
+
+    private struct Ownership {
+        var handles: Set<String> = []
+        /// The connection is gone. A login still in flight when it went
+        /// finds this when it ends, and logs its session out instead of
+        /// claiming it: `connectionInvalidated` released what it could see,
+        /// and nothing would ever release a handle claimed after that.
+        var invalidated = false
+    }
 
     public init(core: DaemonCore, account: UserConfiguration,
                 adoption: LegacyConfigurationAdoption, targets: TargetStore? = nil) {
@@ -60,20 +69,27 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         var localCache: Int
     }
 
-    private func claim(_ handle: String, budgets value: SessionBudgets) {
-        owned.withLock { $0.insert(handle) }
-        budgets.withLock { $0[handle] = value }
+    /// False when the connection has already been invalidated: the caller
+    /// owns the session and must log it out.
+    private func claim(_ handle: String, budgets value: SessionBudgets) -> Bool {
+        let claimed = owned.withLock { state -> Bool in
+            guard !state.invalidated else { return false }
+            state.handles.insert(handle)
+            return true
+        }
+        if claimed { budgets.withLock { $0[handle] = value } }
+        return claimed
     }
 
     private func release(_ handle: String) {
-        owned.withLock { $0.remove(handle) }
+        _ = owned.withLock { $0.handles.remove(handle) }
         budgets.withLock { $0[handle] = nil }
     }
 
     /// Refuses rather than silently doing nothing: a client using a handle it
     /// does not own is a bug in that client, and it should hear about it.
     private func checkOwned(_ handle: String) -> NSError? {
-        guard owned.withLock({ $0.contains(handle) }) else {
+        guard owned.withLock({ $0.handles.contains(handle) }) else {
             return ISCSIError.nsError(
                 from: SessionError.notActive,
                 context: "Session \(handle) does not belong to this connection")
@@ -157,9 +173,18 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
                     claimingUnit: true,
                     validateConfiguration: { [targets = self.targets] in try await targets.validate(record) }
                 )
-                self.claim(handle, budgets: SessionBudgets(
+                guard self.claim(handle, budgets: SessionBudgets(
                     readahead: WorkloadProfile.pinnedBudgetBytes(stored: record.workloadProfile) ?? 0,
-                    localCache: record.localCacheBytes))
+                    localCache: record.localCacheBytes)) else {
+                    // The client went away mid-login. Nobody can use or
+                    // release this session, and it holds the unit.
+                    DaemonLog.error("login to \(targetIQN) finished after its connection dropped; logging \(handle) out")
+                    do { try await self.core.logout(handle) }
+                    catch { DaemonLog.error("releasing \(handle) after its connection dropped: \(error)") }
+                    box.value(nil, ISCSIError.nsError(from: CancellationError(),
+                                                      context: "Connecting to \(targetIQN)"))
+                    return
+                }
                 box.value(handle, nil)
             } catch {
                 box.value(nil, ISCSIError.nsError(from: error,
@@ -188,8 +213,9 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
     /// invalidation.
     public func connectionInvalidated() {
         let handles = owned.withLock { state -> [String] in
-            let snapshot = Array(state)
-            state.removeAll()
+            state.invalidated = true
+            let snapshot = Array(state.handles)
+            state.handles.removeAll()
             return snapshot
         }
         budgets.withLock { for h in handles { $0[h] = nil } }
@@ -243,8 +269,19 @@ public final class ISCSIXPCService: NSObject, ISCSIDaemonProtocol, @unchecked Se
         reply(NSNumber(value: bytes), nil)
     }
 
+    /// The most one `read` call may ask for. The extension asks for a cache
+    /// chunk or one FSKit request, a few MiB at most; this bounds what a
+    /// client can make the root daemon allocate, and keeps a nonsense length
+    /// an error rather than a trap.
+    static let maxReadLength: Int64 = 64 << 20
+
     public func read(session: String, offset: NSNumber, length: NSNumber, reply: @escaping (Data?, Error?) -> Void) {
         if let denied = checkOwned(session) { reply(nil, denied); return }
+        guard (0 ... Self.maxReadLength).contains(length.int64Value) else {
+            reply(nil, ISCSIError.nsError(from: POSIXError(.EINVAL),
+                                          context: "Reading \(length) bytes"))
+            return
+        }
         let box = SendableBox(reply)
         Task {
             do {

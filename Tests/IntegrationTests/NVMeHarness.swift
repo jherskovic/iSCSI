@@ -16,6 +16,9 @@ actor NVMeFleet {
     private var serveTasks: [Task<Void, Never>] = []
     private var transports: [MemoryPipe] = []
     private(set) var connectionsServed = 0
+    /// Connections whose serve loop has ended: the initiator closed them, or
+    /// `shutdown` did.
+    private(set) var connectionsEnded = 0
 
     /// `faultScripts` nil means every connection runs `config.faults`.
     init(config: MockNVMeConfig = MockNVMeConfig(), disk: RAMDisk? = nil,
@@ -32,11 +35,16 @@ actor NVMeFleet {
         let faults = faultScripts.count > 1 ? faultScripts.removeFirst() : faultScripts[0]
         let (initiatorSide, targetSide) = MemoryPipe.pair()
         let subsystem = self.subsystem
-        serveTasks.append(Task { await subsystem.serve(targetSide, faultBox: FaultBox(faults)) })
+        serveTasks.append(Task {
+            await subsystem.serve(targetSide, faultBox: FaultBox(faults))
+            await self.noteEnded()
+        })
         transports.append(targetSide)
         connectionsServed += 1
         return initiatorSide
     }
+
+    private func noteEnded() { connectionsEnded += 1 }
 
     /// Tear down every connection served so far, as a target reboot would.
     func shutdown() async {
