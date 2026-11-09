@@ -83,7 +83,10 @@ if [ $rc -ne 0 ]; then
     exit 1
 fi
 
-DEV=$(echo "$OUT" | awk 'NR==1{print $1}')
+# Not line 1: macOS 27 prefixes hdiutil's output with a deprecation warning,
+# and OUT holds stderr too. The whole-disk node is the first /dev/disk named.
+DEV=$(grep -o '/dev/disk[0-9]*' <<<"$OUT" | head -1)
+[ -n "$DEV" ] || { echo "hdiutil named no device:" >&2; echo "$OUT" | head -3 >&2; exit 1; }
 echo "== attached as $DEV"
 
 # Report mount points from hdiutil's own output. Grepping /sbin/mount for $DEV
