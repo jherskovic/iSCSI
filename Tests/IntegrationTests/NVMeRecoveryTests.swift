@@ -64,6 +64,54 @@ struct NVMeRecoveryTests {
         await fleet.shutdown()
     }
 
+    /// A header digest error is fatal for the connection (NVMe/TCP 1.1
+    /// §3.5): the host names it in an H2CTermReq, the controller pair goes,
+    /// and the command is retried on a fresh pair — never completed from a
+    /// header that failed its digest.
+    @Test func aHeaderDigestErrorTearsTheQueueDownAndTheCommandIsRetried() async throws {
+        var corrupt = MockTargetFaults()
+        corrupt.corruptHeaderDigestOnce = true
+        let fleet = NVMeFleet(faultScripts: [Self.healthy, corrupt, Self.healthy])
+        let controller = try await activatedController(
+            fleet: fleet, policy: testPolicy(retries: 1, recoveryAttempts: 2)) { $0.requestDigests = true }
+        #expect(await controller.digests.header)
+        let device = NVMeBlockDevice(controller: controller, nsid: 1)
+        _ = try await device.readCapacity()                     // admin queue: clean
+
+        let pattern = Data((0 ..< 4096).map { UInt8(($0 &* 29) & 0xFF) })
+        try await device.write(offset: 0, data: pattern)       // first I/O completion arrives corrupted
+        #expect(await eventually { await fleet.subsystem.h2cTermReqsReceived.count == 1 })
+        #expect(await fleet.subsystem.h2cTermReqsReceived == [.headerDigestError])
+        #expect(await controller.recoveryCount == 1)
+        #expect(await fleet.connectionsServed == 4)
+        #expect(try await device.read(offset: 0, length: 4096) == pattern)
+        await fleet.shutdown()
+    }
+
+    /// A controller that solicits a write and then never takes the data:
+    /// the task deadline, not the controller, ends the wait, and the retry
+    /// runs on a fresh pair rather than behind the wedged one.
+    @Test func aWriteStalledAfterItsR2TTimesOutAndRunsOnAFreshPair() async throws {
+        var config = MockNVMeConfig()
+        config.inCapsuleDataBytes = 0                          // every write is solicited
+        var stall = MockTargetFaults()
+        stall.stallAfterR2T = true
+        let fleet = NVMeFleet(config: config, faultScripts: [Self.healthy, stall, Self.healthy])
+        var policy = testPolicy(retries: 1, recoveryAttempts: 2)
+        policy.taskTimeout = .milliseconds(300)
+        let controller = try await activatedController(fleet: fleet, policy: policy)
+        let device = NVMeBlockDevice(controller: controller, nsid: 1)
+        _ = try await device.readCapacity()
+
+        let pattern = Data((0 ..< 8192).map { UInt8(($0 &* 11) & 0xFF) })
+        // Bounded here too, so a missing task deadline fails rather than hangs.
+        try await withDeadline(.seconds(10)) { try await device.write(offset: 0, data: pattern) }
+        #expect(await fleet.subsystem.r2tsSent == 2)           // one swallowed, one answered
+        #expect(await controller.recoveryCount == 1)
+        #expect(try await device.read(offset: 0, length: 8192) == pattern)
+        await fleet.shutdown()
+    }
+
     static let rejecting: MockTargetFaults = {
         var f = MockTargetFaults(); f.rejectLoginStatus = (class: 3, detail: 1); return f
     }()
