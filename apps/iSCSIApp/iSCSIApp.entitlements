@@ -2,10 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- No com.apple.developer.system-extension.install: only the parked
-         Backend B (ISCSI_BACKEND_B, ExtensionController) installs a system
-         extension, and nothing that ships does. A Backend B build that needs
-         it adds it back with the flag (docs/entitlements.md). -->
+    <!-- Install/manage system extensions (the dext). Provisionable with a
+         paid Developer Program team. The driverkit.userclient-access
+         entitlement is added back once we open the user client.
+
+         Only the parked Backend B uses it, and it still stays: it is the
+         app's one restricted entitlement, so it is why the export embeds a
+         provisioning profile in the app at all. Without it the export embeds
+         none, and release.sh, which asserts a profile in the app and in the
+         extension, stops (seen in a dry run, 2026-11-09). Dropping it means
+         changing that check and docs/releasing.md's profile steps with it. -->
+    <key>com.apple.developer.system-extension.install</key>
+    <true/>
     <key>com.apple.security.app-sandbox</key>
     <false/>
 </dict>
