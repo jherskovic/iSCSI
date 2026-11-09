@@ -18,6 +18,17 @@ public struct MockNVMeConfig: Sendable {
     public var maxH2CData: UInt32 = 65536
     /// C2HData PDU size for reads.
     public var c2hChunkBytes = 65536
+    /// Most bytes one R2T solicits. 0 asks for the whole write in one R2T,
+    /// which is what nvmet does; a value splits a write into several R2Ts,
+    /// one outstanding at a time (the host's ICReq MAXR2T is 0's based 0).
+    public var r2tChunkBytes = 0
+    /// Hold up to this many I/O reads and answer them together: their
+    /// C2HData PDUs interleaved round-robin across the commands, then the
+    /// completions in reverse arrival order. 0 or 1 answers every read as it
+    /// arrives, in order. A batch that does not fill is answered once
+    /// `interleaveWindow` has passed since its first read.
+    public var interleaveReads = 0
+    public var interleaveWindow: Duration = .milliseconds(20)
     /// MDTS as advertised; 0 = no limit.
     public var mdts: UInt8 = 0
     /// Accept whatever digests the host offers; false answers "none".
@@ -131,6 +142,8 @@ public actor MockNVMeSubsystem {
     public private(set) var protocolViolations: [String] = []
     /// Most commands outstanding at once on any queue with this QID.
     public private(set) var peakOutstanding: [UInt16: Int] = [:]
+    /// Size of every batch `interleaveReads` answered.
+    public private(set) var interleavedReadBatches: [Int] = []
 
     public init(config: MockNVMeConfig = MockNVMeConfig(), disk: RAMDisk? = nil,
                 faultBox: FaultBox? = nil) {
@@ -229,6 +242,7 @@ public actor MockNVMeSubsystem {
     func noteStalled(_ cid: UInt16) { stalledCIDs.append(cid) }
     func noteH2CTermReq(_ fes: NVMeTCPFatalErrorStatus) { h2cTermReqsReceived.append(fes) }
     func noteViolation(_ what: String) { protocolViolations.append(what) }
+    func noteInterleavedBatch(_ size: Int) { interleavedReadBatches.append(size) }
     func noteOutstanding(qid: UInt16, _ count: Int) {
         peakOutstanding[qid] = max(peakOutstanding[qid] ?? 0, count)
     }
@@ -300,6 +314,9 @@ actor MockNVMeQueue {
     private var writes: [UInt16: PendingWrite] = [:]
     private var nextTTag: UInt16 = 1
 
+    private var heldReads: [(cid: UInt16, data: Data)] = []
+    private var heldReadsTimer: Task<Void, Never>?
+
     init(subsystem: MockNVMeSubsystem, config: MockNVMeConfig, disk: RAMDisk,
          faultBox: FaultBox, transport: any ConnectionTransport) {
         self.subsystem = subsystem
@@ -326,6 +343,7 @@ actor MockNVMeQueue {
             // violation this side refused.
         }
         running = false
+        heldReadsTimer?.cancel()
         await transport.close()
         if connected, let controllerID {
             await subsystem.queueClosed(controllerID: controllerID, qid: queueID)
@@ -890,6 +908,10 @@ actor MockNVMeQueue {
                 try await respond(cid: cid, status: .lbaOutOfRange)
                 return
             }
+            if config.interleaveReads > 1 {
+                try await holdRead(cid: cid, data: payload)
+                return
+            }
             try await sendReadData(cid: cid, data: payload, overrun: config.hostility.c2hDataOverrun ? 512 : 0)
         case NVMeOpcode.NVM.write:
             let slba = sqe.bytes.leU64(40)
@@ -921,9 +943,11 @@ actor MockNVMeQueue {
         }
     }
 
-    /// What the next R2T asks for: the rest of the write.
+    /// What the next R2T asks for: the rest of the write, or at most
+    /// `r2tChunkBytes` of it.
     private func r2tLength(from offset: Int, of total: Int) -> Int {
-        total - offset
+        let rest = total - offset
+        return config.r2tChunkBytes > 0 ? min(rest, config.r2tChunkBytes) : rest
     }
 
     private func sendR2T(cid: UInt16, ttag: UInt16, offset: Int, length: Int) async throws {
@@ -991,5 +1015,61 @@ actor MockNVMeQueue {
         }
         await disk.write(lba: state.slba, data: state.buffer, fua: state.fua)
         try await respond(cid: cid)
+    }
+
+    // MARK: Interleaved reads
+
+    private func holdRead(cid: UInt16, data: Data) async throws {
+        heldReads.append((cid, data))
+        if heldReads.count >= config.interleaveReads {
+            try await releaseHeldReads()
+        } else if heldReads.count == 1 {
+            let window = config.interleaveWindow
+            heldReadsTimer = Task { [weak self] in
+                do { try await Task.sleep(for: window) } catch { return }
+                await self?.releaseHeldReadsAfterWindow()
+            }
+        }
+    }
+
+    private func releaseHeldReadsAfterWindow() async {
+        do {
+            try await releaseHeldReads()
+        } catch {
+            running = false
+            await transport.close()
+        }
+    }
+
+    /// Every held read at once: one C2HData per command in turn until all
+    /// are delivered, then the completions newest first.
+    private func releaseHeldReads() async throws {
+        heldReadsTimer?.cancel()
+        heldReadsTimer = nil
+        let batch = heldReads
+        heldReads = []
+        guard !batch.isEmpty else { return }
+        await subsystem.noteInterleavedBatch(batch.count)
+        let chunk = max(1, config.c2hChunkBytes)
+        var offsets = Array(repeating: 0, count: batch.count)
+        var pending = true
+        while pending {
+            pending = false
+            for i in batch.indices where offsets[i] < batch[i].data.count {
+                let data = batch[i].data
+                let end = min(offsets[i] + chunk, data.count)
+                let last = end == data.count
+                let success = last && config.emitSuccessFlag
+                if success { outstanding.remove(batch[i].cid) }
+                try await send(C2HDataPDU(cccid: batch[i].cid, dataOffset: UInt32(offsets[i]),
+                                          data: Data(data.sub(offsets[i], end - offsets[i])),
+                                          last: last, success: success).encode())
+                offsets[i] = end
+                if !last { pending = true }
+            }
+        }
+        if !config.emitSuccessFlag {
+            for read in batch.reversed() { try await respond(cid: read.cid) }
+        }
     }
 }
