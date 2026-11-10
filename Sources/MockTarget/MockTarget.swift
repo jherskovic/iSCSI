@@ -39,6 +39,13 @@ public struct MockTargetFaults: Sendable {
     public var checkConditionAll = false
     /// Delay before each response PDU.
     public var responseDelay: Duration?
+    /// NVMe/TCP only: I/O commands that arrive before this instant are held
+    /// until it, and then handled, while the admin queue (keep-alives
+    /// included) answers as usual. A loaded NAS committing a 30 s flush with
+    /// writes queued behind it, which still answers keep-alives (2026-11-09):
+    /// `responseDelay` and `stallCommands` hold the keep-alive too, so the
+    /// initiator drops the connection on that instead of on the task timeout.
+    public var holdIOUntil: ContinuousClock.Instant?
     /// Send a target-initiated NOP-In ping right after login.
     public var nopPingOnConnect = false
     /// Ignore initiator NOP-Out pings (dead-peer simulation while the TCP

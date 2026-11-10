@@ -175,4 +175,35 @@ struct NVMeRecoveryTests {
         await #expect(throws: (any Error).self) { _ = try await controller.activeNamespaces() }
         await fleet.shutdown()
     }
+
+    /// The 2026-11-09 failure, daemon side: a NAS holding I/O behind a slow
+    /// flush while its admin queue still answers. The attempt times out, the
+    /// controller reconnects and resends, and the resend lands once the hold
+    /// ends. The extension saw none of that, because it gave up at the same
+    /// 30 s; it now outwaits one retry (`DaemonStore.defaultTimeout`).
+    @Test func aWriteHeldPastTheTaskTimeoutLandsOnTheResend() async throws {
+        let faultBox = FaultBox()
+        let fleet = NVMeFleet(disk: RAMDisk(blockSize: 512, capacityBlocks: 8192))
+        var policy = testPolicy()
+        policy.taskTimeout = .milliseconds(300)
+        let controller = NVMeController(config: testControllerConfig(), policy: policy) {
+            let (initiatorSide, targetSide) = MemoryPipe.pair()
+            let subsystem = await fleet.subsystem
+            Task { await subsystem.serve(targetSide, faultBox: faultBox) }
+            return initiatorSide
+        }
+        try await controller.activate()
+        let device = NVMeBlockDevice(controller: controller, nsid: 1)
+        _ = try await device.readCapacity()
+
+        faultBox.mutate { $0.holdIOUntil = .now + .milliseconds(500) }
+        let payload = Data(repeating: 0x5A, count: 4096)
+        let started = ContinuousClock.now
+        try await device.write(offset: 0, data: payload)
+        let took = ContinuousClock.now - started
+        #expect(took >= .milliseconds(450), "the write was not held")
+        #expect(took < .seconds(5))
+        #expect(try await device.read(offset: 0, length: payload.count) == payload)
+        await fleet.shutdown()
+    }
 }

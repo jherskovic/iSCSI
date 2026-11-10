@@ -17,6 +17,10 @@ public final class NetworkTransport: ConnectionTransport, ConnectionPathReportin
         self.connection = connection
     }
 
+    /// How long a connect gets when the caller does not say: resolving, any
+    /// wait for the interface, and the TCP handshake together.
+    public static let defaultConnectTimeout: Duration = .seconds(10)
+
     /// Open a TCP connection to host:port and wait until it is ready.
     ///
     /// A `binding` pins the connection by binding the interface's current
@@ -29,7 +33,7 @@ public final class NetworkTransport: ConnectionTransport, ConnectionPathReportin
         host: String,
         port: UInt16,
         binding: InterfaceBinding? = nil,
-        timeout: Duration = .seconds(10)
+        timeout: Duration = NetworkTransport.defaultConnectTimeout
     ) async throws -> NetworkTransport {
         // One deadline shared by every step of this connect — resolving, any
         // wait for the interface, the bound attempt and a fallback — so a
