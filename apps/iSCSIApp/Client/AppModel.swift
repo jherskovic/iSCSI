@@ -380,22 +380,17 @@ final class AppModel: ObservableObject {
 
             // Attached with nothing mounted. Blank — how every brand-new LUN
             // looks — is a normal outcome, not a failure. Anything else may be
-            // data macOS cannot mount (ext4, ZFS, a locked or still-checking
-            // volume), so it is never met with advice to erase.
-            if !attachment.isFullyAttached, let device = attachment.device {
+            // data macOS cannot mount (ext4, ZFS, a still-checking volume), so
+            // it is never met with advice to erase.
+            //
+            // A locked encrypted volume gets nothing here. The attach has
+            // already tried the password macOS saved for it, and for one it
+            // has not saved, macOS puts up its own prompt; the row says it is
+            // locked.
+            if !attachment.isFullyAttached, attachment.lockedVolumes.isEmpty,
+               let device = attachment.device {
                 let unit = target.isNVMe ? "namespace" : "LUN"
-                if !attachment.lockedVolumes.isEmpty {
-                    let names = ListFormatter.localizedString(
-                        byJoining: attachment.lockedVolumes.map { "“\($0)”" })
-                    lastError = PresentableError(
-                        title: "“\(target.displayName)” is encrypted",
-                        message: "The \(unit) is attached as \(device). It holds the encrypted "
-                               + "volume \(names), which stays locked until its password is "
-                               + "entered.",
-                        suggestion: "Enter the password when macOS asks for it, or open Disk "
-                                  + "Utility, select the volume and click Mount. It appears "
-                                  + "here once it is mounted.")
-                } else if attachment.isBlank == true {
+                if attachment.isBlank == true {
                     lastError = PresentableError(
                         title: "“\(target.displayName)” is connected but not formatted",
                         message: "The \(unit) is attached as \(device) and has no filesystem "

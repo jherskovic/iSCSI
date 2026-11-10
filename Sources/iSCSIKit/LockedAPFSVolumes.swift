@@ -16,10 +16,14 @@ public enum LockedAPFSVolumes {
         public let name: String
         /// `disk16s1`: the synthesized volume device.
         public let identifier: String
+        /// `APFSVolumeUUID`, also readable while locked: what macOS files the
+        /// volume's saved password under. Nil if the listing leaves it out.
+        public let uuid: String?
 
-        public init(name: String, identifier: String) {
+        public init(name: String, identifier: String, uuid: String? = nil) {
             self.name = name
             self.identifier = identifier
+            self.uuid = uuid
         }
     }
 
@@ -41,7 +45,8 @@ public enum LockedAPFSVolumes {
                 guard volume["Locked"] as? Bool == true,
                       let identifier = volume["DeviceIdentifier"] as? String else { continue }
                 let name = (volume["Name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? identifier
-                locked.append(Volume(name: name, identifier: identifier))
+                locked.append(Volume(name: name, identifier: identifier,
+                                     uuid: volume["APFSVolumeUUID"] as? String))
             }
         }
         return locked
