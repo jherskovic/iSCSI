@@ -18,6 +18,17 @@ public struct MockNVMeConfig: Sendable {
     public var maxH2CData: UInt32 = 65536
     /// C2HData PDU size for reads.
     public var c2hChunkBytes = 65536
+    /// Most bytes one R2T solicits. 0 asks for the whole write in one R2T,
+    /// which is what nvmet does; a value splits a write into several R2Ts,
+    /// one outstanding at a time (the host's ICReq MAXR2T is 0's based 0).
+    public var r2tChunkBytes = 0
+    /// Hold up to this many I/O reads and answer them together: their
+    /// C2HData PDUs interleaved round-robin across the commands, then the
+    /// completions in reverse arrival order. 0 or 1 answers every read as it
+    /// arrives, in order. A batch that does not fill is answered once
+    /// `interleaveWindow` has passed since its first read.
+    public var interleaveReads = 0
+    public var interleaveWindow: Duration = .milliseconds(20)
     /// MDTS as advertised; 0 = no limit.
     public var mdts: UInt8 = 0
     /// Accept whatever digests the host offers; false answers "none".
@@ -57,7 +68,10 @@ public struct MockNVMeHostility: Sendable {
     public var terminateOnFirstIOCommand = false
     /// Before every I/O completion, complete a CID nobody submitted.
     public var completeUnknownCID = false
-    /// Send one C2HData past the end of the read buffer.
+    /// I/O reads only: after the real data, one more C2HData of 512 bytes
+    /// at the next offset, carrying LAST_PDU. Contiguous on purpose, so the
+    /// host's offset check passes and its read-buffer bounds check is what
+    /// has to catch it.
     public var c2hDataOverrun = false
     /// Ask, by R2T, for more bytes than the write carries.
     public var r2tOverrun = false
@@ -81,6 +95,13 @@ public struct MockNVMeHostility: Sendable {
 /// returned — so the controller registry lives here, and each connection is
 /// a `MockNVMeQueue`. The `RAMDisk` is shared for the same reason
 /// `MockTarget` shares it: state must survive a simulated reboot.
+///
+/// The queues refuse what nvmet refuses, the way nvmet refuses it: commands
+/// before CC.EN, a data SGL that does not match the command, a Connect
+/// naming the wrong controller, H2CData out of sequence, more commands
+/// outstanding than the queue holds. Each refusal is also recorded in
+/// `protocolViolations`, so a test can tell an initiator bug from a fault
+/// it scripted itself.
 public actor MockNVMeSubsystem {
     public let config: MockNVMeConfig
     public let disk: RAMDisk
@@ -91,9 +112,14 @@ public actor MockNVMeSubsystem {
     struct ControllerState {
         let id: UInt16
         let hostNQN: String
+        let subsystemNQN: String
         let isDiscovery: Bool
         var cc: UInt32 = 0
         let kato: UInt32
+        /// QIDs with a live connection. nvmet frees a controller when the
+        /// last of its queues goes, and refuses a second Connect for a QID
+        /// that is still installed.
+        var queues: Set<UInt16> = []
     }
 
     private var controllers: [UInt16: ControllerState] = [:]
@@ -112,6 +138,12 @@ public actor MockNVMeSubsystem {
     public private(set) var h2cTermReqsReceived: [NVMeTCPFatalErrorStatus] = []
     /// Property Sets of CC with a shutdown notification (SHN) requested.
     public private(set) var shutdownsRequested = 0
+    /// Every host protocol violation a queue refused, in words.
+    public private(set) var protocolViolations: [String] = []
+    /// Most commands outstanding at once on any queue with this QID.
+    public private(set) var peakOutstanding: [UInt16: Int] = [:]
+    /// Size of every batch `interleaveReads` answered.
+    public private(set) var interleavedReadBatches: [Int] = []
 
     public init(config: MockNVMeConfig = MockNVMeConfig(), disk: RAMDisk? = nil,
                 faultBox: FaultBox? = nil) {
@@ -144,24 +176,45 @@ public actor MockNVMeSubsystem {
     enum ConnectOutcome {
         case accepted(UInt16)
         case invalidHost
-        case invalidParameter
+        /// Connect Invalid Parameters; `attribute` is the IATTR/IPO value
+        /// nvmet returns in DW0 to say which field was wrong.
+        case invalidParameter(attribute: UInt32)
+        /// The QID is already connected to that controller.
+        case commandSequenceError
     }
+
+    /// IPO_IATTR_CONNECT_DATA(cntlid): byte 16 of the Connect data.
+    static let connectDataCNTLID: UInt32 = 1 << 16 | 16
 
     func connectAdmin(hostNQN: String, subsystemNQN: String, kato: UInt32) -> ConnectOutcome {
         let isDiscovery = subsystemNQN == NQN.discovery
-        guard isDiscovery || subsystemNQN == config.subsystemNQN else { return .invalidParameter }
+        guard isDiscovery || subsystemNQN == config.subsystemNQN else {
+            return .invalidParameter(attribute: 1 << 16 | 256)   // SUBNQN
+        }
         if let allowed = config.allowedHosts, !allowed.contains(hostNQN) { return .invalidHost }
         let id = nextControllerID
         nextControllerID &+= 1
-        controllers[id] = ControllerState(id: id, hostNQN: hostNQN, isDiscovery: isDiscovery, kato: kato)
+        controllers[id] = ControllerState(id: id, hostNQN: hostNQN, subsystemNQN: subsystemNQN,
+                                          isDiscovery: isDiscovery, kato: kato, queues: [0])
         return .accepted(id)
     }
 
-    func connectIO(controllerID: UInt16, hostNQN: String) -> ConnectOutcome {
-        guard let state = controllers[controllerID], state.hostNQN == hostNQN, !state.isDiscovery else {
-            return .invalidParameter
+    /// nvmet_ctrl_find_get: the controller must exist and belong to this
+    /// host and this subsystem; discovery controllers have no I/O queues.
+    func connectIO(controllerID: UInt16, qid: UInt16, hostNQN: String, subsystemNQN: String) -> ConnectOutcome {
+        guard var state = controllers[controllerID], state.hostNQN == hostNQN,
+              state.subsystemNQN == subsystemNQN, !state.isDiscovery else {
+            return .invalidParameter(attribute: Self.connectDataCNTLID)
         }
+        guard state.queues.insert(qid).inserted else { return .commandSequenceError }
+        controllers[controllerID] = state
         return .accepted(controllerID)
+    }
+
+    func queueClosed(controllerID: UInt16, qid: UInt16) {
+        guard var state = controllers[controllerID] else { return }
+        state.queues.remove(qid)
+        controllers[controllerID] = state.queues.isEmpty ? nil : state
     }
 
     func controllerConfiguration(_ id: UInt16) -> UInt32 { controllers[id]?.cc ?? 0 }
@@ -169,6 +222,13 @@ public actor MockNVMeSubsystem {
     func setControllerConfiguration(_ id: UInt16, _ cc: UInt32) {
         controllers[id]?.cc = cc
         if cc & 0xC000 != 0 { shutdownsRequested += 1 }
+    }
+
+    /// CSTS.RDY as this model has it: follows CC.EN at once, and drops when
+    /// a shutdown is requested — nvmet_update_cc clears the controller then.
+    func isReady(_ id: UInt16) -> Bool {
+        let cc = controllerConfiguration(id)
+        return cc & 1 == 1 && cc & 0xC000 == 0
     }
 
     func isDiscoveryController(_ id: UInt16) -> Bool { controllers[id]?.isDiscovery ?? false }
@@ -181,9 +241,38 @@ public actor MockNVMeSubsystem {
     func noteInCapsuleWrite() { inCapsuleWrites += 1 }
     func noteStalled(_ cid: UInt16) { stalledCIDs.append(cid) }
     func noteH2CTermReq(_ fes: NVMeTCPFatalErrorStatus) { h2cTermReqsReceived.append(fes) }
+    func noteViolation(_ what: String) { protocolViolations.append(what) }
+    func noteInterleavedBatch(_ size: Int) { interleavedReadBatches.append(size) }
+    func noteOutstanding(qid: UInt16, _ count: Int) {
+        peakOutstanding[qid] = max(peakOutstanding[qid] ?? 0, count)
+    }
+}
+
+/// Generic command status values this model answers with (NVMe Base 2.0
+/// Figure 102), DNR set as nvmet sets it.
+private extension NVMeStatus {
+    static let invalidOpcode = NVMeStatus(sct: 0, sc: 0x01, dnr: true)
+    static let invalidField = NVMeStatus(sct: 0, sc: 0x02, dnr: true)
+    static let commandSequenceError = NVMeStatus(sct: 0, sc: 0x0C, dnr: true)
+    static let dataSGLLengthInvalid = NVMeStatus(sct: 0, sc: 0x0F, dnr: true)
+    static let sglDescriptorTypeInvalid = NVMeStatus(sct: 0, sc: 0x11, dnr: true)
+    static let sglOffsetInvalid = NVMeStatus(sct: 0, sc: 0x16, dnr: true)
+    static let invalidNamespace = NVMeStatus(sct: 0, sc: 0x0B, dnr: true)
+    static let lbaOutOfRange = NVMeStatus(sct: 0, sc: 0x80, dnr: true)
+    static let connectIncompatibleFormat = NVMeStatus(sct: 1, sc: 0x80, dnr: true)
+    static let connectInvalidParameters = NVMeStatus(sct: 1, sc: 0x82, dnr: true)
+    static let connectInvalidHost = NVMeStatus(sct: 1, sc: 0x84, dnr: true)
 }
 
 /// One NVMe/TCP connection = one queue pair, served to completion.
+///
+/// Two loops share the actor. A reader takes PDUs off the wire as soon as
+/// they arrive, the way a real controller's socket does, and does the
+/// accounting that has to happen on arrival: how many commands the host has
+/// outstanding against the queue size, and any H2CTermReq. The processor
+/// then serves them strictly in order. A single loop that finished each
+/// command before reading the next would never see two outstanding, and so
+/// could never catch a host that overfills the queue.
 actor MockNVMeQueue {
     private let subsystem: MockNVMeSubsystem
     private let config: MockNVMeConfig
@@ -203,17 +292,30 @@ actor MockNVMeQueue {
     private var running = true
     private var corruptedReads = 0
 
+    /// SQSIZE + 1 from the Connect: the queue's entries.
+    private var queueEntries: Int?
+    /// CIDs submitted and not yet completed, counted on arrival.
+    private var outstanding: Set<UInt16> = []
+
     private struct PendingWrite {
-        let nsid: UInt32
         let slba: UInt64
         let fua: Bool
         var buffer: Data
-        var received = 0
         let ttag: UInt16
+        /// Where the next H2CData must start: data for an R2T is contiguous
+        /// from the R2T's offset (nvmet compares DATAO with rbytes_done).
+        var nextOffset: Int
+        /// End of the range the outstanding R2T solicited.
+        var r2tEnd: Int
+        /// Bytes accepted; the write completes only when it has them all.
+        var received = 0
     }
 
     private var writes: [UInt16: PendingWrite] = [:]
     private var nextTTag: UInt16 = 1
+
+    private var heldReads: [(cid: UInt16, data: Data)] = []
+    private var heldReadsTimer: Task<Void, Never>?
 
     init(subsystem: MockNVMeSubsystem, config: MockNVMeConfig, disk: RAMDisk,
          faultBox: FaultBox, transport: any ConnectionTransport) {
@@ -227,14 +329,25 @@ actor MockNVMeQueue {
     func run() async {
         do {
             try await initializeConnection()
-            while running {
-                guard let raw = try await nextPDU() else { break }
+            let (inbound, sink) = AsyncThrowingStream.makeStream(of: RawNVMeTCPPDU.self)
+            // Not cancelled when processing stops: after close() it still
+            // reads what the host sent last — typically its H2CTermReq — and
+            // then ends on EOF.
+            Task { await self.readAhead(into: sink) }
+            for try await raw in inbound {
+                guard running else { break }
                 try await handle(raw)
             }
         } catch {
-            // Connection torn down by the fault script or the peer.
+            // Connection torn down by the fault script, the peer, or a
+            // violation this side refused.
         }
+        running = false
+        heldReadsTimer?.cancel()
         await transport.close()
+        if connected, let controllerID {
+            await subsystem.queueClosed(controllerID: controllerID, qid: queueID)
+        }
     }
 
     func stop() async {
@@ -250,6 +363,52 @@ actor MockNVMeQueue {
             guard let chunk = try await transport.receive() else { return nil }
             deframer.append(chunk)
         }
+    }
+
+    private func readAhead(into sink: AsyncThrowingStream<RawNVMeTCPPDU, any Error>.Continuation) async {
+        do {
+            while let raw = try await nextPDU() {
+                if raw.pduType == .h2cTermReq, let term = try? H2CTermReqPDU(raw: raw) {
+                    await subsystem.noteH2CTermReq(term.fes)
+                } else if raw.pduType == .capsuleCmd, let violation = admit(raw) {
+                    // nvmet_tcp_fatal_error: the queue is torn down with no
+                    // termination request — there is no FES for either case.
+                    await subsystem.noteViolation(violation)
+                    running = false
+                    await transport.close()
+                    sink.finish(throwing: TransportError.closed)
+                    return
+                }
+                sink.yield(raw)
+            }
+            sink.finish()
+        } catch {
+            sink.finish(throwing: error)
+        }
+    }
+
+    /// Arrival accounting for a command capsule; a violation in words, or
+    /// nil. Before Connect there is no queue size, and the Connect itself
+    /// is not counted.
+    private func admit(_ raw: RawNVMeTCPPDU) -> String? {
+        guard let entries = queueEntries, raw.psh.count >= SQE.size else { return nil }
+        let cid = raw.psh.leU16(2)
+        // Two outstanding commands with one CID make every completion for it
+        // ambiguous. nvmet does not check; the host it serves then
+        // mismatches completions, which is worse than a refusal.
+        guard outstanding.insert(cid).inserted else {
+            return "QID \(queueID): CID \(cid) submitted while a command with that CID is outstanding"
+        }
+        Task { [subsystem, queueID, count = outstanding.count] in
+            await subsystem.noteOutstanding(qid: queueID, count)
+        }
+        // More commands than the queue has entries: nvmet-tcp runs out of
+        // command slots and kills the queue (nvmet_tcp_fatal_error). The
+        // host is told SQSIZE and must never go past it.
+        guard outstanding.count <= entries else {
+            return "QID \(queueID): \(outstanding.count) commands outstanding on a queue of \(entries) entries"
+        }
+        return nil
     }
 
     private func send(_ raw: RawNVMeTCPPDU) async throws {
@@ -279,13 +438,30 @@ actor MockNVMeQueue {
     }
 
     private func respond(cid: UInt16, status: NVMeStatus = .success, dw0: UInt32 = 0, dw1: UInt32 = 0) async throws {
+        outstanding.remove(cid)
         let cqe = CQE(dw0: dw0, dw1: dw1, sqHead: 0, sqID: queueID, commandID: cid, status: status)
         try await send(CapsuleRespPDU(cqe: cqe.encoded).encode())
     }
 
+    /// A fatal transport error the host caused (NVMe/TCP 1.1 §3.5): recorded,
+    /// answered with a C2HTermReq carrying the offending header, and the
+    /// connection closed. nvmet itself closes without the C2HTermReq (its
+    /// code says FIXME); the host ends up in the same place, and the FES
+    /// says why.
+    private func refuse(_ fes: NVMeTCPFatalErrorStatus, fei: UInt32 = 0, _ raw: RawNVMeTCPPDU,
+                        _ violation: String) async throws -> Never {
+        await subsystem.noteViolation(violation)
+        var header = NVMeTCPHeader(type: raw.type, flags: raw.flags, hlen: UInt8(raw.hlen), pdo: 0, plen: 0).encoded
+        header.append(raw.psh)
+        try? await send(C2HTermReqPDU(fes: fes, fei: fei, offendingHeader: header.prefix(128)).encode())
+        running = false
+        throw TransportError.closed
+    }
+
     /// Read data as C2HData PDUs, then the completion — unless SUCCESS on the
-    /// last data PDU stood in for it.
-    private func sendReadData(cid: UInt16, data: Data) async throws {
+    /// last data PDU stood in for it. `overrun` bytes beyond `data` follow
+    /// in a PDU of their own, which then carries LAST_PDU instead.
+    private func sendReadData(cid: UInt16, data: Data, overrun: Int = 0) async throws {
         let chunk = max(1, config.c2hChunkBytes)
         let hostile = queueID != 0 ? config.hostility : MockNVMeHostility()
         var offset = 0
@@ -293,13 +469,14 @@ actor MockNVMeQueue {
         var completed = false
         while offset < data.count {
             let end = min(offset + chunk, data.count)
-            let last = end == data.count
+            let last = end == data.count && overrun == 0
             var flagLast = last || (hostile.lastPDUTooEarly && index == 0)
             var success = last && config.emitSuccessFlag
             if hostile.successWithoutLast {
                 flagLast = false
                 success = true
             }
+            if success { outstanding.remove(cid) }
             try await send(C2HDataPDU(cccid: cid,
                                       dataOffset: hostile.c2hDataRepeatsOffsetZero ? 0 : UInt32(offset),
                                       data: Data(data.sub(offset, end - offset)),
@@ -307,6 +484,12 @@ actor MockNVMeQueue {
             completed = success
             offset = end
             index += 1
+        }
+        if overrun > 0 {
+            if config.emitSuccessFlag { outstanding.remove(cid) }
+            try await send(C2HDataPDU(cccid: cid, dataOffset: UInt32(data.count), data: Data(count: overrun),
+                                      last: true, success: config.emitSuccessFlag).encode())
+            completed = config.emitSuccessFlag
         }
         if !completed { try await respond(cid: cid) }
     }
@@ -335,9 +518,9 @@ actor MockNVMeQueue {
         case .capsuleCmd(let cmd):
             try await handleCommand(cmd)
         case .h2cData(let pdu):
-            try await handleH2CData(pdu)
-        case .h2cTermReq(let term):
-            await subsystem.noteH2CTermReq(term.fes)
+            try await handleH2CData(pdu, raw: raw)
+        case .h2cTermReq:
+            // Recorded by the reader on arrival.
             throw TransportError.closed
         default:
             throw NVMeTCPError.malformed("unexpected PDU type \(raw.type) from host")
@@ -347,12 +530,30 @@ actor MockNVMeQueue {
     private func handleCommand(_ cmd: CapsuleCmdPDU) async throws {
         let sqe = try SQE(bytes: cmd.sqe)
         let cid = sqe.commandID
+        // nvmet_req_init, for every command: no fused operations, and PSDT
+        // must say "SGL" (01b) — fabrics has no PRPs.
+        guard sqe.flags & 0x03 == 0, sqe.flags & 0xC0 == 0x40 else {
+            await subsystem.noteViolation("opcode 0x\(String(sqe.opcode, radix: 16)): FUSE/PSDT flags 0x\(String(sqe.flags, radix: 16))")
+            try await respond(cid: cid, status: .invalidField)
+            return
+        }
         if sqe.opcode == NVMeOpcode.Admin.fabrics {
             try await handleFabrics(sqe, data: cmd.inCapsuleData)
             return
         }
+        // nvmet_parse_connect_cmd: before Connect, nothing else is an opcode.
         guard connected, let controllerID else {
-            try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x01, dnr: true))   // invalid opcode
+            await subsystem.noteViolation("opcode 0x\(String(sqe.opcode, radix: 16)) before Connect")
+            try await respond(cid: cid, status: .invalidOpcode)
+            return
+        }
+        // nvmet_check_ctrl_status: admin and I/O commands need CC.EN = 1 and
+        // CSTS.RDY = 1. A discovery controller answers Invalid Opcode instead
+        // (nvmet_parse_discovery_cmd).
+        guard await subsystem.isReady(controllerID) else {
+            await subsystem.noteViolation("QID \(queueID): opcode 0x\(String(sqe.opcode, radix: 16)) while the controller is not ready")
+            let discovery = await subsystem.isDiscoveryController(controllerID)
+            try await respond(cid: cid, status: discovery ? .invalidOpcode : .commandSequenceError)
             return
         }
         if faults.stallCommands {
@@ -369,41 +570,126 @@ actor MockNVMeQueue {
         }
     }
 
+    /// nvmet_tcp_map_data then nvmet_check_transfer_len: the SGL in the SQE
+    /// must describe exactly the `expected` bytes the command moves. Data
+    /// in the capsule only for a write, and no more than the inline size;
+    /// otherwise a Transport SGL Data Block. nil when it does.
+    private func dataSGLStatus(_ sqe: SQE, expected: Int, inCapsule: Data, isWrite: Bool) async -> NVMeStatus? {
+        let sgl = sqe.sgl
+        let what = "QID \(queueID) opcode 0x\(String(sqe.opcode, radix: 16))"
+        if sgl.length > 0 {
+            if sgl.isInCapsule {
+                guard isWrite else {
+                    await subsystem.noteViolation("\(what): in-capsule SGL on a command that is not a write")
+                    return .invalidField
+                }
+                guard Int(sgl.length) <= config.inCapsuleDataBytes else {
+                    await subsystem.noteViolation("\(what): \(sgl.length) in-capsule bytes, IOCCSZ allows \(config.inCapsuleDataBytes)")
+                    return .sglOffsetInvalid
+                }
+                guard inCapsule.count == Int(sgl.length) else {
+                    await subsystem.noteViolation("\(what): SGL says \(sgl.length) in-capsule bytes, the capsule carries \(inCapsule.count)")
+                    return .dataSGLLengthInvalid
+                }
+            } else {
+                // nvmet treats any other descriptor as a transport one; the
+                // NVMe/TCP binding defines only these two, so anything else
+                // is a host bug this model names.
+                guard sgl.typeByte == SGLDescriptor.transport(length: 0).typeByte else {
+                    await subsystem.noteViolation("\(what): SGL descriptor type 0x\(String(sgl.typeByte, radix: 16))")
+                    return .sglDescriptorTypeInvalid
+                }
+                guard inCapsule.isEmpty else {
+                    await subsystem.noteViolation("\(what): in-capsule data under a transport SGL")
+                    return .dataSGLLengthInvalid
+                }
+            }
+        } else if !inCapsule.isEmpty {
+            await subsystem.noteViolation("\(what): in-capsule data under a null SGL")
+            return .dataSGLLengthInvalid
+        }
+        guard Int(sgl.length) == expected else {
+            await subsystem.noteViolation("\(what): SGL length \(sgl.length), the command moves \(expected) bytes")
+            return .dataSGLLengthInvalid
+        }
+        return nil
+    }
+
     // MARK: Fabrics
 
     private func handleFabrics(_ sqe: SQE, data: Data) async throws {
         let cid = sqe.commandID
         switch sqe.fabricsType {
         case FabricsCommandType.connect:
-            guard data.count == NVMeCommands.connectDataSize else {
-                try await respond(cid: cid, status: NVMeStatus(sct: 1, sc: 0x82, dnr: true))
+            // A queue that already has a controller parses Connect as an
+            // ordinary fabrics command, which it is not.
+            guard !connected else {
+                await subsystem.noteViolation("QID \(queueID): a second Connect on one connection")
+                try await respond(cid: cid, status: .invalidOpcode)
                 return
             }
+            guard sqe.sgl.isInCapsule, Int(sqe.sgl.length) == NVMeCommands.connectDataSize,
+                  data.count == NVMeCommands.connectDataSize else {
+                await subsystem.noteViolation("Connect with \(data.count) data bytes under SGL length \(sqe.sgl.length)")
+                try await respond(cid: cid, status: .dataSGLLengthInvalid)
+                return
+            }
+            let recfmt = sqe.bytes.leU16(40)
             let qid = sqe.bytes.leU16(42)
+            let sqsize = sqe.bytes.leU16(44)
             let kato = sqe.bytes.leU32(48)
             let requestedController = data.leU16(16)
             let subnqn = asciiField(data, 256, 256)
             let hostnqn = asciiField(data, 512, 256)
             if faults.rejectLoginStatus != nil {
-                try await respond(cid: cid, status: NVMeStatus(sct: 1, sc: 0x84, dnr: true))
+                try await respond(cid: cid, status: .connectInvalidHost)
+                throw TransportError.closed
+            }
+            guard recfmt == 0 else {
+                await subsystem.noteViolation("Connect RECFMT \(recfmt)")
+                try await respond(cid: cid, status: .connectIncompatibleFormat)
+                throw TransportError.closed
+            }
+            // nvmet_install_queue: SQSIZE is 0's based and never 0, and an
+            // I/O queue may not be deeper than CAP.MQES. IATTR 0, IPO 44.
+            guard sqsize > 0, qid == 0 || sqsize <= config.maxQueueEntries - 1 else {
+                await subsystem.noteViolation("Connect QID \(qid) SQSIZE \(sqsize), MQES \(config.maxQueueEntries - 1)")
+                try await respond(cid: cid, status: .connectInvalidParameters, dw0: 44)
                 throw TransportError.closed
             }
             let outcome: MockNVMeSubsystem.ConnectOutcome
             if qid == 0 {
+                // The dynamic controller model, which is all nvmet has: the
+                // admin Connect asks for "any controller" and is told its ID.
+                guard requestedController == 0xFFFF else {
+                    await subsystem.noteViolation("admin Connect names CNTLID \(requestedController), not 0xFFFF")
+                    try await respond(cid: cid, status: .connectInvalidParameters,
+                                      dw0: MockNVMeSubsystem.connectDataCNTLID)
+                    throw TransportError.closed
+                }
                 outcome = await subsystem.connectAdmin(hostNQN: hostnqn, subsystemNQN: subnqn, kato: kato)
             } else {
-                outcome = await subsystem.connectIO(controllerID: requestedController, hostNQN: hostnqn)
+                outcome = await subsystem.connectIO(controllerID: requestedController, qid: qid,
+                                                    hostNQN: hostnqn, subsystemNQN: subnqn)
             }
             switch outcome {
             case .invalidHost:
-                try await respond(cid: cid, status: NVMeStatus(sct: 1, sc: 0x84, dnr: true))
+                try await respond(cid: cid, status: .connectInvalidHost)
                 throw TransportError.closed
-            case .invalidParameter:
-                try await respond(cid: cid, status: NVMeStatus(sct: 1, sc: 0x82, dnr: true))
+            case .invalidParameter(let attribute):
+                await subsystem.noteViolation("Connect QID \(qid) CNTLID \(requestedController) refused (IATTR/IPO 0x\(String(attribute, radix: 16)))")
+                try await respond(cid: cid, status: .connectInvalidParameters, dw0: attribute)
+                throw TransportError.closed
+            case .commandSequenceError:
+                await subsystem.noteViolation("Connect QID \(qid) to CNTLID \(requestedController), which already has that queue")
+                try await respond(cid: cid, status: .commandSequenceError)
                 throw TransportError.closed
             case .accepted(let id):
                 controllerID = id
                 queueID = qid
+                // Before the response goes out: the next command the reader
+                // sees is counted against this.
+                queueEntries = Int(sqsize) + 1
                 // AUTHREQ: bit 17 (ATR) of DW0 says in-band authentication is required.
                 let authreq: UInt32 = (config.requireAuth && qid == 0) ? 1 << 17 : 0
                 try await respond(cid: cid, dw0: UInt32(id) | authreq)
@@ -412,37 +698,49 @@ actor MockNVMeQueue {
                 connected = true
                 sentPDUs = 0
             }
-        case FabricsCommandType.propertyGet:
-            guard let controllerID else { throw TransportError.closed }
-            let offset = sqe.bytes.leU32(44)
-            let value: UInt64
-            switch offset {
-            case NVMeProperty.cap:
-                value = UInt64(config.maxQueueEntries - 1) | UInt64(30) << 24 | 1 << 37
-            case NVMeProperty.vs:
-                value = 0x0002_0000
-            case NVMeProperty.cc:
-                value = UInt64(await subsystem.controllerConfiguration(controllerID))
-            case NVMeProperty.csts:
-                // RDY follows EN; SHST reports 10b (complete) once SHN was set.
-                let cc = await subsystem.controllerConfiguration(controllerID)
-                value = UInt64(cc & 1) | (cc & 0xC000 != 0 ? 0x8 : 0)
-            default:
-                try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x02, dnr: true))
+        case FabricsCommandType.propertyGet, FabricsCommandType.propertySet:
+            // Before Connect nothing but Connect is an opcode; on an I/O
+            // queue the property commands are not either.
+            guard connected, let controllerID, queueID == 0 else {
+                await subsystem.noteViolation("QID \(queueID): property command \(connected ? "on an I/O queue" : "before Connect")")
+                try await respond(cid: cid, status: .invalidOpcode)
                 return
             }
-            try await respond(cid: cid, dw0: UInt32(value & 0xFFFF_FFFF), dw1: UInt32(value >> 32))
-        case FabricsCommandType.propertySet:
-            guard let controllerID else { throw TransportError.closed }
-            let offset = sqe.bytes.leU32(44)
-            guard offset == NVMeProperty.cc, sqe.bytes.u8(40) & 1 == 0 else {
-                try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x02, dnr: true))
+            if let status = await dataSGLStatus(sqe, expected: 0, inCapsule: data, isWrite: false) {
+                try await respond(cid: cid, status: status)
                 return
             }
-            await subsystem.setControllerConfiguration(controllerID, sqe.bytes.leU32(48))
-            try await respond(cid: cid)
+            let offset = sqe.bytes.leU32(44)
+            if sqe.fabricsType == FabricsCommandType.propertyGet {
+                let value: UInt64
+                switch offset {
+                case NVMeProperty.cap:
+                    value = UInt64(config.maxQueueEntries - 1) | UInt64(30) << 24 | 1 << 37
+                case NVMeProperty.vs:
+                    value = 0x0002_0000
+                case NVMeProperty.cc:
+                    value = UInt64(await subsystem.controllerConfiguration(controllerID))
+                case NVMeProperty.csts:
+                    // RDY as the subsystem models it; SHST reports 10b
+                    // (complete) once SHN was set.
+                    let cc = await subsystem.controllerConfiguration(controllerID)
+                    let ready: UInt64 = await subsystem.isReady(controllerID) ? 1 : 0
+                    value = ready | (cc & 0xC000 != 0 ? 0x8 : 0)
+                default:
+                    try await respond(cid: cid, status: .invalidField)
+                    return
+                }
+                try await respond(cid: cid, dw0: UInt32(value & 0xFFFF_FFFF), dw1: UInt32(value >> 32))
+            } else {
+                guard offset == NVMeProperty.cc, sqe.bytes.u8(40) & 1 == 0 else {
+                    try await respond(cid: cid, status: .invalidField)
+                    return
+                }
+                await subsystem.setControllerConfiguration(controllerID, sqe.bytes.leU32(48))
+                try await respond(cid: cid)
+            }
         default:
-            try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x01, dnr: true))
+            try await respond(cid: cid, status: .invalidOpcode)
         }
     }
 
@@ -450,41 +748,56 @@ actor MockNVMeQueue {
 
     private func handleAdmin(_ sqe: SQE, controllerID: UInt16) async throws {
         let cid = sqe.commandID
-        let wanted = Int(sqe.sgl.length)
         switch sqe.opcode {
         case NVMeOpcode.Admin.identify:
+            if let status = await dataSGLStatus(sqe, expected: 4096, inCapsule: Data(), isWrite: false) {
+                try await respond(cid: cid, status: status)
+                return
+            }
             let cns = sqe.bytes.u8(40)
             switch cns {
             case IdentifyCNS.controller:
-                try await sendReadData(cid: cid, data: identifyController(controllerID).prefix(wanted))
+                try await sendReadData(cid: cid, data: identifyController(controllerID))
             case IdentifyCNS.namespace:
                 guard sqe.nsid == config.nsid, await !subsystem.isDiscoveryController(controllerID) else {
-                    try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x0B, dnr: true))
+                    try await respond(cid: cid, status: .invalidNamespace)
                     return
                 }
-                try await sendReadData(cid: cid, data: identifyNamespace().prefix(wanted))
+                try await sendReadData(cid: cid, data: identifyNamespace())
             case IdentifyCNS.activeNamespaces:
                 var list = Data(count: 4096)
                 if config.nsid > sqe.nsid { list.setLE32(config.nsid, 0) }
-                try await sendReadData(cid: cid, data: list.prefix(wanted))
+                try await sendReadData(cid: cid, data: list)
             default:
-                try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x02, dnr: true))
+                try await respond(cid: cid, status: .invalidField)
             }
         case NVMeOpcode.Admin.setFeatures:
+            if let status = await dataSGLStatus(sqe, expected: 0, inCapsule: Data(), isWrite: false) {
+                try await respond(cid: cid, status: status)
+                return
+            }
             // Number of Queues answers with the allocation (0's based): one each.
             try await respond(cid: cid, dw0: 0)
         case NVMeOpcode.Admin.keepAlive:
             if faults.swallowNops { return }
+            if let status = await dataSGLStatus(sqe, expected: 0, inCapsule: Data(), isWrite: false) {
+                try await respond(cid: cid, status: status)
+                return
+            }
             await subsystem.noteKeepAlive()
             try await respond(cid: cid)
         case NVMeOpcode.Admin.getLogPage:
             let lid = sqe.bytes.u8(40)
             guard lid == NVMeLogPage.discovery else {
-                try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x02, dnr: true))
+                try await respond(cid: cid, status: .invalidField)
                 return
             }
             let numd = UInt32(sqe.bytes.leU16(42)) | UInt32(sqe.bytes.leU16(44)) << 16
             let length = Int(numd + 1) * 4
+            if let status = await dataSGLStatus(sqe, expected: length, inCapsule: Data(), isWrite: false) {
+                try await respond(cid: cid, status: status)
+                return
+            }
             let offset = Int(sqe.bytes.leU64(48))
             let page = discoveryLogPage()
             var slice = Data(count: length)
@@ -494,7 +807,7 @@ actor MockNVMeQueue {
             }
             try await sendReadData(cid: cid, data: slice)
         default:
-            try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x01, dnr: true))
+            try await respond(cid: cid, status: .invalidOpcode)
         }
     }
 
@@ -575,40 +888,47 @@ actor MockNVMeQueue {
             return
         }
         guard sqe.nsid == config.nsid else {
-            try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x0B, dnr: true))
+            try await respond(cid: cid, status: .invalidNamespace)
             return
         }
+        let blocks = Int(sqe.bytes.leU16(48)) + 1
         switch sqe.opcode {
         case NVMeOpcode.NVM.flush:
+            if let status = await dataSGLStatus(sqe, expected: 0, inCapsule: inCapsule, isWrite: false) {
+                try await respond(cid: cid, status: status)
+                return
+            }
             await disk.flush()
             try await respond(cid: cid)
         case NVMeOpcode.NVM.read:
             let slba = sqe.bytes.leU64(40)
-            let blocks = UInt32(sqe.bytes.leU16(48)) + 1
-            guard let payload = await disk.read(lba: slba, blocks: blocks) else {
-                try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x80, dnr: true))   // LBA out of range
+            if let status = await dataSGLStatus(sqe, expected: blocks * disk.blockSize,
+                                                inCapsule: inCapsule, isWrite: false) {
+                try await respond(cid: cid, status: status)
                 return
             }
-            if config.hostility.c2hDataOverrun {
-                try await send(C2HDataPDU(cccid: cid, dataOffset: UInt32(payload.count),
-                                          data: Data(count: 512), last: false, success: false).encode())
+            guard let payload = await disk.read(lba: slba, blocks: UInt32(blocks)) else {
+                try await respond(cid: cid, status: .lbaOutOfRange)
+                return
             }
-            try await sendReadData(cid: cid, data: payload)
+            if config.interleaveReads > 1 {
+                try await holdRead(cid: cid, data: payload)
+                return
+            }
+            try await sendReadData(cid: cid, data: payload, overrun: config.hostility.c2hDataOverrun ? 512 : 0)
         case NVMeOpcode.NVM.write:
             let slba = sqe.bytes.leU64(40)
-            let blocks = Int(sqe.bytes.leU16(48)) + 1
             let fua = sqe.bytes.leU16(50) & 0x4000 != 0
             let total = blocks * disk.blockSize
-            guard slba + UInt64(blocks) <= disk.capacityBlocks else {
-                try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x80, dnr: true))
+            if let status = await dataSGLStatus(sqe, expected: total, inCapsule: inCapsule, isWrite: true) {
+                try await respond(cid: cid, status: status)
                 return
             }
-            if !inCapsule.isEmpty {
-                guard sqe.sgl.isInCapsule, inCapsule.count == total,
-                      inCapsule.count <= config.inCapsuleDataBytes else {
-                    try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x02, dnr: true))
-                    return
-                }
+            guard slba + UInt64(blocks) <= disk.capacityBlocks else {
+                try await respond(cid: cid, status: .lbaOutOfRange)
+                return
+            }
+            if sqe.sgl.isInCapsule {
                 await subsystem.noteInCapsuleWrite()
                 await disk.write(lba: slba, data: inCapsule, fua: fua)
                 try await respond(cid: cid)
@@ -616,39 +936,143 @@ actor MockNVMeQueue {
             }
             let ttag = nextTTag
             nextTTag &+= 1
-            writes[cid] = PendingWrite(nsid: sqe.nsid, slba: slba, fua: fua,
-                                       buffer: Data(count: total), ttag: ttag)
-            await subsystem.noteR2T()
             let skip = config.hostility.r2tSkipsFirstBlock ? disk.blockSize : 0
-            let solicited = config.hostility.r2tOverrun ? total + disk.blockSize : total - skip
-            try await send(NVMeR2TPDU(cccid: cid, ttag: ttag, offset: UInt32(skip),
-                                      length: UInt32(solicited)).encode())
+            let length = config.hostility.r2tOverrun ? total + disk.blockSize : r2tLength(from: skip, of: total)
+            writes[cid] = PendingWrite(slba: slba, fua: fua, buffer: Data(count: total), ttag: ttag,
+                                       nextOffset: skip, r2tEnd: skip + length)
+            try await sendR2T(cid: cid, ttag: ttag, offset: skip, length: length)
         default:
-            try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x01, dnr: true))
+            try await respond(cid: cid, status: .invalidOpcode)
         }
     }
 
-    private func handleH2CData(_ pdu: H2CDataPDU) async throws {
-        guard var state = writes[pdu.cccid], state.ttag == pdu.ttag else {
-            throw NVMeTCPError.malformed("H2CData for unknown command/TTAG")
+    /// What the next R2T asks for: the rest of the write, or at most
+    /// `r2tChunkBytes` of it.
+    private func r2tLength(from offset: Int, of total: Int) -> Int {
+        let rest = total - offset
+        return config.r2tChunkBytes > 0 ? min(rest, config.r2tChunkBytes) : rest
+    }
+
+    private func sendR2T(cid: UInt16, ttag: UInt16, offset: Int, length: Int) async throws {
+        await subsystem.noteR2T()
+        try await send(NVMeR2TPDU(cccid: cid, ttag: ttag, offset: UInt32(offset), length: UInt32(length)).encode())
+    }
+
+    /// nvmet_tcp_handle_h2c_data_pdu, and the parts of NVMe/TCP 1.1 §3.3.2.2
+    /// it leaves unchecked: data for the outstanding R2T only, contiguous
+    /// from its offset, never past it, no PDU empty or larger than
+    /// MAXH2CDATA, and LAST_PDU on the PDU that completes the R2T and on no
+    /// other. Any of these is a fatal transport error.
+    private func handleH2CData(_ pdu: H2CDataPDU, raw: RawNVMeTCPPDU) async throws {
+        let cid = pdu.cccid
+        guard var state = writes[cid] else {
+            try await refuse(.invalidPDUHeader, fei: 8, raw, "H2CData for CID \(cid), which has no R2T outstanding")
+        }
+        guard state.ttag == pdu.ttag else {
+            try await refuse(.invalidPDUHeader, fei: 10, raw,
+                             "H2CData for CID \(cid) with TTAG \(pdu.ttag), the R2T said \(state.ttag)")
         }
         if faults.stallAfterR2T { return }
         await subsystem.noteH2CData()
         let offset = Int(pdu.dataOffset)
-        guard offset + pdu.data.count <= state.buffer.count else {
-            throw NVMeTCPError.malformed("H2CData past the write buffer")
+        let count = pdu.data.count
+        guard count > 0 else {
+            try await refuse(.invalidPDUHeader, fei: 16, raw, "empty H2CData for CID \(cid)")
+        }
+        guard count <= Int(config.maxH2CData) else {
+            try await refuse(.dataTransferLimitExceeded, raw,
+                             "H2CData of \(count) bytes for CID \(cid), MAXH2CDATA is \(config.maxH2CData)")
+        }
+        guard offset == state.nextOffset else {
+            try await refuse(.pduSequenceError, fei: 12, raw,
+                             "non-contiguous H2CData for CID \(cid): DATAO \(offset), expected \(state.nextOffset)")
+        }
+        guard offset + count <= state.r2tEnd, offset + count <= state.buffer.count else {
+            try await refuse(.dataTransferOutOfRange, raw,
+                             "H2CData for CID \(cid) runs to \(offset + count), past the R2T's \(state.r2tEnd)")
         }
         state.buffer.setSub(pdu.data, offset)
-        state.received += pdu.data.count
-        writes[pdu.cccid] = state
-        if pdu.last {
-            writes.removeValue(forKey: pdu.cccid)
-            guard state.received == state.buffer.count else {
-                try await respond(cid: pdu.cccid, status: NVMeStatus(sct: 0, sc: 0x04, dnr: true))   // data transfer error
-                return
+        state.nextOffset = offset + count
+        state.received += count
+        let r2tDone = state.nextOffset == state.r2tEnd
+        // nvmet ignores LAST_PDU; the spec defines it, and so does every
+        // controller that pipelines R2Ts.
+        guard pdu.last == r2tDone else {
+            try await refuse(.pduSequenceError, fei: 1, raw, pdu.last
+                ? "H2CData for CID \(cid) has LAST_PDU at \(state.nextOffset), before the R2T's end \(state.r2tEnd)"
+                : "H2CData for CID \(cid) completes its R2T without LAST_PDU")
+        }
+        writes[cid] = state
+        guard r2tDone else { return }
+        if state.nextOffset < state.buffer.count {
+            let length = r2tLength(from: state.nextOffset, of: state.buffer.count)
+            state.r2tEnd = state.nextOffset + length
+            writes[cid] = state
+            try await sendR2T(cid: cid, ttag: state.ttag, offset: state.nextOffset, length: length)
+            return
+        }
+        writes.removeValue(forKey: cid)
+        guard state.received == state.buffer.count else {
+            try await respond(cid: cid, status: NVMeStatus(sct: 0, sc: 0x04, dnr: true))   // data transfer error
+            return
+        }
+        await disk.write(lba: state.slba, data: state.buffer, fua: state.fua)
+        try await respond(cid: cid)
+    }
+
+    // MARK: Interleaved reads
+
+    private func holdRead(cid: UInt16, data: Data) async throws {
+        heldReads.append((cid, data))
+        if heldReads.count >= config.interleaveReads {
+            try await releaseHeldReads()
+        } else if heldReads.count == 1 {
+            let window = config.interleaveWindow
+            heldReadsTimer = Task { [weak self] in
+                do { try await Task.sleep(for: window) } catch { return }
+                await self?.releaseHeldReadsAfterWindow()
             }
-            await disk.write(lba: state.slba, data: state.buffer, fua: state.fua)
-            try await respond(cid: pdu.cccid)
+        }
+    }
+
+    private func releaseHeldReadsAfterWindow() async {
+        do {
+            try await releaseHeldReads()
+        } catch {
+            running = false
+            await transport.close()
+        }
+    }
+
+    /// Every held read at once: one C2HData per command in turn until all
+    /// are delivered, then the completions newest first.
+    private func releaseHeldReads() async throws {
+        heldReadsTimer?.cancel()
+        heldReadsTimer = nil
+        let batch = heldReads
+        heldReads = []
+        guard !batch.isEmpty else { return }
+        await subsystem.noteInterleavedBatch(batch.count)
+        let chunk = max(1, config.c2hChunkBytes)
+        var offsets = Array(repeating: 0, count: batch.count)
+        var pending = true
+        while pending {
+            pending = false
+            for i in batch.indices where offsets[i] < batch[i].data.count {
+                let data = batch[i].data
+                let end = min(offsets[i] + chunk, data.count)
+                let last = end == data.count
+                let success = last && config.emitSuccessFlag
+                if success { outstanding.remove(batch[i].cid) }
+                try await send(C2HDataPDU(cccid: batch[i].cid, dataOffset: UInt32(offsets[i]),
+                                          data: Data(data.sub(offsets[i], end - offsets[i])),
+                                          last: last, success: success).encode())
+                offsets[i] = end
+                if !last { pending = true }
+            }
+        }
+        if !config.emitSuccessFlag {
+            for read in batch.reversed() { try await respond(cid: read.cid) }
         }
     }
 }

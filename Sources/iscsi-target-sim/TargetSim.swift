@@ -149,7 +149,8 @@ struct TargetSim: AsyncParsableCommand {
 
         let stopSignal = StopSignal()
         if controlPort != 0 {
-            let commands = ControlCommands(disk: disk, server: server, faults: faultBox, stop: stopSignal)
+            let commands = ControlCommands(disk: disk, server: server, faults: faultBox, stop: stopSignal,
+                                           served: nvme ? .nvme : .iSCSI)
             let control = try ControlChannel(port: controlPort) { line in
                 await commands.run(line)
             }

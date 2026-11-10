@@ -88,6 +88,11 @@ public struct MockTargetConfig: Sendable {
     public var tsih: UInt16 = 0x0BAD
     /// Targets advertised by SendTargets.
     public var discoveryTargets: [(name: String, addresses: [String])] = []
+    /// Send read status in a SCSI Response PDU after the Data-In sequence,
+    /// rather than on its final Data-In (phase collapse). LIO does both: it
+    /// collapses GOOD status and sends a separate response when there is
+    /// sense data to carry.
+    public var separateReadStatus = false
     /// What REPORT LUNS answers. Every LUN serves the same `RAMDisk`; the
     /// list only decides which numbers the initiator is told exist. Empty
     /// answers with a zero-length list, the way a target with nothing mapped
@@ -98,9 +103,20 @@ public struct MockTargetConfig: Sendable {
     public init() {}
 }
 
+/// A violation of what was negotiated, refused by dropping the connection.
+struct MockProtocolViolation: Error {
+    let what: String
+}
+
 /// In-process iSCSI target serving one connection over a `ConnectionTransport`.
 /// Spawn a fresh instance per connection; share the `RAMDisk` to survive
 /// simulated reboots.
+///
+/// It holds the initiator to what login negotiated and refuses the rest the
+/// way LIO does at ERL 0: a Reject for a bad command PDU, a dropped
+/// connection for anything wrong in a Data-Out sequence or the command
+/// window. Every refusal is also recorded in `protocolViolations`, so a
+/// test can tell an initiator bug from the recovery that followed it.
 public actor MockTarget {
     public let config: MockTargetConfig
     let disk: RAMDisk
@@ -111,7 +127,11 @@ public actor MockTarget {
 
     // Connection state
     private var statSN: UInt32 = 0x1000
+    /// The lowest CmdSN not yet received. Never moves past a hole: a command
+    /// that arrives ahead of it is noted in `cmdSNsAhead` and served, but
+    /// the window stays anchored until the hole fills.
     private var expCmdSN: UInt32 = 0
+    private var cmdSNsAhead: Set<UInt32> = []
     private var initiatorMRDSL: UInt32 = 8192
     private var negotiated = OperationalParameters()
     private var sentPDUs = 0
@@ -124,14 +144,31 @@ public actor MockTarget {
         var lba: UInt64
         var total: Int
         var buffer: Data
+        /// Bytes received, contiguous from offset 0. With DataPDUInOrder and
+        /// DataSequenceInOrder both Yes (all this target negotiates) every
+        /// Data-Out must start exactly here, so a skipped or repeated range
+        /// is refused instead of being counted.
         var received: Int
-        var awaitingUnsolicited: Bool
-        var currentTTT: UInt32?
+        /// The one Data-Out sequence that may arrive now: the unsolicited
+        /// first burst, or the answer to the outstanding R2T.
+        var sequence: DataOutSequence?
         /// Next R2TSN for this task — sequential per RFC 7143 §11.8.3.
         var nextR2TSN: UInt32 = 0
         /// FUA from the command's CDB: decides whether the data is committed
         /// or merely cached when the write completes.
         var fua: Bool
+    }
+
+    private struct DataOutSequence {
+        /// What every Data-Out of the sequence carries: 0xFFFFFFFF for the
+        /// unsolicited burst, the R2T's TTT otherwise.
+        let ttt: UInt32
+        let start: Int
+        /// End of the sequence: min(FirstBurstLength, EDTL) for the
+        /// unsolicited burst, the R2T's offset + desired length otherwise.
+        let end: Int
+        /// DataSN restarts at 0 for every sequence (RFC 7143 §11.7.6).
+        var nextDataSN: UInt32 = 0
     }
 
     private var writes: [UInt32: WriteState] = [:]
@@ -140,6 +177,8 @@ public actor MockTarget {
     public private(set) var pingEchoes: [Data] = []
     /// Commands swallowed by stallCommands (for TMF assertions).
     public private(set) var stalledITTs: [UInt32] = []
+    /// Every initiator protocol violation this target refused, in words.
+    public private(set) var protocolViolations: [String] = []
 
     /// Live fault script. Tests that set faults once at init get a private box
     /// holding `config.faults`; the simulator passes a shared one so faults can
@@ -169,7 +208,13 @@ public actor MockTarget {
             }
             try await fullFeaturePhase()
         } catch {
-            // Connection torn down (by fault script or peer) — fine.
+            // Connection torn down (by fault script, peer, or a violation
+            // refused) — fine.
+        }
+        if !cmdSNsAhead.isEmpty {
+            // LIO would still be holding these for the missing CmdSN.
+            let ahead = cmdSNsAhead.sorted().map(String.init).joined(separator: ", ")
+            protocolViolations.append("CmdSN \(expCmdSN) never arrived; received past it: \(ahead)")
         }
         await transport.close()
     }
@@ -183,12 +228,33 @@ public actor MockTarget {
 
     private func nextPDU() async throws -> AnyPDU? {
         while true {
-            if let raw = try deframer.next() {
-                return try AnyPDU.decode(raw)
+            do {
+                if let raw = try deframer.next() {
+                    return try AnyPDU.decode(raw)
+                }
+            } catch PDUError.dataSegmentTooLarge(let length, let limit) {
+                // Past the MaxRecvDataSegmentLength we declared, which RFC
+                // 7143 §13.12 forbids. Dropped, so an initiator cannot
+                // mistake it for anything else.
+                try drop("data segment of \(length) bytes, MaxRecvDataSegmentLength is \(limit)")
             }
             guard let chunk = try await transport.receive() else { return nil }
             deframer.append(chunk)
         }
+    }
+
+    /// Refuse a violation by dropping the connection: LIO's answer at ERL 0
+    /// to anything it cannot recover within the command.
+    private func drop(_ what: String) throws -> Never {
+        protocolViolations.append(what)
+        throw MockProtocolViolation(what: what)
+    }
+
+    /// Refuse a command PDU with a Reject, as LIO's iscsit_setup_scsi_cmd
+    /// does; the command is discarded and nothing else answers it.
+    private func reject(_ reason: RejectPDU.Reason, _ pdu: some ProtocolDataUnit, _ what: String) async throws {
+        protocolViolations.append(what)
+        try await sendReject(reason, offending: pdu.encode())
     }
 
     private func send(_ pdu: some ProtocolDataUnit) async throws {
@@ -230,11 +296,27 @@ public actor MockTarget {
         return (expCmdSN, expCmdSN &+ config.commandWindow &- 1)
     }
 
-    private func noteCmdSN(_ sn: UInt32, immediate: Bool) {
-        if !immediate && sn == expCmdSN {
+    /// RFC 7143 §4.2.2.1. Immediate PDUs carry the current CmdSN and take no
+    /// slot. A non-immediate one must fall in [ExpCmdSN, MaxCmdSN] and not
+    /// repeat one already received. LIO silently discards anything else,
+    /// leaving the task to time out; the connection is dropped here instead,
+    /// so the violation surfaces at once. One that arrives ahead of a hole
+    /// is served, but ExpCmdSN — and with it the window — stays at the hole
+    /// until it fills: an initiator that skips a CmdSN runs into a closed
+    /// window, as it would against LIO, which holds such a command back.
+    private func admitCmdSN(_ sn: UInt32, immediate: Bool) throws {
+        guard !immediate else { return }
+        let w = window()
+        guard !Serial.lt(sn, w.expCmdSN), !Serial.lt(w.maxCmdSN, sn) else {
+            try drop("CmdSN \(sn) outside the window [\(w.expCmdSN), \(w.maxCmdSN)]")
+        }
+        if sn == expCmdSN {
             expCmdSN &+= 1
-        } else if !immediate && Serial.lt(expCmdSN, sn) {
-            expCmdSN = sn &+ 1
+            while cmdSNsAhead.remove(expCmdSN) != nil { expCmdSN &+= 1 }
+        } else {
+            guard cmdSNsAhead.insert(sn).inserted else {
+                try drop("CmdSN \(sn) received twice")
+            }
         }
     }
 
@@ -494,9 +576,11 @@ public actor MockTarget {
             dataDigest: negotiated.dataDigest
         )
         serializer = PDUSerializer(digests: digests)
+        // Exactly what we declared: the initiator may send no larger a
+        // data segment (RFC 7143 §13.12).
         deframer = PDUDeframer(
             digests: digests,
-            maxDataSegmentLength: Int(config.maxRecvDataSegmentLength) + 4096
+            maxDataSegmentLength: Int(config.maxRecvDataSegmentLength)
         )
     }
 
@@ -507,21 +591,21 @@ public actor MockTarget {
             guard let pdu = try await nextPDU() else { return }
             switch pdu {
             case .scsiCommand(let command):
-                noteCmdSN(command.cmdSN, immediate: command.immediate)
+                try admitCmdSN(command.cmdSN, immediate: command.immediate)
                 try await handleCommand(command)
             case .scsiDataOut(let dataOut):
                 try await handleDataOut(dataOut)
             case .nopOut(let nop):
-                noteCmdSN(nop.cmdSN, immediate: nop.immediate)
+                try admitCmdSN(nop.cmdSN, immediate: nop.immediate)
                 try await handleNopOut(nop)
             case .tmfRequest(let tmf):
-                noteCmdSN(tmf.cmdSN, immediate: tmf.immediate)
+                try admitCmdSN(tmf.cmdSN, immediate: tmf.immediate)
                 try await handleTMF(tmf)
             case .textRequest(let request):
-                noteCmdSN(request.cmdSN, immediate: request.immediate)
+                try admitCmdSN(request.cmdSN, immediate: request.immediate)
                 try await handleText(request)
             case .logoutRequest(let request):
-                noteCmdSN(request.cmdSN, immediate: request.immediate)
+                try admitCmdSN(request.cmdSN, immediate: request.immediate)
                 if faults.swallowLogout { break }
                 var resp = LogoutResponsePDU()
                 resp.response = .success
@@ -535,6 +619,7 @@ public actor MockTarget {
                 try await send(resp)
                 return
             default:
+                protocolViolations.append("unexpected \(pdu) in full-feature phase")
                 try await sendReject(.protocolError, offending: pdu.encode())
             }
         }
@@ -619,23 +704,54 @@ public actor MockTarget {
         case 0x2A, 0x8A: // WRITE (10) / WRITE (16)
             let (lba, blocks) = parseReadWrite(command.cdb)
             let total = Int(blocks) * disk.blockSize
+            let immediate = command.dataSegment.count
+            let edtl = Int(command.expectedDataTransferLength)
+            let firstBurst = min(Int(negotiated.firstBurstLength), edtl)
+            // iscsit_setup_scsi_cmd's checks, each a Reject that discards
+            // the command. (LIO gives some of them reason Bookmark Invalid;
+            // this mock says Protocol Error for all.)
+            if immediate > 0 && !negotiated.immediateData {
+                try await reject(.protocolError, command, "immediate data (\(immediate) bytes) with ImmediateData=No")
+                return
+            }
+            if immediate > edtl {
+                try await reject(.protocolError, command, "immediate data (\(immediate) bytes) past EDTL \(edtl)")
+                return
+            }
+            if immediate > Int(negotiated.firstBurstLength) {
+                try await reject(.protocolError, command,
+                                 "immediate data (\(immediate) bytes) past FirstBurstLength \(negotiated.firstBurstLength)")
+                return
+            }
+            if !command.final && negotiated.initialR2T {
+                try await reject(.protocolError, command, "write with F=0 (unsolicited Data-Out to follow) while InitialR2T=Yes")
+                return
+            }
+            if !command.final && immediate >= firstBurst {
+                try await reject(.protocolError, command,
+                                 "write with F=0 but its immediate data already fills the first burst (\(firstBurst) bytes)")
+                return
+            }
             var state = WriteState(
                 lun: command.lun,
                 lba: lba,
                 total: total,
                 buffer: Data(count: total),
                 received: 0,
-                awaitingUnsolicited: false,
-                currentTTT: nil,
                 fua: fuaBit(command.cdb)
             )
-            if !command.dataSegment.isEmpty {
-                state.buffer.setSub(command.dataSegment, 0)
-                state.received = command.dataSegment.count
+            if immediate > 0 {
+                state.buffer.setSub(command.dataSegment.prefix(total), 0)
+                state.received = min(immediate, total)
             }
-            state.awaitingUnsolicited = !command.final
+            if !command.final {
+                // The unsolicited burst runs to min(FirstBurstLength, EDTL),
+                // and the F bit must land exactly there (LIO's
+                // iscsit_dataout_check_unsolicited_sequence).
+                state.sequence = DataOutSequence(ttt: 0xFFFF_FFFF, start: state.received, end: min(firstBurst, total))
+            }
             writes[command.initiatorTaskTag] = state
-            if !state.awaitingUnsolicited {
+            if command.final {
                 try await progressWrite(itt: command.initiatorTaskTag)
             }
         case 0x35, 0x91: // SYNCHRONIZE CACHE (10) / (16)
@@ -708,14 +824,14 @@ public actor MockTarget {
     private func progressWrite(itt: UInt32) async throws {
         guard var state = writes[itt] else { return }
         if state.received < state.total {
-            if faults.stallAfterR2T && state.currentTTT != nil {
+            if faults.stallAfterR2T && state.nextR2TSN > 0 {
                 return // solicited once, now stall forever
             }
             let remaining = state.total - state.received
             let desired = min(remaining, Int(negotiated.maxBurstLength))
             let ttt = nextTTT
             nextTTT &+= 1
-            state.currentTTT = ttt
+            state.sequence = DataOutSequence(ttt: ttt, start: state.received, end: state.received + desired)
             writes[itt] = state
             var r2t = R2TPDU()
             r2t.lun = state.lun
@@ -745,28 +861,59 @@ public actor MockTarget {
         }
     }
 
+    /// One Data-Out, held to its sequence the way LIO's
+    /// iscsit_check_dataout_hdr and iscsit_check_pre_dataout do. Each
+    /// failure is DATAOUT_CANNOT_RECOVER there, which at ERL 0 drops the
+    /// connection, and so it does here.
     private func handleDataOut(_ dataOut: DataOutPDU) async throws {
-        guard var state = writes[dataOut.initiatorTaskTag] else {
-            try await sendReject(.invalidPDUField, offending: dataOut.encode())
+        let itt = dataOut.initiatorTaskTag
+        guard var state = writes[itt] else {
+            // An unknown ITT is dumped, not answered: it is what a task
+            // aborted while its data was in flight looks like (LIO's
+            // iscsit_find_cmd_from_itt_or_dump).
             return
         }
-        if faults.stallAfterR2T && state.currentTTT != nil {
+        if faults.stallAfterR2T && state.nextR2TSN > 0 {
             return // swallow the data
         }
+        let ttt = dataOut.targetTransferTag
+        guard var sequence = state.sequence, sequence.ttt == ttt else {
+            if ttt == 0xFFFF_FFFF {
+                try drop(negotiated.initialR2T
+                    ? "ITT \(itt): unsolicited Data-Out while InitialR2T=Yes"
+                    : "ITT \(itt): unsolicited Data-Out outside the first burst")
+            }
+            try drop("ITT \(itt): Data-Out with TTT 0x\(String(ttt, radix: 16)), "
+                + (state.sequence.map { "the open sequence's is 0x\(String($0.ttt, radix: 16))" } ?? "no R2T outstanding"))
+        }
         let offset = Int(dataOut.bufferOffset)
-        guard offset + dataOut.dataSegment.count <= state.total else {
-            try await sendReject(.invalidPDUField, offending: dataOut.encode())
-            return
+        let end = offset + dataOut.dataSegment.count
+        guard dataOut.dataSN == sequence.nextDataSN else {
+            try drop("ITT \(itt): Data-Out DataSN \(dataOut.dataSN), expected \(sequence.nextDataSN)")
+        }
+        guard offset == state.received else {
+            try drop("ITT \(itt): Data-Out at offset \(offset), expected \(state.received)")
+        }
+        guard end <= sequence.end else {
+            try drop(ttt == 0xFFFF_FFFF
+                ? "ITT \(itt): unsolicited data to \(end), past the first burst's \(sequence.end) (FirstBurstLength \(negotiated.firstBurstLength))"
+                : "ITT \(itt): Data-Out to \(end), past the R2T's desired length (to \(sequence.end))")
+        }
+        guard end - sequence.start <= Int(negotiated.maxBurstLength) else {
+            try drop("ITT \(itt): Data-Out sequence of \(end - sequence.start) bytes, MaxBurstLength is \(negotiated.maxBurstLength)")
+        }
+        guard dataOut.final == (end == sequence.end) else {
+            try drop(dataOut.final
+                ? "ITT \(itt): F bit at \(end), before the sequence's end \(sequence.end)"
+                : "ITT \(itt): sequence complete at \(end) without the F bit")
         }
         state.buffer.setSub(dataOut.dataSegment, offset)
-        state.received = max(state.received, offset + dataOut.dataSegment.count)
-        writes[dataOut.initiatorTaskTag] = state
+        state.received = end
+        sequence.nextDataSN &+= 1
+        state.sequence = dataOut.final ? nil : sequence
+        writes[itt] = state
         if dataOut.final {
-            if state.awaitingUnsolicited && dataOut.targetTransferTag == 0xFFFF_FFFF {
-                state.awaitingUnsolicited = false
-                writes[dataOut.initiatorTaskTag] = state
-            }
-            try await progressWrite(itt: dataOut.initiatorTaskTag)
+            try await progressWrite(itt: itt)
         }
     }
 
@@ -778,10 +925,13 @@ public actor MockTarget {
         let chunkLimit = faults.oversizeDataIn
             ? payload.count
             : max(1, Int(initiatorMRDSL))
+        let separate = config.separateReadStatus
         var offset = 0
         var dataSN: UInt32 = 0
         var sent = 0
-        while offset < payload.count || payload.isEmpty {
+        // With separate status and nothing to send, the response alone ends
+        // the task; a phase-collapsed one needs its Data-In to carry status.
+        while offset < payload.count || (payload.isEmpty && !separate) {
             let end = min(offset + chunkLimit, payload.count)
             let isLast = end == payload.count
             var pdu = DataInPDU()
@@ -793,7 +943,7 @@ public actor MockTarget {
             let w = window()
             pdu.expCmdSN = w.expCmdSN
             pdu.maxCmdSN = w.maxCmdSN
-            if isLast {
+            if isLast && !separate {
                 pdu.statusPresent = true
                 pdu.status = 0x00
                 pdu.statSN = takeStatSN()
@@ -811,6 +961,22 @@ public actor MockTarget {
             dataSN &+= 1
             offset = end
             if payload.isEmpty { break }
+        }
+        if separate {
+            var resp = SCSIResponsePDU()
+            resp.response = .commandCompleted
+            resp.status = 0x00
+            resp.initiatorTaskTag = command.initiatorTaskTag
+            resp.statSN = takeStatSN()
+            let w = window()
+            resp.expCmdSN = w.expCmdSN
+            resp.maxCmdSN = w.maxCmdSN
+            resp.expDataSN = dataSN                 // Data-In PDUs sent for the task
+            if underflow {
+                resp.residualUnderflow = true
+                resp.residualCount = UInt32(expected - payload.count)
+            }
+            try await send(resp)
         }
     }
 
@@ -941,7 +1107,7 @@ public actor MockTarget {
             guard let next = try await nextPDU(), case .textRequest(let followUp) = next else {
                 throw PDUError.malformed("expected continuation text request")
             }
-            noteCmdSN(followUp.cmdSN, immediate: followUp.immediate)
+            try admitCmdSN(followUp.cmdSN, immediate: followUp.immediate)
             var second = TextResponsePDU()
             second.final = true
             second.initiatorTaskTag = followUp.initiatorTaskTag

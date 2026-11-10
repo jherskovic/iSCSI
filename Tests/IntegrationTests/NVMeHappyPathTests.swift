@@ -74,6 +74,46 @@ struct NVMeHappyPathTests {
         await fleet.shutdown()
     }
 
+    /// nvmet solicits a write with one R2T; other controllers split it.
+    /// Each later R2T must start where the last one ended (NVMe/TCP 1.1
+    /// §3.3.2.2), which the host tracks per command — and the mock now
+    /// checks that every H2CData answer is contiguous within its R2T.
+    @Test func aWriteSolicitedByManyR2TsLandsWhole() async throws {
+        var config = MockNVMeConfig()
+        config.inCapsuleDataBytes = 0
+        config.r2tChunkBytes = 16384
+        config.maxH2CData = 4096
+        let fleet = NVMeFleet(config: config)
+        let controller = try await activatedController(
+            fleet: fleet, policy: testPolicy(retries: 0, recoveryAttempts: 1))
+        let device = NVMeBlockDevice(controller: controller, nsid: 1)
+        let payload = Data((0 ..< 65536).map { UInt8(($0 &* 13) & 0xFF) })
+        try await device.write(offset: 0, data: payload)       // one command
+        #expect(await fleet.subsystem.r2tsSent == 4)           // 64 KiB in 16 KiB R2Ts
+        #expect(await fleet.subsystem.h2cDataPDUsReceived == 16)
+        #expect(try await device.read(offset: 0, length: 65536) == payload)
+        #expect(await controller.recoveryCount == 0)
+        await fleet.shutdown()
+    }
+
+    /// Completions in any order, and C2HData for several commands
+    /// interleaved PDU by PDU: each command's bytes must still land in its
+    /// own buffer at its own offsets.
+    @Test func interleavedOutOfOrderReadsCompleteWithTheRightBytes() async throws {
+        var config = MockNVMeConfig()
+        config.c2hChunkBytes = 4096
+        config.interleaveReads = 4
+        config.interleaveWindow = .seconds(1)                  // the batch fills long before
+        let fleet = NVMeFleet(config: config)
+        let controller = try await activatedController(fleet: fleet)
+        let device = NVMeBlockDevice(controller: controller, nsid: 1, maxTransferBytes: 65536)
+        let payload = Data((0 ..< (256 << 10)).map { UInt8(($0 &* 7 &+ $0 >> 12) & 0xFF) })
+        try await device.write(offset: 0, data: payload)
+        #expect(try await device.read(offset: 0, length: payload.count) == payload)   // four commands at once
+        #expect(await fleet.subsystem.interleavedReadBatches == [4])
+        await fleet.shutdown()
+    }
+
     /// nvmet answers a read with a single C2HData for the whole transfer, so
     /// a device cap above the queue's inbound PDU limit would make every
     /// large read a protocol error. The device clamps the cap instead.
@@ -170,6 +210,26 @@ struct NVMeHappyPathTests {
             }
             try await group.waitForAll()
         }
+        await fleet.shutdown()
+    }
+
+    /// More concurrent commands than the I/O queue holds: the host must
+    /// park the excess until a completion frees a slot, never send past
+    /// SQSIZE (which the mock now treats as nvmet does, by killing the
+    /// queue). The slow controller keeps the queue full.
+    @Test func moreConcurrentCommandsThanQueueEntriesWaitForASlot() async throws {
+        var config = MockNVMeConfig()
+        config.faults.responseDelay = .milliseconds(2)
+        let fleet = NVMeFleet(config: config)
+        let controller = try await activatedController(fleet: fleet) { $0.ioQueueEntries = 4 }
+        #expect(await controller.ioQueueEntries == 4)
+        let device = NVMeBlockDevice(controller: controller, nsid: 1, maxTransferBytes: 4096)
+        let payload = Data((0 ..< 65536).map { UInt8(($0 &* 5 &+ 1) & 0xFF) })
+        try await device.write(offset: 0, data: payload)        // 16 commands, 8 in flight at most
+        #expect(try await device.read(offset: 0, length: payload.count) == payload)   // 16 at once
+        // Three outstanding: SQSIZE 3, so the queue was full and never more.
+        #expect(await fleet.subsystem.peakOutstanding[1] == 3)
+        #expect(await controller.recoveryCount == 0)
         await fleet.shutdown()
     }
 

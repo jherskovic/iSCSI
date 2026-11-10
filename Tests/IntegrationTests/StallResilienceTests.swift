@@ -82,7 +82,7 @@ struct StallResilienceTests {
                 _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
             }
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func blockDeviceSurfacesAnErrorRatherThanWedging() async throws {

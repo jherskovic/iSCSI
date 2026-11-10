@@ -142,7 +142,6 @@ public actor MockTargetServer {
 final class NWConnectionTransport: ConnectionTransport, @unchecked Sendable {
     private let connection: NWConnection
     private let queue: DispatchQueue
-    private var started = false
 
     init(connection: NWConnection, queue: DispatchQueue) {
         self.connection = connection
