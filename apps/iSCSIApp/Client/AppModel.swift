@@ -384,9 +384,9 @@ final class AppModel: ObservableObject {
             // it is never met with advice to erase.
             //
             // A locked encrypted volume gets nothing here. The attach has
-            // already tried the password macOS saved for it, and for one it
-            // has not saved, macOS puts up its own prompt; the row says it is
-            // locked.
+            // already tried the password macOS saved for it; without one it
+            // stays locked, quietly. The row says so, and Disk Utility's Mount
+            // unlocks it and can save the password for next time.
             if !attachment.isFullyAttached, attachment.lockedVolumes.isEmpty,
                let device = attachment.device {
                 let unit = target.isNVMe ? "namespace" : "LUN"

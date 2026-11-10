@@ -79,6 +79,18 @@ struct LockedAPFSVolumesTests {
                 == [.init(name: "disk16s1", identifier: "disk16s1")])
     }
 
+    /// What tells "no locked volumes" from "APFS has not brought it up yet".
+    @Test("a container on the disk is seen, and one on another disk is not")
+    func containerOnTheDisk() throws {
+        let plist = try listing([
+            container(stores: ["disk15s2"], volumes: [volume("disk16s1", "plain", locked: false)]),
+            container(stores: ["disk150s2"], volumes: []),
+        ])
+        #expect(LockedAPFSVolumes.hasContainer(onDisk: "/dev/disk15", apfsList: plist))
+        #expect(!LockedAPFSVolumes.hasContainer(onDisk: "/dev/disk7", apfsList: plist))
+        #expect(!LockedAPFSVolumes.hasContainer(onDisk: "/dev/disk15", apfsList: Data()))
+    }
+
     @Test("an unreadable listing reports nothing rather than guessing")
     func unreadableListing() {
         #expect(LockedAPFSVolumes.find(onDisk: "/dev/disk15", apfsList: Data("nope".utf8)).isEmpty)

@@ -12,11 +12,13 @@ private let unlockLog = Logger(subsystem: "me.herko.iSCSIInitiator.app", categor
 /// (the `ssd-vms` item, seen 2026-11-09). Finder and Disk Utility save the
 /// same item.
 ///
-/// macOS does not use it for a disk this app attaches. `hdiutil attach` fails
-/// a disk whose only volumes are locked ("no mountable file systems") without
-/// consulting it, and nothing unlocks the volume after the `-nomount`
-/// re-attach either (both measured on macOS 26.7.2, 2026-11-09). So the app
-/// reads it itself.
+/// macOS cannot use it for a disk this app attaches. Its own unlock
+/// (APFSUserAgent) runs when a mount of the locked volume fails, and an
+/// `hdiutil attach` that mounts nothing ejects the disk at that same moment,
+/// so the agent looks the password up for a disk that is gone. The app
+/// attaches such a disk without mounting it instead
+/// (`AttachmentManager.attachUnmountedIfLocked`), which wakes no agent at all
+/// (macOS 26.7.2, 2026-11-09). So the app reads the password itself.
 ///
 /// Another process created the item, so the first read shows macOS's "wants
 /// to use your confidential information" prompt; Always Allow makes every
