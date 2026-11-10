@@ -215,6 +215,21 @@ public struct MountTableEntry: Sendable, Equatable {
     }
 }
 
+/// Replacing this app's bundle — a Sparkle update, Uninstall — or restarting
+/// its daemon — Reinstall — takes down every volume served through this app's
+/// extension and daemon, in every account: there is one bundle and one daemon
+/// for the Mac. So each of those asks the mount table, every account's, and
+/// not the app's own list, which holds only this account's attachments and
+/// only once something has filled it.
+public enum AppReplacement {
+    /// The mounts this app made, whoever made them. Unlike `FSKitRestart`,
+    /// another vendor's FSKit volume does not count: replacing this bundle
+    /// leaves its extension alone.
+    public static func mountsItWouldDisconnect(_ mounts: [MountTableEntry]) -> [MountTableEntry] {
+        mounts.filter { AutoAttachRun.mountedUnit($0.from) != nil }
+    }
+}
+
 /// Restarting fskitd — Setup's way to enable the extension on macOS 26.x,
 /// where the System Settings switch does not move — kills every FSKit
 /// extension instance on the Mac, in every account, and the volumes they

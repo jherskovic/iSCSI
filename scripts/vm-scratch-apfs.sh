@@ -17,7 +17,7 @@
 #                  path, the network round-trip, or the 4Kn block size, each of
 #                  which can then be reintroduced one at a time
 #
-# Same probe shape as vm-apfs-private.sh: mount outside /Volumes, first access
+# Same probe shape as parked/vm-apfs-private.sh: mount outside /Volumes, first access
 # then second access, because the failure is positional.
 set -uo pipefail
 mkdir -p /Users/herko/logs /Users/herko/mnt2

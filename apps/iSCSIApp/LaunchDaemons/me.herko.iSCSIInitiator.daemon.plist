@@ -59,9 +59,8 @@
 
          Deliberately no EnvironmentVariables. ISCSI_WRITE_THROUGH lived here,
          which meant the one knob most likely to need changing on a live system
-         sat in a file that cannot be edited after signing. The daemon still
-         reads the variable, for the dev loop and for the crash-consistency
-         negative control; the shipping override belongs in a daemon-owned
-         config under /Library/Application Support. -->
+         sat in a file that cannot be edited after signing. Durability is now
+         each target's own setting (its flush policy, in targets.json), and the
+         variable is gone. -->
 </dict>
 </plist>

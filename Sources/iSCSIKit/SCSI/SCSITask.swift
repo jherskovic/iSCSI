@@ -105,12 +105,6 @@ public enum CDB {
         return cdb
     }
 
-    public static func readCapacity10() -> Data {
-        var cdb = Data(count: 10)
-        cdb.setU8(0x25, 0)
-        return cdb
-    }
-
     /// READ CAPACITY(16) — service action in of READ CAPACITY.
     public static func readCapacity16(allocationLength: UInt32 = 32) -> Data {
         var cdb = Data(count: 16)

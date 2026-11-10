@@ -79,11 +79,6 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
     /// seconds; 0 means the user has declared the target's cache non-volatile
     /// and wants no periodic flush at all. See `FlushPolicy`.
     public var flushIntervalSeconds: Int?
-    /// Pins this LUN's readahead depth, overriding the adaptive controller.
-    /// nil (every record, unless hand-edited) means `ReadaheadDepthController`
-    /// sets depth from measured waste. No UI; exists to hold depth still for
-    /// debugging or A/B measurement. See `WorkloadProfile`.
-    public var workloadProfile: String?
     /// BSD name of the interface this target's connections must use
     /// ("en18"). nil: macOS routing chooses, as before 0.7.0.
     public var networkInterface: String?
@@ -97,7 +92,7 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
     public init(id: String, displayName: String, host: String, port: UInt16 = 3260,
                 targetIQN: String, lun: UInt64 = 0, chapUser: String? = nil,
                 mutualChapUser: String? = nil, autoAttach: Bool = false,
-                flushIntervalSeconds: Int? = nil, workloadProfile: String? = nil,
+                flushIntervalSeconds: Int? = nil,
                 networkInterface: String? = nil, interfaceFallback: Bool? = nil,
                 localCacheGB: Int? = nil) {
         self.id = id
@@ -110,7 +105,6 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
         self.mutualChapUser = mutualChapUser
         self.autoAttach = autoAttach
         self.flushIntervalSeconds = flushIntervalSeconds
-        self.workloadProfile = workloadProfile
         self.networkInterface = networkInterface
         self.interfaceFallback = interfaceFallback
         self.localCacheGB = localCacheGB
@@ -138,9 +132,11 @@ public struct TargetRecord: Codable, Sendable, Equatable, Identifiable {
 /// Measured: deeper readahead never moved the hit rate, only queue occupancy
 /// and wasted bandwidth (docs/performance.md), so this is no longer a
 /// user-facing choice — `ReadaheadDepthController` steers depth from measured
-/// waste, and these survive only as a debugging override in targets.json.
-/// Stored as the symbolic name so the hand-editable file cannot hold values
-/// the editor cannot represent.
+/// waste. `mixed` seeds a mount's first second, and tests and benches pin a
+/// budget with these. The per-target override that once lived in
+/// targets.json (`workloadProfile`) is gone: the daemon cleared it on every
+/// load, so nothing could set it; an old file's key is ignored on decode and
+/// dropped on the next write.
 public enum WorkloadProfile: String, Sendable {
     /// Scattered small reads: a database, or a VM image being booted.
     case randomAccess = "random"
@@ -161,14 +157,6 @@ public enum WorkloadProfile: String, Sendable {
         }
     }
 
-    /// The readahead budget a stored `TargetRecord.workloadProfile` pins, or
-    /// nil for no override — which is the normal case, and means
-    /// `ReadaheadDepthController` chooses the depth instead. An unrecognised
-    /// string pins nothing: targets.json is hand-editable, and a typo must not
-    /// silently fix how deeply a volume reads ahead.
-    public static func pinnedBudgetBytes(stored: String?) -> Int? {
-        stored.flatMap(WorkloadProfile.init(rawValue:))?.readaheadBudgetBytes
-    }
 }
 
 /// What keeps an acknowledged write from being a lie.

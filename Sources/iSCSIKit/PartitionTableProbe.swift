@@ -34,8 +34,9 @@ public enum PartitionTableProbe {
     }
 
     /// A full `prefixLength` of zeros: a fresh zvol, never written. A short
-    /// read proves nothing.
-    static func isBlank(_ prefix: Data) -> Bool {
+    /// read proves nothing. The only state the app calls "not formatted":
+    /// anything else that does not mount may hold data macOS cannot read.
+    public static func isBlank(_ prefix: Data) -> Bool {
         prefix.count >= prefixLength && !prefix.prefix(prefixLength).contains { $0 != 0 }
     }
 

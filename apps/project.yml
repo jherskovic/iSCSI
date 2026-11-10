@@ -1,10 +1,11 @@
 # XcodeGen project for the iSCSI Initiator app + extensions.
 # Regenerate with:  cd apps && xcodegen generate
-# Then open iSCSIInitiator.xcodeproj, set your signing team, and build.
+# Then open iSCSIInitiator.xcodeproj and build. CLAUDE.md says how to
+# regenerate the committed .pbxproj so CI's drift check stays quiet.
 #
-# The protocol engine (iSCSIKit) lives in the parent SwiftPM package and is
-# referenced as a local package so the app/extensions share the exact code
-# that the 129-test suite and real-NAS verification exercise.
+# The protocol engines (iSCSIKit, NVMeKit) live in the parent SwiftPM package
+# and are referenced as a local package, so the app and extensions share the
+# exact code that `swift test` and real-NAS verification exercise.
 
 name: iSCSIInitiator
 options:
@@ -37,7 +38,7 @@ packages:
 
 settings:
   base:
-    # Fill in your Apple Developer team, or set it in Xcode's Signing pane.
+    # The release team; release.sh and the export options name it too.
     DEVELOPMENT_TEAM: "4A27X5PJP3"
     # Automatic signing is enough for the Developer ID release, verified: with
     # -allowProvisioningUpdates, Xcode registers both App IDs, enables the FSKit
@@ -132,7 +133,11 @@ targets:
     type: tool
     platform: macOS
     sources:
-      - ../Sources/iscsid
+      # No intermediate groups: xcodegen would name the `..` group after the
+      # checkout directory and hash every child's ID through it, so a clone
+      # under another name rewrote 61 lines of the project (CLAUDE.md).
+      - path: ../Sources/iscsid
+        createIntermediateGroups: false
     dependencies:
       - package: iSCSI
         product: iSCSIKit
@@ -166,7 +171,11 @@ targets:
     type: tool
     platform: macOS
     sources:
-      - ../Sources/iscsictl
+      # No intermediate groups: xcodegen would name the `..` group after the
+      # checkout directory and hash every child's ID through it, so a clone
+      # under another name rewrote 61 lines of the project (CLAUDE.md).
+      - path: ../Sources/iscsictl
+        createIntermediateGroups: false
     dependencies:
       - package: iSCSI
         product: iSCSIKit

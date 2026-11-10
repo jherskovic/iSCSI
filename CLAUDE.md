@@ -21,7 +21,7 @@ else turns the LUN (or namespace) into a block device. Two things follow from th
 
 ```sh
 swift build
-swift test                                # both test targets
+swift test                                # all four test targets
 swift test --filter iSCSIKitTests         # one target
 swift test --filter Digest                # regex over suite and test names
 swift test --filter NVMe                  # everything NVMe/TCP, unit and integration
@@ -68,13 +68,16 @@ CI also pins xcodegen itself (2.46.0, in `scripts/install-build-tools.sh`,
 which the release job uses for `create-dmg` too); regenerate with that
 version, because a different xcodegen can rewrite the file just as well.
 
-**Regenerate from a checkout directory named `iSCSI`.** xcodegen names the
-`..` folder reference after the checkout's basename, so a clone called
-`iSCSI2` regenerates with an `iSCSI` → `iSCSI2` group rename that CI (whose
-checkout is `iSCSI`) will flag as drift. A symlink does not help; xcodegen
-resolves it. When the clone has another name, regenerate in a throwaway local
-clone named `iSCSI` and copy the `.pbxproj` back — the diff should then be
-exactly the lines you meant to change.
+**Regenerate from a checkout directory named `iSCSI-NVMe-TCP`.** xcodegen
+names the local package's `..` reference after the checkout's basename, and
+CI's checkout is named after the repository, so a clone under any other name
+(`iSCSI`, as clones made before the rename are) regenerates with a three-line
+rename that CI flags as drift. Since the rename the committed project follows
+the repository's name; before it, CI's checkout was `iSCSI`, and the first
+dry run after the rename failed on exactly this. A symlink does not help;
+xcodegen resolves it. When the clone has another name, regenerate in a
+throwaway local clone named `iSCSI-NVMe-TCP` and copy the `.pbxproj` back —
+the diff should then be exactly the lines you meant to change.
 
 Two schemes. **iSCSI Initiator** is what ships (app + FSKit extension +
 `iscsid` and `iscsictl` inside the bundle). **iSCSIDext-dev** builds the parked DriverKit
@@ -127,7 +130,7 @@ notarizes and staples app and DMG, signs for Sparkle, creates the GitHub
 release, and **only then** commits the appcast entry. Never commit a locally
 generated `appcast.xml`: a feed that names a file before the file exists is a
 failed download for everyone who checks in between. `docs/releasing.md` covers
-the six repository secrets.
+the eight repository secrets.
 
 `scripts/release.sh --skip-notarize` exists for iterating on that script and
 nothing else. Its output must never be installed anywhere — macOS behaves

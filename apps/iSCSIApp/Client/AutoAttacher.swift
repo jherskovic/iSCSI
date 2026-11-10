@@ -48,8 +48,6 @@ final class AutoAttacher: AutoAttachHost {
 
     init(model: AppModel) { self.model = model }
 
-    var isRunning: Bool { driver.isRunning }
-
     func start(onFinish: @escaping @MainActor () -> Void) { driver.start(onFinish: onFinish) }
 
     /// The user acted on this target — attached, detached, removed or unchecked
@@ -90,9 +88,6 @@ final class AutoAttacher: AutoAttachHost {
     func attach(_ target: TargetRecord) async -> PresentableError? {
         do {
             _ = try await model.withBusy(target.id) { try await model.performAttach(target) }
-            return nil
-        } catch AttachmentError.blankLUN {
-            // Attached, just not formatted: the row says so. Not a failure.
             return nil
         } catch {
             return AppModel.presentable(error, title: Self.failureTitle(target.displayName))

@@ -309,7 +309,7 @@ What is known:
   *teardown* — the harness's trap kills the daemon, the arena goes away, and
   the dext fails everything after that. They are not the cause.
 
-Capturing this is now possible and `scripts/vm-apfs-stack.sh` does it:
+Capturing this is now possible and `scripts/parked/vm-apfs-stack.sh` does it:
 arm dtrace on the path-taking syscalls *before* mounting, then catch
 `sched:::sleep` and `fbt::lck_mtx_sleep`. Hard-won details:
 - `spindump` is NOT usable — it enumerates mounts, so it blocks on the very
@@ -325,7 +325,7 @@ arm dtrace on the path-taking syscalls *before* mounting, then catch
   makes, and the per-process tallies quietly become meaningless.
 
 Symbolication turned out to be unnecessary: `com.apple.filesystems.apfs` carries
-fbt probes, so `scripts/vm-apfs-trace.sh` prints APFS function *names* directly
+fbt probes, so `scripts/parked/vm-apfs-trace.sh` prints APFS function *names* directly
 (`apfs_vfsop_root`, `apfs_vnop_getattr`, `apfs_get_bsd_flags`,
 `ino_is_invisible`, `get_nlink_for_object`, …). What that run showed:
 
@@ -567,7 +567,7 @@ restoring, or `--recapture` once the VM is where you want it.
 Kept because the reasoning below is what produced the deterministic private
 mount, but the conclusion is wrong — see the ordering table above.
 
-`scripts/vm-apfs-private.sh` mounts the volume with `mount_apfs` at
+`scripts/parked/vm-apfs-private.sh` mounts the volume with `mount_apfs` at
 `/Users/herko/mnt` instead of letting `diskutil` put it in `/Volumes`. Finder,
 Spotlight, fseventsd and diskarbitrationd all watch `/Volumes` and reach for a
 new volume on their own; out of `/Volumes` they are not in the race, and the

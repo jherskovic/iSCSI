@@ -50,7 +50,10 @@ attach() {  # attach <portal> <nqn> <nsid> -> sets DEV, HIDDEN
   [ -f "$img" ] || { echo "NO-IMAGE"; return 1; }
   echo "    lun0.img: $(stat -f %z "$img") bytes"
   run 60 HDIUTIL hdiutil attach -imagekey diskimage-class=CRawDiskImage -noverify -nomount "$img" || return 1
-  DEV=$(awk 'NR==1{print $1}' /tmp/step.out)
+  # macOS 27 prefixes the output with a deprecation warning; the device node
+  # is wherever it is, not on line 1 (same as vm-nvme-soak.sh).
+  DEV=$(grep -o '/dev/disk[0-9]*' /tmp/step.out | head -1)
+  [ -n "$DEV" ] || { echo "NO-DEVICE: $(head -2 /tmp/step.out | tr '\n' ' ')"; return 1; }
   echo "    device: $DEV"
 }
 

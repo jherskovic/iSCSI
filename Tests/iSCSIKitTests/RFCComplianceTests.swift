@@ -333,6 +333,15 @@ struct RecoveryTimingTests {
         #expect(ISCSISession.recoveryDelay(attempt: 1, policy: policy, time2Wait: 2) == .milliseconds(20))
     }
 
+    /// A target may declare up to 3600 s, and every I/O waits behind the
+    /// first attempt; the wait is honoured only up to the backoff cap.
+    @Test func time2WaitIsCappedAtTheBackoffCap() {
+        var policy = SessionPolicy()
+        policy.recoveryBackoffBase = .milliseconds(10)
+        policy.recoveryBackoffCap = .seconds(30)
+        #expect(ISCSISession.recoveryDelay(attempt: 0, policy: policy, time2Wait: 3600) == .seconds(30))
+    }
+
     @Test func time2WaitCanBeDisabled() {
         var policy = SessionPolicy()
         policy.honorTime2Wait = false

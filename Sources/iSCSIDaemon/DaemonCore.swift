@@ -26,6 +26,13 @@ public actor DaemonCore {
         /// that missed it.
         var writeGeneration: UInt64 = 0
         var flushedGeneration: UInt64 = 0
+        /// Bytes written, and how many of them the last successful periodic
+        /// flush started after: the difference is what the next flush has to
+        /// commit, which its slow-flush log line reports. On 2026-11-09 flushes
+        /// grew from 2 s to 29 s through one long copy, and without this the
+        /// log could not say whether that tracked the data or the target.
+        var bytesWritten: UInt64 = 0
+        var bytesFlushed: UInt64 = 0
         /// Reads, writes and flushes in progress on this session right now,
         /// and the most there have been at once.
         var inFlight = 0
@@ -95,8 +102,6 @@ public actor DaemonCore {
     /// per attach (admin queue, I/O queue) and twice per recovery; the
     /// binding is the target's interface pin, nil for macOS routing.
     private let transportFactory: @Sendable (String, UInt16, InterfaceBinding?) async throws -> any ConnectionTransport
-    /// Whether writes carry FUA. See the note at the call site in `login`.
-    private let writeThrough: Bool
     /// Keepalive cadence, recovery backoff, and the per-task deadline. One
     /// policy for both protocols: NVMe's Keep Alive runs on `nopInterval`.
     private let policy: SessionPolicy
@@ -108,7 +113,6 @@ public actor DaemonCore {
 
     public init(
         initiatorName: String,
-        writeThrough: Bool = true,
         policy: SessionPolicy = SessionPolicy(),
         hostIdentity: NVMeHostIdentity? = nil,
         slowOperationThreshold: Duration = .seconds(1),
@@ -119,7 +123,6 @@ public actor DaemonCore {
         self.unitClaimWait = unitClaimWait
         self.initiatorName = initiatorName
         self.hostIdentity = hostIdentity ?? HostIdentity.nvmeHost()
-        self.writeThrough = writeThrough
         self.policy = policy
         self.transportFactory = transportFactory
     }
@@ -213,7 +216,7 @@ public actor DaemonCore {
         targetIQN: String,
         lun: UInt64,
         chap: CHAP.Credentials? = nil,
-        flushPolicy: FlushPolicy? = nil,
+        flushPolicy: FlushPolicy = .writeThrough,
         binding: InterfaceBinding? = nil,
         claimingUnit: Bool = false,
         validateConfiguration: @Sendable () async throws -> Void = {}
@@ -232,13 +235,12 @@ public actor DaemonCore {
         var registered = false
         defer { if let claim, !registered { claimedUnits[claim] = nil } }
 
-        // A record's stored policy wins; nil is a record-less login
-        // (iscsictl direct), which follows the ISCSI_WRITE_THROUGH default.
-        let durability = flushPolicy ?? (writeThrough ? FlushPolicy.writeThrough : FlushPolicy.never)
-        // Write-through by default: FSKit delivers no barrier signal, so a
+        // The record's stored policy, always passed by the XPC login. Write-
+        // through when none is given: FSKit delivers no barrier signal, so a
         // volatile target cache can lose an acknowledged write APFS believes
         // was barriered. FUA trades throughput for crash consistency; it is a
         // no-op when the target's cache is already disabled.
+        let durability = flushPolicy
         let writeThrough = durability == .writeThrough
 
         // The one place the protocol is decided: an NQN attaches over
@@ -388,12 +390,17 @@ public actor DaemonCore {
         guard let entry = sessions[handle],
               entry.writeGeneration > entry.flushedGeneration else { return }
         let goal = entry.writeGeneration
+        let mark = entry.bytesWritten
+        let pending = String(format: "%.1f", Double(mark &- entry.bytesFlushed) / 1_048_576)
         do {
-            try await timed(handle, "periodic flush") { try await entry.device.flush() }
+            try await timed(handle, "periodic flush (\(pending) MiB written since the last)") {
+                try await entry.device.flush()
+            }
             // Only advance to what this flush provably covered; a write that
             // landed while the flush was in flight stays dirty.
             if let current = sessions[handle], current.flushedGeneration < goal {
                 sessions[handle]?.flushedGeneration = goal
+                sessions[handle]?.bytesFlushed = mark
             }
         } catch {
             // The next tick retries. A failing flush must not tear the session
@@ -462,6 +469,7 @@ public actor DaemonCore {
             try await device.write(offset: offset, data: data)
         }
         sessions[handle]?.writeGeneration += 1
+        sessions[handle]?.bytesWritten += UInt64(data.count)
     }
 
     public func flush(_ handle: String) async throws {

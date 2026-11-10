@@ -29,9 +29,10 @@ if [ ! -f "$PROFDATA" ]; then
 fi
 
 # llvm-cov wants every instrumented binary that contributed to the merged
-# profile. There are two test bundles and the export silently reports only the
-# first one's translation units if the second is omitted — which reads as a
-# plausible coverage number rather than as an error.
+# profile. There is one test bundle per test target (four today), and the
+# export silently reports only the first one's translation units if the others
+# are omitted — which reads as a plausible coverage number rather than as an
+# error.
 objects=()
 for bundle in "$BIN"/*.xctest; do
     [ -d "$bundle" ] || continue

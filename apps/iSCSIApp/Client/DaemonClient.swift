@@ -142,32 +142,6 @@ extension DaemonConnection {
         }
     }
 
-    static func login(host: String, port: UInt16, targetIQN: String,
-                      lun: UInt64) async throws -> String {
-        try await call { proxy, finish in
-            proxy.login(host: host, port: NSNumber(value: port), targetIQN: targetIQN,
-                        lun: NSNumber(value: lun)) { handle, error in
-                if let error { finish(.failure(error)) }
-                else if let handle { finish(.success(handle)) }
-                else { finish(.failure(Unreachable(reason: "the daemon returned no session"))) }
-            }
-        }
-    }
-
-    static func logout(session: String) async throws {
-        try await call { proxy, finish in
-            proxy.logout(session: session) { error in
-                finish(error.map { .failure($0) } ?? .success(()))
-            }
-        }
-    }
-
-    static func reportLUNs(session: String) async throws -> [LUNInfo] {
-        try await decode([LUNInfo].self) { proxy, finish in
-            proxy.reportLUNs(session: session) { data, error in finish(data, error) }
-        }
-    }
-
     /// The LUNs (or namespaces) behind a target, with sizes, from a session
     /// the daemon opens and closes itself. Credentials as for discovery:
     /// typed ones when given, otherwise the saved record's.

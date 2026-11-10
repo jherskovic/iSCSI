@@ -45,8 +45,9 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     private var cachedBlockCount: UInt64 = 0
     private var capacityKnown = false
 
-    /// Cap per-SCSI-command transfer. Kept ≤ negotiated MaxBurstLength; also
-    /// bounds memory per request. 256 KiB, not 1 MiB: large commands collapse
+    /// Cap per-SCSI-command transfer; also bounds memory per request. Not
+    /// tied to MaxBurstLength, and need not be: a command larger than a burst
+    /// is simply answered with several R2Ts. 256 KiB, not 1 MiB: large commands collapse
     /// under queue depth on real targets, and 256 KiB was never slower
     /// anywhere tested. See docs/queue-depth.md.
     private let maxTransferBytes: Int
@@ -72,7 +73,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     ///
     /// Returns nil when the target does not provide the page.
     public func writeCacheEnabled() async throws -> Bool? {
-        let result = try await executeAbsorbingUnitAttention(SCSITask(
+        let result = try await executeRetryingTransientStatus(SCSITask(
             lun: lunAddress,
             cdb: CDB.modeSense10(pageCode: 0x08),
             direction: .read(expectedLength: 192)
@@ -83,22 +84,42 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
 
     private var lunAddress: UInt64 { SCSITask.lunField(lun) }
 
-    /// Executes a task, absorbing UNIT ATTENTION (sense key 0x06): targets
-    /// report it on the first non-INQUIRY command of a fresh I_T nexus and
-    /// after resets. Reporting clears it, so retry here — re-login re-arms it.
-    private func executeAbsorbingUnitAttention(
-        _ task: SCSITask,
-        retries: Int = 2
-    ) async throws -> SCSITaskResult {
-        var attempt = 0
+    /// Executes a task, retrying the statuses that mean "not now" rather
+    /// than "no":
+    ///
+    /// * UNIT ATTENTION (sense key 0x06): targets report it on the first
+    ///   non-INQUIRY command of a fresh I_T nexus and after resets. Reporting
+    ///   clears it, so retry at once — re-login re-arms it.
+    /// * BUSY (0x08) and TASK SET FULL (0x28): SAM's "retry later", sent by a
+    ///   target under queue pressure.
+    /// * NOT READY, logical unit becoming ready (02h/04h/01h): what a LUN
+    ///   reports for a moment after a NAS failover.
+    ///
+    /// The last three wait between attempts, doubling from 50 ms, for about
+    /// 3 s in all; then the status goes up as the I/O error it is.
+    private func executeRetryingTransientStatus(_ task: SCSITask) async throws -> SCSITaskResult {
+        var unitAttentions = 0
+        var delay = Duration.milliseconds(50)
+        var waited = Duration.zero
         while true {
             let result = try await session.execute(task)
-            if result.isGood { return result }
-            let sense = result.sense.flatMap(SenseData.init)
-            guard sense?.key == 0x06, attempt < retries else { return result }
-            attempt += 1
+            switch TransientStatus.classify(result) {
+            case nil:
+                return result
+            case .unitAttention:
+                guard unitAttentions < 2 else { return result }
+                unitAttentions += 1
+            case .retryLater:
+                guard waited < Self.transientRetryBudget else { return result }
+                try await Task.sleep(for: delay)
+                waited += delay
+                delay *= 2
+            }
         }
     }
+
+    /// How long `executeRetryingTransientStatus` keeps asking a BUSY target.
+    static let transientRetryBudget: Duration = .seconds(3)
 
     /// Parse and sanity-check a READ CAPACITY(16) Data-In. Pure and `static`
     /// so the fuzzer can reach a parser of attacker-controlled bytes without a
@@ -143,7 +164,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     /// READ CAPACITY(16) to learn geometry; cached after first call.
     public func readCapacity() async throws -> (blockSize: Int, blockCount: UInt64) {
         if capacityKnown { return (cachedBlockSize, cachedBlockCount) }
-        let result = try await executeAbsorbingUnitAttention(SCSITask(
+        let result = try await executeRetryingTransientStatus(SCSITask(
             lun: lunAddress,
             cdb: CDB.readCapacity16(),
             direction: .read(expectedLength: 32)
@@ -169,6 +190,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     public func read(offset: UInt64, length: Int) async throws -> Data {
         let (bs, count) = try await readCapacity()
         try validate(offset: offset, length: length, blockSize: bs, capacity: count)
+        if length == 0 { return Data() }
         let blocksPerChunk = max(1, maxTransferBytes / bs)
         let firstLBA = offset / UInt64(bs)
         let totalBlocks = length / bs
@@ -216,7 +238,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     }
 
     private func readChunk(lba: UInt64, blocks: Int, blockSize bs: Int) async throws -> Data {
-        let result = try await executeAbsorbingUnitAttention(SCSITask(
+        let result = try await executeRetryingTransientStatus(SCSITask(
             lun: lunAddress,
             cdb: CDB.read16(lba: lba, blocks: UInt32(blocks)),
             direction: .read(expectedLength: UInt32(blocks * bs))
@@ -290,7 +312,7 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     /// chunks reached the medium is indeterminate; `DaemonStore.write` drops
     /// the whole overlap from its cache on any error for that reason.
     private func writeChunk(lba: UInt64, payload: Data, blockSize bs: Int) async throws {
-        let result = try await executeAbsorbingUnitAttention(SCSITask(
+        let result = try await executeRetryingTransientStatus(SCSITask(
             lun: lunAddress,
             cdb: CDB.write16(lba: lba, blocks: UInt32(payload.count / bs), fua: writeThrough),
             direction: .write(payload)
@@ -302,24 +324,60 @@ public actor ISCSIBlockDevice: BlockDeviceBackend {
     }
 
     public func flush() async throws {
-        let result = try await executeAbsorbingUnitAttention(SCSITask(lun: lunAddress, cdb: CDB.synchronizeCache16()))
+        let result = try await executeRetryingTransientStatus(SCSITask(lun: lunAddress, cdb: CDB.synchronizeCache16()))
         guard result.isGood else {
             throw BlockDeviceError.scsiError(status: result.status, sense: result.sense.flatMap(SenseData.init))
         }
     }
 
     private func validate(offset: UInt64, length: Int, blockSize: Int, capacity: UInt64) throws {
+        try BlockRequest.validate(offset: offset, length: length,
+                                  blockSize: blockSize, capacity: capacity)
+    }
+}
+
+/// The statuses `executeRetryingTransientStatus` retries. Pure, for tests.
+enum TransientStatus: Equatable {
+    /// UNIT ATTENTION: retry at once, twice at most.
+    case unitAttention
+    /// BUSY, TASK SET FULL, or NOT READY becoming ready: retry after a wait.
+    case retryLater
+
+    static func classify(_ result: SCSITaskResult) -> TransientStatus? {
+        switch result.status {
+        case 0x08, 0x28:
+            return .retryLater
+        case 0x02:
+            guard let sense = result.sense.flatMap(SenseData.init) else { return nil }
+            if sense.key == 0x06 { return .unitAttention }
+            if sense.key == 0x02, sense.asc == 0x04, sense.ascq == 0x01 { return .retryLater }
+            return nil
+        default:
+            return nil
+        }
+    }
+}
+
+/// Bounds checks shared by both block devices, done in 64-bit arithmetic: a
+/// block count is narrowed to a CDB's 32 bits only per chunk, after the
+/// request has been split, so an oversized length is an error and never a
+/// trap in a root daemon.
+public enum BlockRequest {
+    public static func validate(offset: UInt64, length: Int, blockSize: Int,
+                                capacity: UInt64) throws {
         guard blockSize > 0,
+              length >= 0,
               offset % UInt64(blockSize) == 0,
-              length % blockSize == 0,
-              length >= 0
+              length % blockSize == 0
         else {
             throw BlockDeviceError.misaligned(offset: offset, length: length, blockSize: blockSize)
         }
         let lba = offset / UInt64(blockSize)
-        let blocks = UInt32(length / blockSize)
-        guard UInt64(lba) + UInt64(blocks) <= capacity else {
-            throw BlockDeviceError.outOfRange(lba: lba, blocks: blocks, capacity: capacity)
+        let blocks = UInt64(length / blockSize)
+        let (end, overflow) = lba.addingReportingOverflow(blocks)
+        guard !overflow, end <= capacity else {
+            throw BlockDeviceError.outOfRange(lba: lba, blocks: UInt32(clamping: blocks),
+                                              capacity: capacity)
         }
     }
 }

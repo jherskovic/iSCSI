@@ -39,6 +39,16 @@ struct Attachment: Identifiable, Equatable, Sendable {
     /// The FSKit mount's source URL, kept for an orphan: with no record
     /// behind it, this is the only thing that says what it is.
     var mountSource: String? = nil
+    /// Whether the disk's first MiB is all zeros (`PartitionTableProbe.isBlank`),
+    /// as read when this app attached it; nil when not read. Only a blank
+    /// disk is called "not formatted": one that holds anything else and did
+    /// not mount may be data macOS cannot read — ext4, ZFS, a locked volume —
+    /// and must never be met with advice to erase it.
+    var isBlank: Bool? = nil
+    /// Encrypted APFS volumes on the disk that are locked, by name: why a
+    /// disk that is neither blank nor unreadable mounted nothing. Asked only
+    /// when nothing mounted (`LockedAPFSVolumes`).
+    var lockedVolumes: [String] = []
 
     var isFullyAttached: Bool { device != nil && !volumePaths.isEmpty }
     /// Mounted by this app, but no record derives its mount point any more:
@@ -96,7 +106,6 @@ enum AttachmentError: LocalizedError {
     case fskitMountFailed(String, duplicates: [String])
     case noImageServed(String)
     case imageAttachFailed(String)
-    case blankLUN(device: String)
     /// The same unit is mounted elsewhere already. `ownAccount`: by this
     /// user, under a mount point the record no longer derives.
     case alreadyAttached(at: String, ownAccount: Bool)
@@ -117,8 +126,6 @@ enum AttachmentError: LocalizedError {
             return "The filesystem extension mounted but produced no LUN file at \(path)."
         case .imageAttachFailed(let detail):
             return "Could not attach the LUN as a disk: \(detail)"
-        case .blankLUN(let device):
-            return "The LUN attached as \(device) but has not been formatted yet."
         case .alreadyAttached(_, let ownAccount):
             return ownAccount
                 ? "This disk is already attached, under the settings the target had before it was edited."
@@ -146,8 +153,6 @@ enum AttachmentError: LocalizedError {
             return "The connection to the target may have dropped. Try again."
         case .imageAttachFailed:
             return nil
-        case .blankLUN:
-            return "Use Disk Utility to erase and format it, then attach again."
         case .alreadyAttached(_, let ownAccount):
             return ownAccount
                 ? "Detach it under Other Attached Disks, then attach again."
@@ -275,7 +280,7 @@ final class AttachmentManager: ObservableObject {
         // detach` both hang indefinitely under a wedged NAS). On `@MainActor`
         // that is a beach-balled app, so the blocking sequence runs on a
         // detached task over `Sendable` inputs and only the result crosses back.
-        let probe: (device: String?, volumes: [String]) = try await Task.detached {
+        let probe: (device: String?, volumes: [String], isBlank: Bool?, locked: [String]) = try await Task.detached {
             // Idempotent: attaching something already attached should report the
             // existing volume, not stack a second mount on the same path.
             let fskitWasMounted = Self.isMounted(hiddenPath)
@@ -308,7 +313,7 @@ final class AttachmentManager: ObservableObject {
             case .reuse(let existing):
                 let volumes = Self.mountPoints(ofDevice: existing)
                 Self.disableAccessTimes(on: volumes)
-                return (existing, volumes)
+                return (existing, volumes, nil, Self.lockedVolumes(device: existing, ifNoneOf: volumes))
             case .replaceStale(let stale):
                 // Left by a logout that took the FSKit mount down but not the
                 // device; it serves nothing, so forcing it off loses nothing.
@@ -321,7 +326,7 @@ final class AttachmentManager: ObservableObject {
             // default of 512 (GitHub issue #2), and a blank 4Kn LUN should be
             // partitioned at 4096; see PartitionTableProbe. Every other disk
             // gets the default.
-            let blockSize = Self.attachBlockSize(image: imagePath, volume: hiddenPath)
+            let (blockSize, isBlank) = Self.attachBlockSize(image: imagePath, volume: hiddenPath)
 
             var attached: (device: String?, volumes: [String])?
             if engine == .diskImages2 {
@@ -340,14 +345,16 @@ final class AttachmentManager: ObservableObject {
             }
             let result = try attached ?? Self.attachWithHdiutil(image: imagePath, blockSize: blockSize)
             Self.disableAccessTimes(on: result.volumes)
-            return result
+            return (result.device, result.volumes, isBlank,
+                    Self.lockedVolumes(device: result.device, ifNoneOf: result.volumes))
         }.value
 
         // Recorded before anything else can go wrong: throwing after the
         // layers are up leaves them mounted but invisible — not listed, not
         // detachable.
         let attachment = Attachment(tag: tag, targetID: targetID, hiddenPath: hiddenPath,
-                                    device: probe.device, volumePaths: probe.volumes)
+                                    device: probe.device, volumePaths: probe.volumes,
+                                    isBlank: probe.isBlank, lockedVolumes: probe.locked)
         attachments.removeAll { $0.tag == tag }
         attachments.append(attachment)
         attachmentsGeneration &+= 1
@@ -496,11 +503,13 @@ final class AttachmentManager: ObservableObject {
         let found = await Task.detached { () -> [Attachment] in
             probes.map { candidate in
                 let device = Self.attachedDevice(forImage: candidate.imagePath)
+                let volumes = device.map { Self.mountPoints(ofDevice: $0) } ?? []
                 return Attachment(
                     tag: candidate.tag, targetID: candidate.targetID,
                     hiddenPath: candidate.hiddenPath, device: device,
-                    volumePaths: device.map { Self.mountPoints(ofDevice: $0) } ?? [],
-                    mountSource: candidate.source)
+                    volumePaths: volumes,
+                    mountSource: candidate.source,
+                    lockedVolumes: Self.lockedVolumes(device: device, ifNoneOf: volumes))
             }
         }.value
         // Someone mutated the list while we were probing (a detach, an attach,
@@ -515,23 +524,28 @@ final class AttachmentManager: ObservableObject {
     /// through FSKit to the target like the attach that follows — and the
     /// LUN's block size, which the FSKit volume reports as its own (statfs
     /// `f_bsize`, iSCSIFSExtension `volumeStatistics`). nil if either read
-    /// fails, which leaves the attach exactly as it was.
-    nonisolated private static func attachBlockSize(image: String, volume: String) -> Int? {
-        guard let handle = FileHandle(forReadingAtPath: image) else { return nil }
+    /// fails, which leaves the attach exactly as it was. The same read says
+    /// whether the disk is blank; nil when it could not be read.
+    nonisolated private static func attachBlockSize(
+        image: String, volume: String
+    ) -> (blockSize: Int?, isBlank: Bool?) {
+        guard let handle = FileHandle(forReadingAtPath: image) else { return (nil, nil) }
         defer { try? handle.close() }
         guard let prefix = try? handle.read(upToCount: PartitionTableProbe.prefixLength) else {
-            return nil
+            return (nil, nil)
         }
         var stats = statfs()
         let lunBlockSize = statfs(volume, &stats) == 0 ? Int(stats.f_bsize) : nil
         let chosen = PartitionTableProbe.attachBlockSize(prefix: prefix, lunBlockSize: lunBlockSize)
+        let isBlank = PartitionTableProbe.isBlank(prefix)
         attachLog.log("""
             block size: read \(prefix.count, privacy: .public) bytes, \
             GPT at \(PartitionTableProbe.gptBlockSize(prefix: prefix).map(String.init) ?? "none", privacy: .public), \
-            LUN \(lunBlockSize.map(String.init) ?? "unknown", privacy: .public) → \
+            LUN \(lunBlockSize.map(String.init) ?? "unknown", privacy: .public), \
+            blank \(isBlank, privacy: .public) → \
             \(chosen.map { "-blocksize \($0)" } ?? "default", privacy: .public)
             """)
-        return chosen
+        return (chosen, isBlank)
     }
 
     /// The DiskImages engine, as every release before macOS 27 did it.
@@ -618,6 +632,21 @@ final class AttachmentManager: ObservableObject {
               let entities = entry["system-entities"] as? [[String: Any]]
         else { return false }
         return entities.count > 1
+    }
+
+    /// The locked encrypted volumes on `device`, when nothing of it mounted.
+    /// `diskutil apfs list` reads container metadata already in memory, so it
+    /// does not wait on the target; and it only runs when there is something
+    /// to explain.
+    nonisolated private static func lockedVolumes(device: String?, ifNoneOf volumes: [String]) -> [String] {
+        guard let device, volumes.isEmpty,
+              let result = try? run("/usr/sbin/diskutil", ["apfs", "list", "-plist"]),
+              result.status == 0 else { return [] }
+        let locked = LockedAPFSVolumes.find(onDisk: device, apfsList: result.stdout).map(\.name)
+        if !locked.isEmpty {
+            attachLog.log("\(device, privacy: .public) holds locked encrypted volumes: \(locked.joined(separator: ", "), privacy: .public)")
+        }
+        return locked
     }
 
     nonisolated private static func isMounted(_ path: String) -> Bool {

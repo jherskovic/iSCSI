@@ -227,9 +227,19 @@ Management notification can be waited on properly.
   (2026-10-22) in the app, after login, through the user's `fskit_agent`, so
   this stays moot
   (`docs/superpowers/specs/2026-10-22-auto-attach-at-login-design.md`).
-- **The death latch.** Three unanswered daemon calls mark a volume dead and fail
-  everything after immediately. Built in response to the eight-hour wedge,
-  reasoned about carefully, and never triggered in anger.
+- **The death latch.** One daemon call unanswered for the extension's 100 s
+  timeout marks a volume dead and fails everything after immediately. Built in
+  response to the eight-hour wedge, reasoned about carefully, and never
+  triggered in anger. It took three 30 s stalls until 2026-11-09; the timeout
+  now outlasts the daemon's own reconnect-and-retry (§8a), so a call that runs
+  it out is a session not coming back rather than a pause, and one is enough.
+  That keeps the time to declare a dead volume about where three stalls put
+  it, and a detach from a stalled target waits out one flush, not each of the
+  unmount's flushes. An unanswered **write** also may still land after a later
+  read or write (§8a), which nothing can order. A dropped daemon connection
+  latches it too, and ends the calls in flight instead of letting each wait
+  out its timeout. Store-level tests cover all of it
+  (`DaemonStoreDeathLatchTests`), including the timeout ordering.
 
 ## 7a. RFC-compliance strictness deliberately not taken (2026-08-25)
 
@@ -326,14 +336,43 @@ fixed 30 s call timeout fired **330 ms before** recovery completed:
     08:22:00.908  extension: daemon call timed out after 30s   -> EIO
     08:22:01.238  recovered (1 time(s) so far)
 
-The volume survived — one timeout, not the three that latch it dead — but the
-caller got EIO for a session that was about to be fine. The two timescales are
-independent: the extension counts a wall clock while the daemon is mid-recovery
-and about to succeed.
+The volume survived — one timeout, not the three that latched it dead then —
+but the caller got EIO for a session that was about to be fine. The two
+timescales are independent: the extension counts a wall clock while the daemon
+is mid-recovery and about to succeed.
 
-Worth fixing as either a timeout that exceeds the recovery budget, or a signal
-that recovery is in progress so the wait can be extended rather than abandoned.
-The second is better and costs an XPC message.
+**It happened again on 2026-11-09, and failed a Finder copy.** A 27.2 host
+copying a VM bundle onto the TrueNAS `ssd-vms` namespace (DiskImages2, flush
+every 10 s): periodic flushes on the NAS were taking 20–31 s, a write queued
+behind one, and the two 30 s timers fired 8 ms apart:
+
+    15:33:14.910  extension: daemon call timed out after 30s; slow write ... failed
+    15:33:14.912  DiskImages2: IO returned an error (-5); APFS: Failed write request
+    15:33:14.918  daemon: connection lost; recovering ... recovered (4 ms later)
+    15:33:19.519  daemon: slow write of 81920 B: 34615.6 ms   (the resend landed)
+    15:33:19.793  Finder: Error ioErr (-36) ... on write
+
+Both timers were 30 s and the extension's starts first, so it lost every time.
+
+**Fixed 2026-11-09 the first way: the timeout now exceeds one retry.** The
+extension waits 100 s for a read, write or flush, against the 87 s the daemon
+can take to time out an attempt, reconnect (DefaultTime2Wait, a 10 s connect, a
+15 s login) and run the retry's own 30 s (`DaemonStore.defaultTimeout`, pinned
+by `theStoreOutwaitsTheDaemonsOwnRetry`). Calls around the mount keep 30 s.
+What is left is a recovery slower than that one retry — several reconnect
+attempts with backoff — which still fails the call and now latches the volume
+dead (§7). The recovery-in-progress signal (an XPC message, so the wait is
+extended instead of abandoned) is the way to cover that, and is not built.
+
+**For writes it was worse than a spurious EIO** (review, 2026-11-09). The
+daemon keeps retrying a write the extension has given up on, for up to three
+30 s attempts plus a recovery. Meanwhile the range became cacheable again, so a
+read could cache the old bytes and keep serving them after the write landed;
+and a newer write to the same blocks could be acknowledged before the
+abandoned one landed on top of it. Since then an unanswered write latches the
+volume dead (fail-stop): a stall long enough to time out a write now costs a
+detach and re-attach, instead of a guess about what the media holds. The
+recovery-in-progress signal above would make that rarer, not unnecessary.
 
 Silver lining: this is the first time ERL0 session recovery has run against real
 hardware in anger. It worked. `docs/test-playbook.md` had it as MockTarget-only.
@@ -406,10 +445,11 @@ Still open, in cost order:
   changed the *timescale* the extension sees, not just the eventual outcome:
   before it, each new I/O re-entered recovery and a returning NAS could heal
   the mount transparently after the window; now the daemon returns the failure
-  **instantly**. A speculative readahead that gets that instant error is
-  indistinguishable from an unanswered one at the cache boundary, so it counts
-  toward the death latch — three of them mark the volume dead within a few
-  operations and the extension unmounts, where a ~70 s blip used to self-heal.
+  **instantly**. (This paragraph once said a speculative readahead that gets
+  that instant error counts toward the death latch. It does not: a failed
+  speculative chunk is purged and the read retried synchronously; only an
+  unanswered call counts. The failure still reaches APFS as EIO, and repeated
+  ones unmount the volume, where a ~70 s blip used to self-heal.)
   Direct reads/writes throw the error straight to APFS rather than tripping the
   latch, but the user-visible result is the same: exhaustion now means a fast
   unmount and re-attach, not a beach-balled heal. A background retry with capped
@@ -423,12 +463,21 @@ Still open, in cost order:
   much later or not until something else tears it down (the old "~90 s" estimate
   predated the fast-fail latch and is no longer reliable). Bounded, cosmetic;
   log once per dead session or stop the timer.
-- **Flush vs. task timeout, still unmeasured.** The 2026-09-11 loss was a Keep
-  Alive timeout as the NAS died, **not** a Flush outrunning the 30 s task
-  timeout on a healthy target (that earlier claim was inferred from timing and
-  the log refuted it). Whether a loaded-but-healthy NAS can take >30 s to
-  SYNCHRONIZE CACHE, and whether the flush path should get its own longer
-  deadline than a read/write, is untested. A watch item, not a known bug.
+- **Flush vs. task timeout: a loaded, healthy NAS does take >30 s.** The
+  2026-09-11 loss was a Keep Alive timeout as the NAS died, **not** a Flush
+  outrunning the 30 s task timeout on a healthy target (that earlier claim was
+  inferred from timing and the log refuted it). On 2026-11-09 it was measured
+  directly: a long copy onto TrueNAS `ssd-vms` over NVMe/TCP with a 10 s flush
+  interval saw periodic flushes of 2.5–47 s, writes queued 12–35 s behind them,
+  and reconnects whenever one crossed 30 s. A second copy peaked at 28.8 s.
+  Flush times grew through each copy (1.8, 3.3, 9, 16, 23.5 s in the first two
+  minutes). Not established: whether that is the data each flush has to commit
+  (the timer starts after the previous flush ends, so a slow flush makes the
+  next one cover more) or the pool falling behind, which no flush cadence
+  fixes. A shorter interval or write-through on the next attach, or the txg
+  sync times on the NAS during a copy, would tell them apart. A reconnect does
+  not speed a slow flush up, so a longer flush deadline would save churn, but
+  the writes behind it hit their own 30 s regardless.
 
 ## 9. Deferred
 
@@ -953,9 +1002,30 @@ this Mac's page cache and the NAS's ARC. One mount per job:
     acknowledges a raw write before the target has it, by about 50 ms, and
     honours flushes. That is a correction to how write-through has been
     described: FUA governs the target's cache, not DiskImages'.
-  - **Unverified: what happens to those dirty pages if the target goes away.**
-    A page-cache writeback that fails has no caller to tell, so the loss may
-    be silent where `hdiutil` would fail the next write. Untested.
+  - **What happens to those writes if the target goes away: on the default
+    `hdiutil` engine the loss is silent, `F_FULLFSYNC` included; DiskImages2
+    reports it.** Measured 2026-11-09 against the simulator with commands
+    stalled past the extension's 30 s timeout (macOS 26.7.2 with build 54.1,
+    macOS 27.2 with 53.13; the difference between those builds is only
+    whether one unanswered write latches the volume dead):
+
+    | path | raw-device write | APFS write + `F_FULLFSYNC` | after a fresh attach |
+    |---|---|---|---|
+    | `hdiutil`, 26.7.2 | `dd` waited 30 s, exited 0; later writes to the dead volume succeeded at once | **returned success** after 60 s (one failed read, one failed write) and again after 30 s (one failed 1 MiB write) | the flushed file is gone; `fsck_apfs` OK |
+    | `hdiutil`, 27.2 | — | **returned success** after 90 s (three failed reads) | the flushed file is gone; `fsck_apfs` OK |
+    | DiskImages2 (`engine=diskimages2`, `writeThrough` granted), 27.2 | `dd`: **EIO** after 30 s | **EIO** after 60 s (two failed reads) | — |
+    | `lun0.img` written directly, 26.7.2 | — | `write` succeeded; **`F_FULLFSYNC` EIO** at 30 s, `close` EIO | — |
+
+    The last row places it: FSKit does deliver the extension's refusal to
+    whoever flushes `lun0.img`, so it is DiskImages under `hdiutil` that drops
+    its backing file's error and acknowledges the client's flush anyway.
+    Nothing in the extension can make that engine report it. What follows:
+    on a target that stalls past the timeout, an `fsync`ed write can be
+    acknowledged to the application and lost, on both OS versions, unless
+    the volume is attached with DiskImages2 (opt-in on 27, absent on 26).
+    APFS stays consistent (it rolls back to its last good checkpoint); the
+    file contents written since are what is lost. `F_FULLFSYNC` is ENOTTY on
+    a raw device, so a raw-device writer has no flush to ask.
 
 **The write window closes if the volume sets the kernel's cache policy
 itself, 2026-10-31.** The page cache that held those writes is this volume's

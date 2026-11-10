@@ -410,7 +410,7 @@ enum DaemonConnection {
 // MARK: - Probe UI
 
 /// Instrumentation, not product UI: shows the raw SMAppService errors the
-/// setup sheet summarises away.
+/// setup sheet summarises away. Read-only in a shipped build.
 struct DaemonPanelView: View {
     @StateObject private var daemon = DaemonController()
 
@@ -425,9 +425,14 @@ struct DaemonPanelView: View {
                 }
 
                 HStack(spacing: 8) {
+                    #if DEBUG
+                    // Debug builds only. Each of these stops the daemon under
+                    // whatever is attached, with none of the consent Setup's
+                    // Reinstall and Remove ask for.
                     Button("Register") { Task { await daemon.register() } }
                     Button("Re-register") { Task { await daemon.reregister() } }
                     Button("Unregister") { Task { await daemon.unregister() } }
+                    #endif
                     Spacer()
                     // Only offered when it is the actual next step.
                     if daemon.state == .requiresApproval {

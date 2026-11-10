@@ -91,7 +91,7 @@ final class ProtoItem: FSItem {
     let name: FSFileName
     let itemType: FSItem.ItemType
     let itemID: FSItem.Identifier
-    var size: UInt64
+    let size: UInt64
 
     init(name: String, type: FSItem.ItemType, id: FSItem.Identifier, size: UInt64) {
         self.name = FSFileName(string: name)
@@ -139,14 +139,11 @@ private let kVolumeUUID = UUID(uuidString: "6F1C2B14-9A4E-4E31-B1E2-4C7A9D0E5B33
 
 final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
 
-    /// Resolves the backing path from whichever resource kind FSKit hands us.
-    /// The URL is caller-influenced, so the generic branch goes through
-    /// `safeTag` and cannot escape the fixed directory.
+    /// Resolves the backing path for the URL FSKit hands us. The URL is
+    /// caller-influenced, so it goes through `safeTag` and cannot escape the
+    /// fixed directory. A path resource is refused: Info.plist turns them off
+    /// (`FSSupportsPathURLs`), and one would name a caller-chosen file.
     private func backingPath(for resource: FSResource) -> String? {
-        if let pathURL = resource as? FSPathURLResource {
-            fsLog.log("resource: FSPathURLResource \(redact(pathURL.url), privacy: .public)")
-            return pathURL.url.path
-        }
         if let generic = resource as? FSGenericURLResource {
             let url = generic.url
             fsLog.log("resource: FSGenericURLResource \(redact(url), privacy: .public)")
@@ -160,30 +157,24 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
 
     /// Chooses the backing store: host `proto` → local file (keeps a
     /// known-good configuration for separating FSKit problems from network
-    /// ones), anything else → real session via iscsid.
+    /// ones), a well-formed `/<target>/<unit>` → real session via iscsid,
+    /// anything else → EINVAL (`MountResourceURL.parse` says why it is strict).
     private func makeStore(for resource: FSResource, localPath: String) throws -> LUNStore {
         guard let generic = resource as? FSGenericURLResource,
-              let host = generic.url.host, host != "proto" else {
-            return try BackingStore(path: localPath)
-        }
-        let url = generic.url
-        // Path is /<target>/<lun>: an IQN and LUN, or an NQN and namespace ID.
-        // Neither name contains a slash. The scheme is not consulted — the
-        // daemon tells the protocols apart by the name's prefix.
-        let parts = url.path.split(separator: "/").map(String.init)
-        guard parts.count >= 1 else {
-            fsLog.error("mount URL needs /<target>[/<lun-or-nsid>]")
+              let destination = MountResourceURL.parse(generic.url) else {
+            fsLog.error("mount URL must be iscsi://proto/<name> or scheme://host[:port]/<target>/<lun-or-nsid>")
             throw POSIXError(.EINVAL)
         }
-        let target = parts[0]
-        let lun = parts.count >= 2 ? (UInt64(parts[1]) ?? 0) : 0
-        fsLog.log("connecting to iscsid: host=\(host, privacy: .public) target=\(target, privacy: .public) lun=\(lun)")
-        // `url.user` is deliberately ignored: a mount URL must not name which
-        // stored secret root spends. The daemon decides from its own record.
-        // `host` is already the record's spelling: `url.host` drops an IPv6
-        // literal's brackets and decodes the `%25` before a zone.
-        return try DaemonStore(host: host, port: url.port ?? 3260,
-                               target: target, lun: lun)
+        switch destination {
+        case .prototype:
+            return try BackingStore(path: localPath)
+        case let .daemon(host, port, target, unit):
+            fsLog.log("connecting to iscsid: host=\(host, privacy: .public) target=\(target, privacy: .public) lun=\(unit)")
+            // `url.user` is deliberately ignored: a mount URL must not name
+            // which stored secret root spends. The daemon decides from its
+            // own record.
+            return try DaemonStore(host: host, port: port, target: target, lun: unit)
+        }
     }
 
     func probeResource(resource: FSResource,
@@ -234,8 +225,9 @@ final class ISCSIUnaryFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
 
     /// Read and cache behaviour for this volume: the defaults for the running
     /// macOS, with any override from the mount URL's query (`VolumeIOOptions`
-    /// has the rules and the measurements behind them). The app's mount URLs
-    /// carry no query, so they get the defaults.
+    /// has the rules and the measurements behind them). The app adds
+    /// `engine=diskimages2` when it attaches with DiskImages2; otherwise its
+    /// mount URLs carry no query and get the defaults.
     private static func ioOptions(for resource: FSResource) -> VolumeIOOptions {
         let items = (resource as? FSGenericURLResource).flatMap {
             URLComponents(url: $0.url, resolvingAgainstBaseURL: false)?.queryItems
@@ -407,10 +399,10 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
                             packer: FSDirectoryEntryPacker,
                             replyHandler reply: @escaping (FSDirectoryVerifier, (any Error)?) -> Void) {
         // Per the header: pack "." and ".." only when `attributes` is nil.
-        var next: UInt64 = cookie.rawValue
         let verifierOut = FSDirectoryVerifier(rawValue: 1)
 
-        if next == 0 {
+        // One pass packs everything; any later cookie has nothing left.
+        if cookie.rawValue == 0 {
             if attributes == nil {
                 _ = packer.packEntry(name: FSFileName(string: "."), itemType: .directory,
                                      itemID: .rootDirectory, nextCookie: FSDirectoryCookie(rawValue: 1),
@@ -422,7 +414,6 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
             _ = packer.packEntry(name: image.name, itemType: .file, itemID: kImageItemID,
                                  nextCookie: FSDirectoryCookie(rawValue: 3),
                                  attributes: attributes.map { image.attributes(matching: $0) })
-            next = 3
         }
         reply(verifierOut, nil)
     }
@@ -491,6 +482,9 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
                               _ reply: @escaping (Int, (any Error)?) -> Void,
                               handedOver: UInt64) {
         let queued = DispatchTime.now().uptimeNanoseconds &- handedOver
+        // The kernel never sends a negative offset; if one came, `UInt64(_:)`
+        // would trap and take the extension down mid-mount.
+        guard offset >= 0 else { reply(0, POSIXError(.EINVAL)); return }
         defer {
             store.noteServedRead(offset: UInt64(offset), length: length, queuedNanos: queued,
                                  totalNanos: DispatchTime.now().uptimeNanoseconds &- handedOver)
@@ -509,6 +503,7 @@ final class ProtoVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperat
                to item: FSItem,
                at offset: off_t,
                replyHandler reply: @escaping (Int, (any Error)?) -> Void) {
+        guard offset >= 0 else { reply(0, POSIXError(.EINVAL)); return }
         do {
             reply(try store.write(contents, at: UInt64(offset)), nil)
         } catch {

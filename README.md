@@ -1,10 +1,10 @@
 # macOS iSCSI/NVMe-TCP Initiator
 
-[![version](https://img.shields.io/github/v/release/jherskovic/iSCSI?sort=semver&display_name=tag&label=version)](https://github.com/jherskovic/iSCSI/releases/latest)
-[![license](https://img.shields.io/github/license/jherskovic/iSCSI)](LICENSE)
-[![build](https://github.com/jherskovic/iSCSI/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jherskovic/iSCSI/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jherskovic/iSCSI/badges/tests.json)](https://github.com/jherskovic/iSCSI/actions/workflows/ci.yml)
-[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jherskovic/iSCSI/badges/coverage.json)](https://github.com/jherskovic/iSCSI/actions/workflows/ci.yml)
+[![version](https://img.shields.io/github/v/release/jherskovic/iSCSI-NVMe-TCP?sort=semver&display_name=tag&label=version)](https://github.com/jherskovic/iSCSI-NVMe-TCP/releases/latest)
+[![license](https://img.shields.io/github/license/jherskovic/iSCSI-NVMe-TCP)](LICENSE)
+[![build](https://github.com/jherskovic/iSCSI-NVMe-TCP/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jherskovic/iSCSI-NVMe-TCP/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jherskovic/iSCSI-NVMe-TCP/badges/tests.json)](https://github.com/jherskovic/iSCSI-NVMe-TCP/actions/workflows/ci.yml)
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jherskovic/iSCSI-NVMe-TCP/badges/coverage.json)](https://github.com/jherskovic/iSCSI-NVMe-TCP/actions/workflows/ci.yml)
 
 iSCSIInitiator is a modern Apache-licensed, user-mode iSCSI/NVMeoF client ('initiator' in iSCSI parlance) for macOS 26+.
 I started this project because existing initiators were either dead (kexts) or expensive and commercial.
@@ -34,7 +34,7 @@ case, I can't be held responsible for data loss. Test it before trusting it.
 
 ## Mandatory screenshot
 
-![Setup screen](https://github.com/jherskovic/iSCSI/raw/main/docs/screenshots/setup.jpg "The setup screen")
+![Setup screen](https://github.com/jherskovic/iSCSI-NVMe-TCP/raw/main/docs/screenshots/setup.jpg "The setup screen")
 
 ## AI warning
 
@@ -48,7 +48,7 @@ If vibe-coded projects scare you, please move on.
 
 Drag the application to /Applications like any other Mac app. On first launch the setup screen will open,
 showing any steps that need to be completed. You will likely have to enable the FSKit extension, shown below
-![FS Kit Extension pane in System Settings](https://github.com/jherskovic/iSCSI/raw/main/docs/screenshots/fskit.jpg)
+![FS Kit Extension pane in System Settings](https://github.com/jherskovic/iSCSI-NVMe-TCP/raw/main/docs/screenshots/fskit.jpg)
 
 Certain versions of macOS, especially 26.x, have a bug that doesn't let you enable FSKit extensions through
 System Settings. The problem is UI, not permissions. The app detects this and offers an override. It is safe.
@@ -66,7 +66,7 @@ The app detects this on launch and will clean it up for you if you let it. It's 
 Head to the "Discover" page and enter the address of the target you wish to connect to. Scroll down for options
 like username/password, or forcing the connection to a specific network interface. Click Search. Once discovery
 finishes, you'll be able to Add targets to the target list.
-![The list of targets](https://github.com/jherskovic/iSCSI/raw/main/docs/screenshots/attach.jpg)
+![The list of targets](https://github.com/jherskovic/iSCSI-NVMe-TCP/raw/main/docs/screenshots/attach.jpg)
 
 Once your target appears on the target list, right-click it and select "Edit" for security and caching options.
 Otherwise, click "Attach". Your target should be mounted in a few seconds. Eject it normally. Detach from the
@@ -131,7 +131,7 @@ power with a volatile write cache):
 
 ```bash
 swift run iscsi-target-sim --port 3260 --capacity-mib 1024 &
-swift run iscsictl iscsi verify 127.0.0.1 --target iqn.2000-01.com.example:lun0 --write
+swift run iscsictl iscsi verify 127.0.0.1 --target iqn.2026-08.me.herko.sim:lun0 --write
 printf 'crash\n' | nc 127.0.0.1 3262     # target power loss, on demand
 
 swift run iscsi-target-sim --nvme --capacity-mib 1024 &     # the same, as NVMe/TCP on 4420

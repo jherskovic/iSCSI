@@ -9,6 +9,7 @@
 
 import Foundation
 import Testing
+import os
 @testable import iSCSIKit
 @testable import iSCSIVolume
 
@@ -35,6 +36,11 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     /// Runs at the start of every read, before it is answered — for holding
     /// reads inside the daemon to see how many can be there at once.
     var onRead: (() -> Void)?
+    /// When set, reads, writes or flushes arrive and are never answered — a
+    /// session stalled inside the daemon. Writes are not applied either.
+    var silentReads = false
+    var silentWrites = false
+    var silentFlushes = false
 
     init(byteCount: Int) { bytes = Data(count: byteCount) }
 
@@ -47,6 +53,7 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
               reply: @escaping (Data?, Error?) -> Void) {
         onRead?()
         lock.lock()
+        if silentReads { lock.unlock(); return }
         let start = offset.uint64Value
         let end = min(start + length.uint64Value, UInt64(bytes.count))
         let slice = start >= UInt64(bytes.count)
@@ -60,6 +67,7 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
                reply: @escaping (Error?) -> Void) {
         onWrite?()
         lock.lock()
+        if silentWrites { lock.unlock(); return }
         if failNextWrite {
             failNextWrite = false
             lock.unlock()
@@ -76,15 +84,14 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
     }
 
     func flush(session: String, reply: @escaping (Error?) -> Void) {
-        lock.lock(); flushes += 1; lock.unlock()
-        reply(nil)
+        lock.lock()
+        flushes += 1
+        let silent = silentFlushes
+        lock.unlock()
+        if !silent { reply(nil) }
     }
 
     func logout(session: String, reply: @escaping (Error?) -> Void) { reply(nil) }
-
-    func readaheadBudget(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
-        reply(0, nil)
-    }
 
     func localCacheBytes(session: String, reply: @escaping (NSNumber, Error?) -> Void) {
         guard answersLocalCache else { return }
@@ -101,9 +108,7 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
 
     func login(host: String, port: NSNumber, targetIQN: String, lun: NSNumber,
                reply: @escaping (String?, Error?) -> Void) { reply(nil, nil) }
-    func discover(host: String, port: NSNumber, reply: @escaping ([String]?, Error?) -> Void) { reply(nil, nil) }
     func capacity(session: String, reply: @escaping (NSNumber, NSNumber, Error?) -> Void) { reply(0, 0, nil) }
-    func listSessions(reply: @escaping ([String]) -> Void) { reply([]) }
     func daemonInfo(reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func refreshFSKitEnablement(reply: @escaping (Error?) -> Void) { reply(nil) }
     func listTargets(reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
@@ -121,7 +126,6 @@ final class FakeDaemon: NSObject, ISCSIDaemonProtocol, @unchecked Sendable {
         reply(nil, nil)
     }
 
-    func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func listSessionsDetailed(reply: @escaping (Data?, Error?) -> Void) { reply(nil, nil) }
     func removeAllData(reply: @escaping (Error?) -> Void) { reply(nil) }
     func otherAccountsWithData(reply: @escaping (NSNumber) -> Void) { reply(0) }
@@ -142,11 +146,13 @@ struct DaemonStoreTests {
     private static let blockSize: UInt64 = 4096
     private static let capacity = 8 << 20        // 8 MiB
 
-    private func makeStore() -> (DaemonStore, FakeDaemon) {
+    private func makeStore(callTimeout: TimeInterval = DaemonStore.defaultTimeout)
+        -> (DaemonStore, FakeDaemon) {
         let daemon = FakeDaemon(byteCount: Self.capacity)
         let store = DaemonStore(daemon: daemon, session: "s1",
                                 blockSize: Self.blockSize,
-                                byteCount: UInt64(Self.capacity))
+                                byteCount: UInt64(Self.capacity),
+                                callTimeout: callTimeout)
         return (store, daemon)
     }
 
@@ -332,6 +338,117 @@ struct DaemonStoreTests {
         #expect(store.fetchesInFlight.peak == readers)
         #expect(store.readsInFlight.current == 0)
         #expect(store.summary.contains("inflight=\(readers)/\(readers) "))
+    }
+}
+
+/// The death latch: what turns an unanswered daemon into a volume that fails
+/// at once rather than one that costs every caller a full timeout. Run with a
+/// 0.2 s call timeout.
+@Suite("Daemon store: the death latch", .serialized)
+struct DaemonStoreDeathLatchTests {
+    static let blockSize: UInt64 = 4096
+    static let capacity = 8 << 20
+    static let timeout: TimeInterval = 0.2
+
+    private func makeStore() -> (DaemonStore, FakeDaemon) {
+        let daemon = FakeDaemon(byteCount: Self.capacity)
+        let store = DaemonStore(daemon: daemon, session: "s1", blockSize: Self.blockSize,
+                                byteCount: UInt64(Self.capacity), callTimeout: Self.timeout)
+        return (store, daemon)
+    }
+
+    private func read(_ store: DaemonStore, at offset: UInt64) throws {
+        var out = Data(count: 4096)
+        _ = try out.withUnsafeMutableBytes { raw in
+            try store.read(into: raw, at: offset, length: 4096)
+        }
+    }
+
+    private func code(of body: () throws -> Void) -> POSIXErrorCode? {
+        do { try body(); return nil } catch let error as POSIXError { return error.code } catch { return nil }
+    }
+
+    /// The daemon keeps retrying a write the extension gave up on, and it can
+    /// land later — after a read cached the old bytes, or after a newer write.
+    @Test func aWriteTheDaemonNeverAnsweredStopsTheVolume() {
+        let (store, daemon) = makeStore()
+        daemon.silentWrites = true
+        #expect(code { _ = try store.write(Data(repeating: 1, count: 4096), at: 0) } == .EIO)
+        #expect(store.hasFailed)
+
+        daemon.silentWrites = false
+        #expect(code { try read(store, at: 0) } == .EIO)
+        #expect(code { _ = try store.write(Data(repeating: 2, count: 4096), at: 0) } == .EIO)
+        #expect(daemon.log.isEmpty, "a dead volume still reached the daemon")
+    }
+
+    /// The timeout outlasts the daemon's own retry, so one unanswered read
+    /// is a session that is not coming back, not a pause.
+    @Test func oneUnansweredReadStopsTheVolume() {
+        let (store, daemon) = makeStore()
+        daemon.silentReads = true
+        #expect(code { try read(store, at: 0) } == .EIO)
+        #expect(store.hasFailed)
+
+        daemon.silentReads = false
+        #expect(code { try read(store, at: 1 << 20) } == .EIO)
+        #expect(daemon.log.isEmpty, "a dead volume still reached the daemon")
+    }
+
+    /// An unmount flushes more than once. On a stalled target, each of those
+    /// used to wait out its own timeout; now only the first does.
+    @Test func anUnansweredFlushStopsTheVolumeSoTheNextFailsAtOnce() {
+        let (store, daemon) = makeStore()
+        daemon.silentFlushes = true
+        #expect(code { try store.flush() } == .EIO)
+        #expect(store.hasFailed)
+
+        let started = ContinuousClock.now
+        #expect(code { try store.flush() } == .EIO)
+        #expect(ContinuousClock.now - started < .seconds(Self.timeout / 2))
+        #expect(daemon.flushes == 1)
+    }
+
+    /// One stall times out every read in flight at once (DiskImages2 reads
+    /// concurrently). Every one of them fails, and the volume is dead once,
+    /// not once per read.
+    @Test func readsInFlightInOneStallAllFail() throws {
+        let (store, daemon) = makeStore()
+        daemon.silentReads = true
+        let box = StoreBox(store)
+        let finished = DispatchGroup()
+        let failures = OSAllocatedUnfairLock(initialState: 0)
+        for i in 0 ..< 6 {
+            finished.enter()
+            Thread {
+                var out = Data(count: 4096)
+                do {
+                    _ = try out.withUnsafeMutableBytes { raw in
+                        try box.store.read(into: raw, at: UInt64(i) << 20, length: 4096)
+                    }
+                } catch {
+                    failures.withLock { $0 += 1 }
+                }
+                finished.leave()
+            }.start()
+        }
+        #expect(finished.wait(timeout: .now() + 10) == .success)
+        #expect(failures.withLock { $0 } == 6)
+        #expect(store.hasFailed)
+    }
+
+    /// The ordering this latch depends on. A store that gives up first fails
+    /// operations the daemon is about to finish: on 2026-11-09 a write behind
+    /// a slow NAS flush failed in the extension at 30 s, 8 ms before the
+    /// daemon reconnected, and the daemon landed it 4.6 s later.
+    @Test func theStoreOutwaitsTheDaemonsOwnRetry() throws {
+        let policy = SessionPolicy()
+        let task = try #require(policy.taskTimeout)
+        let login = try #require(policy.loginTimeout)
+        let time2Wait = Duration.seconds(Int(OperationalParameters().defaultTime2Wait))
+        let oneRetry = task + time2Wait + NetworkTransport.defaultConnectTimeout + login + task
+        #expect(policy.taskRetries >= 1, "with no retry there is nothing to outwait")
+        #expect(Duration.seconds(DaemonStore.defaultTimeout) > oneRetry + .seconds(5))
     }
 }
 

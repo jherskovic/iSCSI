@@ -8,16 +8,15 @@ import Foundation
 // of iSCSIKit stays portable and free of platform I/O.
 #if os(macOS)
 
-/// XPC surface the daemon exposes to clients (the FSKit extension, the CLI,
-/// and eventually the dext-side helper). Kept `@objc` and NSSecureCoding-
-/// friendly (Data/NSNumber/NSString) so it crosses the XPC boundary.
+/// XPC surface the daemon exposes to clients (the app, the FSKit extension
+/// and iscsictl). Kept `@objc` and NSSecureCoding-friendly
+/// (Data/NSNumber/NSString) so it crosses the XPC boundary. Every method is
+/// reachable by any signed client from any account on the Mac, so a method
+/// nothing calls is removed rather than kept.
 ///
 /// The daemon owns the live ISCSISession; clients issue block I/O and session
 /// management through this protocol. All methods are async via reply blocks.
 @objc public protocol ISCSIDaemonProtocol {
-    /// Discover targets at a portal. Reply: array of "iqn\taddr,addr" strings.
-    func discover(host: String, port: NSNumber, reply: @escaping ([String]?, Error?) -> Void)
-
     /// Log in and establish a session for `targetIQN`. Reply: session handle.
     ///
     /// The portal identifies a target the daemon **already has on file**; there
@@ -43,17 +42,11 @@ import Foundation
     /// Geometry. Reply: (blockSize, blockCount).
     func capacity(session: String, reply: @escaping (NSNumber, NSNumber, Error?) -> Void)
 
-    /// Readahead byte budget for this session's target, from its
-    /// `WorkloadProfile`. Reply: bytes.
-    ///
-    /// Keyed on the session handle the daemon already owns — the FSKit
-    /// extension holds only a mount URL and deliberately forwards nothing
-    /// from it, keeping the lookup on the daemon's side of the trust boundary.
-    func readaheadBudget(session: String, reply: @escaping (NSNumber, Error?) -> Void)
-
     /// Local disk cache size for this session's target, in bytes (0 = off),
-    /// resolved at login. Keyed on the session handle for the same reason as
-    /// `readaheadBudget`: the extension forwards nothing about the target.
+    /// resolved at login. Keyed on the session handle the daemon already
+    /// owns: the FSKit extension holds only a mount URL and deliberately
+    /// forwards nothing from it, keeping the lookup on the daemon's side of
+    /// the trust boundary.
     func localCacheBytes(session: String, reply: @escaping (NSNumber, Error?) -> Void)
 
     /// Block read. offset/length in bytes, block-aligned. Reply: data.
@@ -64,9 +57,6 @@ import Foundation
 
     /// SYNCHRONIZE CACHE. Reply: error or nil.
     func flush(session: String, reply: @escaping (Error?) -> Void)
-
-    /// Live session handles.
-    func listSessions(reply: @escaping ([String]) -> Void)
 
     /// Identity and liveness. Reply carries a JSON-encoded `DaemonInfo`.
     ///
@@ -145,10 +135,6 @@ import Foundation
     /// `interfaceName`/`interfaceFallback` as for `discoverTargets`.
     func discoverSubsystems(host: String, port: NSNumber, interfaceName: String?,
                             interfaceFallback: Bool, reply: @escaping (Data?, Error?) -> Void)
-
-    /// REPORT LUNS, or for an NVMe session the active namespace list, against
-    /// an established session. Reply: JSON `[LUNInfo]` (`lun` = NSID).
-    func reportLUNs(session: String, reply: @escaping (Data?, Error?) -> Void)
 
     /// Every live session with its negotiated parameters, recovery count and
     /// cache state. Reply: JSON `[SessionInfo]`.

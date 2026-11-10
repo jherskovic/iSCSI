@@ -248,17 +248,27 @@ public final class DaemonStore: LUNStore {
     /// The longest single daemon read round trip, demand or speculative.
     private(set) var longestFetchNanos: UInt64 = 0
 
-    /// Seconds to wait for any single daemon call.
-    private static let timeout: TimeInterval = 30
+    /// Seconds to wait for one read, write or flush, unless a test says less.
+    ///
+    /// Longer than the daemon takes to give a stalled operation one retry, so
+    /// its reconnect-and-resend can finish what it started: the attempt's 30 s
+    /// task timeout, then a reconnect (DefaultTime2Wait, a 10 s TCP connect,
+    /// a 15 s login), then the retry's own 30 s — 87 s in all, pinned by
+    /// `DaemonStoreDeathLatchTests`. This was 30 s, the task timeout itself,
+    /// and the extension lost that race every time: on 2026-11-09 a write
+    /// queued behind a 30 s NAS flush failed here 8 ms before the daemon
+    /// reconnected, and the daemon landed it 4.6 s later — after Finder had
+    /// abandoned the copy it belonged to with error -36.
+    public static let defaultTimeout: TimeInterval = 100
+    private let callTimeout: TimeInterval
 
-    /// Consecutive unanswered daemon calls before the volume is declared dead.
-    /// Three, not one: a single timeout can be a target pausing under load;
-    /// three in a row with nothing between is a session not coming back.
-    private static let timeoutsBeforeDead = 3
+    /// Seconds to wait for the calls around a mount — login, capacity, the
+    /// logout at teardown. Each is bounded inside the daemon already, and a
+    /// mount that cannot log in should say so in seconds, not minutes.
+    static let setupTimeout: TimeInterval = 30
 
-    /// Guards the two fields below across FSKit's arbitrary calling threads.
+    /// Guards `isDead` across FSKit's arbitrary calling threads.
     private let healthLock = NSLock()
-    private var consecutiveTimeouts = 0
     private var isDead = false
 
     /// Whether this volume has given up. Latched: it never goes back.
@@ -337,10 +347,10 @@ public final class DaemonStore: LUNStore {
         } catch let error as PrefetchChunkCache.CacheError {
             switch error {
             case .unanswered:
-                // A speculative read the daemon never answered. Not retried —
-                // that would spend a second timeout on a session that just
-                // failed one. Count it; the death latch does the rest.
-                throw recordTimeout()
+                // A speculative read the daemon never answered — not even
+                // after its own retry. Not retried here: the session is gone.
+                latchDead("a read went unanswered for \(Int(callTimeout)) s")
+                throw POSIXError(.EIO)
             case .shortRead:
                 throw POSIXError(.EIO)
             }
@@ -348,13 +358,19 @@ public final class DaemonStore: LUNStore {
     }
 
     /// The death latch: without it, every I/O to a dead session costs a full
-    /// 30 s timeout, reads as retryable, and is retried forever — an
-    /// unkillable mount dragging down everything that touches the mount
-    /// table. Timeouts are counted (success clears the count); at the limit
-    /// the volume is dead and every later call fails *immediately*, which is
-    /// what lets DiskImages/APFS reach a conclusion in seconds. Only
-    /// unanswered calls count — a SCSI error is an answer, and a bad block
-    /// must not condemn a healthy volume.
+    /// timeout, reads as retryable, and is retried forever — an unkillable
+    /// mount dragging down everything that touches the mount table. One
+    /// unanswered call latches it, and every later call fails *immediately*,
+    /// which is what lets DiskImages/APFS reach a conclusion. Only unanswered
+    /// calls count — a SCSI error is an answer, and a bad block must not
+    /// condemn a healthy volume.
+    ///
+    /// One, not a count. The timeout outlasts the daemon's own retry
+    /// (`defaultTimeout`), so a call that runs it out is not a target pausing
+    /// under load: the daemon already waited out one pause, reconnected and
+    /// resent, and that failed too. A write that runs it out may still land
+    /// after a later read or write, which nothing here can order or undo. It
+    /// used to take three 30 s stalls, which was about as long.
     private func checkAlive() throws {
         healthLock.lock()
         let dead = isDead
@@ -362,40 +378,39 @@ public final class DaemonStore: LUNStore {
         if dead { throw POSIXError(.EIO) }
     }
 
-    /// An answer arrived, so whatever came before was not a pattern.
-    private func recordSuccess() {
+    /// Declare the volume dead, once, saying why.
+    private func latchDead(_ why: String) {
         healthLock.lock()
-        consecutiveTimeouts = 0
+        let already = isDead
+        isDead = true
         healthLock.unlock()
+        guard !already else { return }
+        fsLog.error("volume declared dead: \(why, privacy: .public); all further I/O fails immediately")
     }
 
-    /// Count one unanswered call and return the error to throw: ETIMEDOUT
-    /// while there is still hope, EIO once there is not. Returns rather than
-    /// throws so the direct and readahead paths account identically.
-    private func recordTimeout() -> any Error {
-        healthLock.lock()
-        consecutiveTimeouts += 1
-        let count = consecutiveTimeouts
-        if count >= Self.timeoutsBeforeDead { isDead = true }
-        let nowDead = isDead
-        healthLock.unlock()
-        if nowDead {
-            fsLog.error("""
-                volume declared dead after \(count, privacy: .public) unanswered \
-                daemon calls; all further I/O fails immediately
-                """)
-            return POSIXError(.EIO)
-        }
-        return POSIXError(.ETIMEDOUT)
-    }
-
-    private func daemonCall(_ body: (@escaping () -> Void) -> Void) throws {
+    /// One daemon call, waited for up to `callTimeout`. `body` gets a proxy
+    /// whose error handler ends the wait: when the connection drops, NSXPC
+    /// calls that handler and never the reply, and the call used to sit out
+    /// the whole timeout (holding `ioLock`, for a write). A dropped
+    /// connection takes the session with it, so the volume is dead. So is
+    /// one that runs out the timeout (`checkAlive`); `what` says which call.
+    private func daemonCall(_ what: String,
+                            _ body: (ISCSIDaemonProtocol, @escaping () -> Void) -> Void) throws {
         try checkAlive()
-        do {
-            try Self.blocking(body)
-            recordSuccess()
-        } catch let error as POSIXError where error.code == .ETIMEDOUT {
-            throw recordTimeout()
+        let sem = DispatchSemaphore(value: 0)
+        let lost = OSAllocatedUnfairLock(initialState: false)
+        let proxy = try daemon(onError: { _ in
+            lost.withLock { $0 = true }
+            sem.signal()
+        })
+        body(proxy) { sem.signal() }
+        if sem.wait(timeout: .now() + callTimeout) == .timedOut {
+            latchDead("\(what) went unanswered for \(Int(callTimeout)) s")
+            throw POSIXError(.EIO)
+        }
+        if lost.withLock({ $0 }) {
+            latchDead("the connection to the background service was lost")
+            throw POSIXError(.EIO)
         }
     }
 
@@ -480,19 +495,6 @@ public final class DaemonStore: LUNStore {
         let (product, overflowed) = bs.multipliedReportingOverflow(by: count)
         guard !overflowed, product > 0 else { throw POSIXError(.EIO) }
 
-        // Readahead budget: 0 unless the target record pins an explicit
-        // `workloadProfile` override; otherwise depth is adaptive. Failure is
-        // deliberately not fatal — a mount must not die for a tuning
-        // parameter.
-        var budgetReply: NSNumber = 0
-        try? Self.blocking { done in
-            proxy.readaheadBudget(session: handle) { bytes, error in
-                if error == nil { budgetReply = bytes }
-                done()
-            }
-        }
-        let pinned = budgetReply.intValue > 0
-        let budgetBytes = pinned ? budgetReply.intValue : Self.readaheadBytes
         // Local disk cache: best effort. Anything short of a usable tier
         // mounts without one and says why. Asked only of a daemon that has the
         // method: one that lacks it drops this connection, and with it the
@@ -520,7 +522,7 @@ public final class DaemonStore: LUNStore {
         }
         self.init(connection: xpc, injectedDaemon: nil, session: handle,
                   blockSize: bs, byteCount: product,
-                  budgetBytes: budgetBytes, pinned: pinned,
+                  budgetBytes: Self.readaheadBytes, pinned: false,
                   ramCacheBytes: Self.maxCachedBytes, diskTier: tier, diskTierOff: tierOff)
     }
 
@@ -530,8 +532,10 @@ public final class DaemonStore: LUNStore {
                  session: String, blockSize bs: UInt64, byteCount: UInt64,
                  budgetBytes: Int, pinned: Bool,
                  ramCacheBytes: Int, diskTier: DiskChunkTier?, diskTierOff: String?,
-                 slowIOThreshold: TimeInterval = 1) {
+                 slowIOThreshold: TimeInterval = 1,
+                 callTimeout: TimeInterval = DaemonStore.defaultTimeout) {
         self.slowIONanos = UInt64(max(0, slowIOThreshold) * 1e9)
+        self.callTimeout = callTimeout
         self.connection = connection
         self.injectedDaemon = injectedDaemon
         self.session = session
@@ -551,7 +555,7 @@ public final class DaemonStore: LUNStore {
                                     maxSlots: Self.readaheadMaxSlots,
                                     minStreamBytes: Self.readaheadMinStream,
                                     chunkBytes: chunk),
-            timeout: Self.timeout,
+            timeout: callTimeout,
             adaptiveDepth: !pinned,
             sectorBytes: Self.sectorBytes(forBlockSize: Int(bs)),
             fetchSync: { [weak self] offset, length in
@@ -588,27 +592,32 @@ public final class DaemonStore: LUNStore {
                             readaheadBudgetBytes: Int? = nil,
                             ramCacheBytes: Int? = nil,
                             diskTier: DiskChunkTier? = nil,
-                            slowIOThreshold: TimeInterval = 1) {
+                            slowIOThreshold: TimeInterval = 1,
+                            callTimeout: TimeInterval = DaemonStore.defaultTimeout) {
         self.init(connection: nil, injectedDaemon: daemon, session: session,
                   blockSize: blockSize, byteCount: byteCount,
                   budgetBytes: readaheadBudgetBytes ?? Self.readaheadBytes,
                   pinned: readaheadBudgetBytes != nil,
                   ramCacheBytes: ramCacheBytes ?? Self.maxCachedBytes,
                   diskTier: diskTier, diskTierOff: nil,
-                  slowIOThreshold: slowIOThreshold)
+                  slowIOThreshold: slowIOThreshold, callTimeout: callTimeout)
     }
 
 
-    /// One speculative chunk from the daemon; nil on any failure.
+    /// One speculative chunk from the daemon; nil on any failure — a
+    /// dropped connection included, which answers through the proxy's error
+    /// handler and never the reply. Before, that left the chunk pending, and
+    /// the next read of it waited out the full timeout.
     private func fetchFromDaemon(offset: UInt64, length: Int, _ done: @escaping (Data?) -> Void) {
-        guard let proxy = try? daemon() else { done(nil); return }
+        let finish = CallOnce(done)
+        guard let proxy = try? daemon(onError: { _ in finish(nil) }) else { finish(nil); return }
         let started = Self.now()
         let ahead = fetchesInFlight.current
         proxy.read(session: session, offset: NSNumber(value: offset),
                    length: NSNumber(value: length)) { [weak self] data, error in
             self?.recordFetch(offset: offset, length: length, took: Self.now() &- started,
                               ahead: ahead, speculative: true)
-            done(error == nil ? data : nil)
+            finish(error == nil ? data : nil)
         }
     }
 
@@ -619,18 +628,23 @@ public final class DaemonStore: LUNStore {
         connection?.invalidate()
     }
 
-    /// The daemon, however this store was given one.
-    private func daemon() throws -> ISCSIDaemonProtocol {
+    /// The daemon, however this store was given one. `onError` runs if the
+    /// message cannot be delivered or the connection drops before its reply.
+    private func daemon(onError: @escaping @Sendable (Error) -> Void = { _ in }) throws
+        -> ISCSIDaemonProtocol {
         if let injectedDaemon { return injectedDaemon }
         guard let connection else { throw POSIXError(.EIO) }
-        return try Self.proxy(connection)
+        return try Self.proxy(connection, onError: onError)
     }
 
-    private static func proxy(_ connection: NSXPCConnection) throws -> ISCSIDaemonProtocol {
+    private static func proxy(_ connection: NSXPCConnection,
+                              onError: @escaping @Sendable (Error) -> Void = { _ in }) throws
+        -> ISCSIDaemonProtocol {
         // A synchronous proxy would deadlock the reply-handler style used here;
         // errors surface through the error handler instead.
         guard let p = connection.remoteObjectProxyWithErrorHandler({ error in
             fsLog.error("daemon XPC error: \(error.localizedDescription, privacy: .public)")
+            onError(error)
         }) as? ISCSIDaemonProtocol else {
             throw POSIXError(.ENOTCONN)
         }
@@ -638,7 +652,7 @@ public final class DaemonStore: LUNStore {
     }
 
     /// Runs an async XPC call and waits for its reply, or throws ETIMEDOUT.
-    private static func blocking(timeout: TimeInterval = DaemonStore.timeout,
+    private static func blocking(timeout: TimeInterval = DaemonStore.setupTimeout,
                                  _ body: (@escaping () -> Void) -> Void) throws {
         let sem = DispatchSemaphore(value: 0)
         body { sem.signal() }
@@ -664,7 +678,7 @@ public final class DaemonStore: LUNStore {
     }
 
     /// The target's local cache size, or 0. Its own short timeout, so a slow
-    /// answer costs a mount seconds, not the 30 s a data call is allowed.
+    /// answer costs a mount seconds, not the 100 s a data call is allowed.
     /// Only for a daemon that has the method — see `DaemonCapabilities`: one
     /// that lacks it does not stay silent, it drops the connection.
     static func localCacheSetting(from proxy: ISCSIDaemonProtocol, session: String,
@@ -691,10 +705,9 @@ public final class DaemonStore: LUNStore {
             DaemonTimeOnThisThread.add(took)
             recordFetch(offset: offset, length: length, took: took, ahead: ahead, speculative: false)
         }
-        let proxy = try daemon()
         var data: Data?
         var err: Error?
-        try daemonCall { done in
+        try daemonCall("a read") { proxy, done in
             proxy.read(session: session, offset: NSNumber(value: offset),
                        length: NSNumber(value: length)) { d, e in
                 data = d; err = e; done()
@@ -705,10 +718,23 @@ public final class DaemonStore: LUNStore {
         return data
     }
 
+    /// A write the daemon does not answer in time is not a failed write: the
+    /// daemon may still be retrying it (up to three 30 s attempts and a
+    /// recovery), and it may land after FSKit has been told it failed — after
+    /// a read has cached the old bytes, or after a newer write to the same
+    /// blocks. Nothing here can order or undo that, so `daemonCall` stops the
+    /// volume: fail-stop, not a guess about what the media holds.
+    ///
+    /// A write the daemon answers with an error does not stop it, whatever
+    /// the error. The daemon replies only once it has stopped resending, so
+    /// no resend of ours can land later. With quick reconnects its three 30 s
+    /// attempts end at about 90 s, inside `defaultTimeout`; slow ones run
+    /// past it, and then the timeout above stops the volume instead. What a
+    /// target does with a command from a connection it has lost is beyond
+    /// any initiator.
     private func rawWrite(offset: UInt64, data: Data) throws {
-        let proxy = try daemon()
         var err: Error?
-        try daemonCall { done in
+        try daemonCall("a write, which may still land,") { proxy, done in
             proxy.write(session: session, offset: NSNumber(value: offset), data: data) { e in
                 err = e; done()
             }
@@ -802,10 +828,10 @@ public final class DaemonStore: LUNStore {
     public func releaseLocalCache() { diskTier?.release() }
 
     /// SYNCHRONIZE CACHE. FSKit never signals barriers (see
-    /// docs/backend-a-fskit-notes.md), so this only runs on final close — which
-    /// is why the target should also be configured write-through.
+    /// docs/backend-a-fskit-notes.md), so this only runs on final close, at
+    /// unmount, and when the data cache closes — which is why writes default
+    /// to FUA.
     public func flush() throws {
-        let proxy = try daemon()
         var err: Error?
         let started = Self.now()
         defer {
@@ -814,7 +840,7 @@ public final class DaemonStore: LUNStore {
                 fsLog.error("slow flush: \(Self.ms(took), privacy: .public) ms in the daemon")
             }
         }
-        try daemonCall { done in
+        try daemonCall("a flush") { proxy, done in
             proxy.flush(session: session) { e in err = e; done() }
         }
         if let err { throw err }
@@ -893,7 +919,19 @@ public final class DaemonStore: LUNStore {
     }
 }
 
-// MARK: - Items
+/// A completion that runs at most once, whichever of the reply and the
+/// connection's error handler gets there first.
+final class CallOnce<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var body: ((Value) -> Void)?
 
-/// A file or directory in the prototype volume. The volume is flat: a root
-/// directory containing exactly one file.
+    init(_ body: @escaping (Value) -> Void) { self.body = body }
+
+    func callAsFunction(_ value: Value) {
+        lock.lock()
+        let run = body
+        body = nil
+        lock.unlock()
+        run?(value)
+    }
+}

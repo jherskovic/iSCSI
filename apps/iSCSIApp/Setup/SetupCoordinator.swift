@@ -33,6 +33,7 @@
 
 import Foundation
 import SwiftUI
+import iSCSIKit
 
 @MainActor
 final class SetupCoordinator: ObservableObject {
@@ -204,12 +205,26 @@ final class DaemonStep: SetupStep {
 
     /// Reinstall over a daemon that is answering stops it, and every session
     /// it holds goes with it; those sessions are hidden while this step is
-    /// unsatisfied, so the user cannot see what they would lose.
+    /// unsatisfied, so the user cannot see what they would lose. Whatever the
+    /// state, a disk mounted through this app — in any account — is named:
+    /// after an update the old daemon is often still serving one.
     var consentPrompt: String? {
-        guard case .otherCopy = controller.state else { return nil }
-        return "This stops the background service running from the other copy and "
-            + "starts it from this one. Disks attached through it lose their "
-            + "connection — eject them in Finder first."
+        let mounted = AppReplacement.mountsItWouldDisconnect(AttachmentManager.mountTable())
+            .map(FSKitRestart.describe)
+        let naming = mounted.isEmpty ? "" : " Attached now: " + mounted.joined(separator: "; ") + "."
+        switch controller.state {
+        case .otherCopy:
+            return "This stops the background service running from the other copy and "
+                + "starts it from this one. Disks attached through it lose their "
+                + "connection — eject them in Finder first." + naming
+        case .versionMismatch, .registeredNotResponding:
+            guard !mounted.isEmpty else { return nil }
+            return "This stops the background service and starts it again, and disks "
+                + "attached through it lose their connection — eject them first, in "
+                + "each account that has one." + naming
+        default:
+            return nil
+        }
     }
 
     var consentTitle: String? { "Reinstall the background service?" }

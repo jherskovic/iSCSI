@@ -23,13 +23,9 @@ public enum Opcode: UInt8, Sendable, CaseIterable {
     case asyncMessage = 0x32
     case reject = 0x3F
 
-    public var isTargetOpcode: Bool {
-        rawValue >= 0x20
-    }
 }
 
 public enum PDUError: Error, Equatable, Sendable {
-    case truncatedBHS
     case unknownOpcode(UInt8)
     case headerDigestMismatch
     case dataDigestMismatch

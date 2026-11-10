@@ -42,9 +42,10 @@ socket (`MockTargetServer`), with 20+ switchable faults.
   No longer MockTarget-only: on 2026-08-17 a real connection to the NAS dropped
   mid-soak (`POSIXErrorCode 60`) and recovery reconnected in ~12 s over two
   attempts, unprompted. It also exposed that the extension's fixed 30 s call
-  timeout is unaware of recovery and gave up 330 ms before it succeeded, failing
+  timeout was unaware of recovery and gave up 330 ms before it succeeded, failing
   the caller's I/O for a session that was about to be fine — item 8a in
-  `docs/open-questions.md`.
+  `docs/open-questions.md`, where the 100 s timeout that replaced it is
+  described.
 - **Real TCP loopback**: login/write/flush/read/verify with CRC32C over an
   actual socket; discovery; session recovery — validates `NetworkTransport`.
 

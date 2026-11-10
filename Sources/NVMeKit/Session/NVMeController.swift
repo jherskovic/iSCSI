@@ -103,16 +103,24 @@ public actor NVMeController {
     // MARK: - Lifecycle
 
     public func activate() async throws {
-        guard io == nil else { return }
         loggedOut = false
         recoveryFailed = nil
+        guard io == nil else { return }
         try await establish()
     }
 
+    /// Ends the controller, including a recovery in progress: without
+    /// stopping it, a recovery that was backing off when the user detached
+    /// brought a fresh pair up afterwards — two connections and a keepalive
+    /// nothing would ever stop.
     public func logout() async throws {
         loggedOut = true
         keepaliveTask?.cancel()
         keepaliveTask = nil
+        if let recovery = recoveryTask {
+            recovery.cancel()
+            _ = try? await recovery.value
+        }
         // Best effort: a normal shutdown notification (CC.SHN = 01b), then
         // wait for CSTS.SHST to report it complete, so a controller with a
         // volatile cache gets its chance to flush. nvmet frees the
@@ -162,7 +170,7 @@ public actor NVMeController {
                 try Task.checkCancellation()
                 guard !loggedOut, attempt < policy.taskRetries else { throw error }
                 attempt += 1
-                try await recover(after: error)
+                try await recover(after: error, on: queue)
             } catch BlockDeviceError.nvmeStatus(let sct, let sc, let opcode)
                 where NVMeStatus(sct: sct, sc: sc) == NVMeQueue.transientTransportError {
                 // Matched on SCT/SC alone: a controller-sent 22h with DNR set
@@ -181,7 +189,7 @@ public actor NVMeController {
                     throw SessionError.taskTimedOut
                 }
                 attempt += 1
-                try await recover(after: nil)
+                try await recover(after: nil, on: queue)
             }
         }
     }
@@ -235,7 +243,7 @@ public actor NVMeController {
         if loggedOut { throw SessionError.loggedOut }
         if let recoveryFailed { throw recoveryFailed }
         if let queue = (kind == .admin ? admin : io) { return queue }
-        try await recover(after: nil)
+        try await recover(after: nil, on: nil)
         guard let queue = (kind == .admin ? admin : io) else { throw SessionError.notActive }
         return queue
     }
@@ -330,6 +338,12 @@ public actor NVMeController {
                 await ioQueue.close()
                 throw error
             }
+            // Logged out while this bring-up was under way: a pair installed
+            // now would have nobody to take it down.
+            guard !loggedOut else {
+                await ioQueue.close()
+                throw SessionError.loggedOut
+            }
             admin = adminQueue
             io = ioQueue
             startKeepalive(on: adminQueue)
@@ -356,12 +370,19 @@ public actor NVMeController {
 
     /// Recovery: tear the pair down, back off, bring a fresh pair up.
     /// Coalesces concurrent callers onto a single recovery task.
-    private func recover(after error: ConnectionError?) async throws {
+    ///
+    /// `failed` is the queue the caller's attempt ran on, nil when there was
+    /// none. If neither queue is it any more, someone else's recovery already
+    /// replaced the pair, and the caller just retries: tearing down the
+    /// current pair would reset a healthy controller for a late failure.
+    private func recover(after error: ConnectionError?, on failed: NVMeQueue?) async throws {
         if let recoveryFailed { throw recoveryFailed }
+        if loggedOut { throw SessionError.loggedOut }
         if let existing = recoveryTask {
             try await existing.value
             return
         }
+        if let failed, failed !== admin, failed !== io, admin != nil || io != nil { return }
         // `recoveryTask` MUST be assigned before the first suspension point.
         // Actor isolation does not span an `await`: with the teardown out here,
         // a second caller reaching the guard while this one was inside
@@ -383,8 +404,10 @@ public actor NVMeController {
                 try Task.checkCancellation()
                 do {
                     try await self.establishForRecovery()
-                    onEvent?(.recovered(totalRecoveries: await self.recoveryCount))
+                    onEvent?(.recovered(totalRecoveries: self.recoveryCount))
                     return
+                } catch SessionError.loggedOut {
+                    throw SessionError.loggedOut
                 } catch {
                     lastError = "\(error)"
                 }
@@ -399,6 +422,10 @@ public actor NVMeController {
         } catch let failure as SessionError {
             if case .recoveryExhausted = failure { recoveryFailed = failure }
             throw failure
+        } catch {
+            // Cancelled by `logout`: say so, not "cancelled".
+            if loggedOut { throw SessionError.loggedOut }
+            throw error
         }
     }
 
@@ -414,6 +441,7 @@ public actor NVMeController {
     }
 
     private func startKeepalive(on queue: NVMeQueue) {
+        keepaliveTask?.cancel()
         guard let interval = policy.nopInterval else { return }
         keepaliveTask = Task { [policy] in
             while !Task.isCancelled {

@@ -96,7 +96,12 @@ enum DiskImages2Attach {
         params.setValue(autoMount, forKey: "autoMount")
         params.setValue(NSNumber(value: blockSize), forKey: "blockSize")
         // The setter records an override rather than changing `blockSize`'s
-        // getter, which still reads 512; check the override took.
+        // getter, which still reads 512; check the override took. Asked only
+        // if the getter exists: KVC on a missing key raises an Objective-C
+        // exception Swift cannot catch, and the promise above is no crash.
+        guard params.responds(to: NSSelectorFromString("overrideBlockSize")) else {
+            throw Failure.unavailable("no overrideBlockSize on DIAttachParams")
+        }
         guard (params.value(forKey: "overrideBlockSize") as? NSNumber)?.intValue == blockSize else {
             throw Failure.unavailable("blockSize was not accepted (overrideBlockSize unchanged)")
         }
@@ -106,7 +111,8 @@ enum DiskImages2Attach {
         guard attachCall(facade, attachSel, params, &handle, &error) else {
             throw Failure.refused(error?.localizedDescription ?? "returned NO without an error")
         }
-        guard let bsd = (handle as? NSObject)?.value(forKey: "BSDName") as? String, !bsd.isEmpty else {
+        guard let device = handle as? NSObject, device.responds(to: NSSelectorFromString("BSDName")),
+              let bsd = device.value(forKey: "BSDName") as? String, !bsd.isEmpty else {
             throw Failure.refused("attached, but the handle carries no BSD name")
         }
         return bsd

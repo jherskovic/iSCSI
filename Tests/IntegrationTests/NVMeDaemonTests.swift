@@ -11,13 +11,12 @@ import Testing
 private func makeDualDaemon(
     nvmeDisk: RAMDisk = RAMDisk(blockSize: 4096, capacityBlocks: 4096),
     nvmeConfig: MockNVMeConfig = MockNVMeConfig(),
-    iscsiDisk: RAMDisk = RAMDisk(),
-    writeThrough: Bool = true
+    iscsiDisk: RAMDisk = RAMDisk()
 ) -> (DaemonCore, MockNVMeSubsystem, @Sendable () -> Void) {
     let harnesses = HarnessBox()
     let subsystem = MockNVMeSubsystem(config: nvmeConfig, disk: nvmeDisk)
     let core = DaemonCore(initiatorName: "iqn.2026-08.com.example:daemon",
-                          writeThrough: writeThrough, policy: testPolicy(),
+                          policy: testPolicy(),
                           hostIdentity: testHost) { _, port, _ in
         let (initiatorSide, targetSide) = MemoryPipe.pair()
         if port == 4420 {

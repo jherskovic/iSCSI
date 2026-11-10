@@ -1,4 +1,6 @@
 #!/bin/bash
+# PARKED with Backend B. Needs `swift build -c release -Xswiftc -DISCSI_BACKEND_B`
+# on the VM: a plain build's iscsictl has no dext-attach.
 # vm-apfs-trace.sh — run ON the VM as root, STREAMED over ssh.
 #
 # Name the APFS code path that wedges, without symbolication.

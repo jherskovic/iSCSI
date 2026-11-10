@@ -58,7 +58,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
         /// everything in flight as waste, so it rises exactly when depth does.)
         public var resolvedUsed = 0
         public var resolvedWasted = 0
-        /// Depth cap currently in force. Constant when a `workloadProfile`
+        /// Depth cap currently in force. Constant when a test or bench
         /// override pins it; otherwise the controller's live figure, which is
         /// the only way to see what the loop is doing from a soak.
         public var currentCap = 0
@@ -159,7 +159,7 @@ public final class PrefetchChunkCache: @unchecked Sendable {
     }
 
     /// Steers `policy.adaptiveCap` from settled speculation outcomes. nil when
-    /// the target pinned its depth with a `workloadProfile` override.
+    /// a test or bench pinned its depth.
     private var depthController: ReadaheadDepthController?
     /// Chooses the miss path's fetch unit. nil when the chunk is the only
     /// unit there is (no `sectorBytes` finer than it).
