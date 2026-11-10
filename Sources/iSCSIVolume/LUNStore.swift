@@ -248,26 +248,27 @@ public final class DaemonStore: LUNStore {
     /// The longest single daemon read round trip, demand or speculative.
     private(set) var longestFetchNanos: UInt64 = 0
 
-    /// Seconds to wait for any single daemon call, unless a test says less.
-    public static let defaultTimeout: TimeInterval = 30
+    /// Seconds to wait for one read, write or flush, unless a test says less.
+    ///
+    /// Longer than the daemon takes to give a stalled operation one retry, so
+    /// its reconnect-and-resend can finish what it started: the attempt's 30 s
+    /// task timeout, then a reconnect (DefaultTime2Wait, a 10 s TCP connect,
+    /// a 15 s login), then the retry's own 30 s — 87 s in all, pinned by
+    /// `DaemonStoreDeathLatchTests`. This was 30 s, the task timeout itself,
+    /// and the extension lost that race every time: on 2026-11-09 a write
+    /// queued behind a 30 s NAS flush failed here 8 ms before the daemon
+    /// reconnected, and the daemon landed it 4.6 s later — after Finder had
+    /// abandoned the copy it belonged to with error -36.
+    public static let defaultTimeout: TimeInterval = 100
     private let callTimeout: TimeInterval
 
-    /// Consecutive unanswered stalls before the volume is declared dead.
-    /// Three, not one: a single timeout can be a target pausing under load;
-    /// three in a row with nothing between is a session not coming back.
-    ///
-    /// Stalls, not calls. With reads answered concurrently (DiskImages2), one
-    /// 30 s stall times out every read in flight at once, and counting each
-    /// of those killed the volume on a single pause the session recovered
-    /// from moments later. A timeout counts only if its call started after
-    /// the last counted one fired; any earlier call was waiting on the same
-    /// stall.
-    private static let timeoutsBeforeDead = 3
+    /// Seconds to wait for the calls around a mount — login, capacity, the
+    /// logout at teardown. Each is bounded inside the daemon already, and a
+    /// mount that cannot log in should say so in seconds, not minutes.
+    static let setupTimeout: TimeInterval = 30
 
-    /// Guards the fields below across FSKit's arbitrary calling threads.
+    /// Guards `isDead` across FSKit's arbitrary calling threads.
     private let healthLock = NSLock()
-    private var consecutiveTimeouts = 0
-    private var lastCountedTimeoutAt: UInt64 = 0
     private var isDead = false
 
     /// Whether this volume has given up. Latched: it never goes back.
@@ -338,7 +339,6 @@ public final class DaemonStore: LUNStore {
     /// A block-aligned read, served from the chunk cache.
     private func readAligned(offset: UInt64, length: Int) throws -> Data {
         try checkAlive()
-        let started = Self.now()
         lock.lock(); lastRequestBytes = length; lock.unlock()
         do {
             let data = try cache.read(offset: offset, length: length)
@@ -347,10 +347,10 @@ public final class DaemonStore: LUNStore {
         } catch let error as PrefetchChunkCache.CacheError {
             switch error {
             case .unanswered:
-                // A speculative read the daemon never answered. Not retried —
-                // that would spend a second timeout on a session that just
-                // failed one. Count it; the death latch does the rest.
-                throw recordTimeout(started: started)
+                // A speculative read the daemon never answered — not even
+                // after its own retry. Not retried here: the session is gone.
+                latchDead("a read went unanswered for \(Int(callTimeout)) s")
+                throw POSIXError(.EIO)
             case .shortRead:
                 throw POSIXError(.EIO)
             }
@@ -358,13 +358,19 @@ public final class DaemonStore: LUNStore {
     }
 
     /// The death latch: without it, every I/O to a dead session costs a full
-    /// 30 s timeout, reads as retryable, and is retried forever — an
-    /// unkillable mount dragging down everything that touches the mount
-    /// table. Timeouts are counted (success clears the count); at the limit
-    /// the volume is dead and every later call fails *immediately*, which is
-    /// what lets DiskImages/APFS reach a conclusion in seconds. Only
-    /// unanswered calls count — a SCSI error is an answer, and a bad block
-    /// must not condemn a healthy volume.
+    /// timeout, reads as retryable, and is retried forever — an unkillable
+    /// mount dragging down everything that touches the mount table. One
+    /// unanswered call latches it, and every later call fails *immediately*,
+    /// which is what lets DiskImages/APFS reach a conclusion. Only unanswered
+    /// calls count — a SCSI error is an answer, and a bad block must not
+    /// condemn a healthy volume.
+    ///
+    /// One, not a count. The timeout outlasts the daemon's own retry
+    /// (`defaultTimeout`), so a call that runs it out is not a target pausing
+    /// under load: the daemon already waited out one pause, reconnected and
+    /// resent, and that failed too. A write that runs it out may still land
+    /// after a later read or write, which nothing here can order or undo. It
+    /// used to take three 30 s stalls, which was about as long.
     private func checkAlive() throws {
         healthLock.lock()
         let dead = isDead
@@ -372,40 +378,7 @@ public final class DaemonStore: LUNStore {
         if dead { throw POSIXError(.EIO) }
     }
 
-    /// An answer arrived, so whatever came before was not a pattern.
-    private func recordSuccess() {
-        healthLock.lock()
-        consecutiveTimeouts = 0
-        healthLock.unlock()
-    }
-
-    /// Count one unanswered call and return the error to throw: ETIMEDOUT
-    /// while there is still hope, EIO once there is not. Returns rather than
-    /// throws so the direct and readahead paths account identically.
-    /// `started` is when the call began, which decides whether it is a new
-    /// stall or one already counted (see `timeoutsBeforeDead`).
-    private func recordTimeout(started: UInt64) -> any Error {
-        let now = Self.now()
-        healthLock.lock()
-        if started >= lastCountedTimeoutAt {
-            consecutiveTimeouts += 1
-            lastCountedTimeoutAt = now
-        }
-        let count = consecutiveTimeouts
-        if count >= Self.timeoutsBeforeDead { isDead = true }
-        let nowDead = isDead
-        healthLock.unlock()
-        if nowDead {
-            fsLog.error("""
-                volume declared dead after \(count, privacy: .public) unanswered \
-                daemon stalls; all further I/O fails immediately
-                """)
-            return POSIXError(.EIO)
-        }
-        return POSIXError(.ETIMEDOUT)
-    }
-
-    /// Declare the volume dead at once, for what the latch cannot wait out.
+    /// Declare the volume dead, once, saying why.
     private func latchDead(_ why: String) {
         healthLock.lock()
         let already = isDead
@@ -419,10 +392,11 @@ public final class DaemonStore: LUNStore {
     /// whose error handler ends the wait: when the connection drops, NSXPC
     /// calls that handler and never the reply, and the call used to sit out
     /// the whole timeout (holding `ioLock`, for a write). A dropped
-    /// connection takes the session with it, so the volume is dead.
-    private func daemonCall(_ body: (ISCSIDaemonProtocol, @escaping () -> Void) -> Void) throws {
+    /// connection takes the session with it, so the volume is dead. So is
+    /// one that runs out the timeout (`checkAlive`); `what` says which call.
+    private func daemonCall(_ what: String,
+                            _ body: (ISCSIDaemonProtocol, @escaping () -> Void) -> Void) throws {
         try checkAlive()
-        let started = Self.now()
         let sem = DispatchSemaphore(value: 0)
         let lost = OSAllocatedUnfairLock(initialState: false)
         let proxy = try daemon(onError: { _ in
@@ -431,14 +405,13 @@ public final class DaemonStore: LUNStore {
         })
         body(proxy) { sem.signal() }
         if sem.wait(timeout: .now() + callTimeout) == .timedOut {
-            fsLog.error("daemon call timed out after \(Int(self.callTimeout))s")
-            throw recordTimeout(started: started)
+            latchDead("\(what) went unanswered for \(Int(callTimeout)) s")
+            throw POSIXError(.EIO)
         }
         if lost.withLock({ $0 }) {
             latchDead("the connection to the background service was lost")
             throw POSIXError(.EIO)
         }
-        recordSuccess()
     }
 
     public var summary: String {
@@ -679,7 +652,7 @@ public final class DaemonStore: LUNStore {
     }
 
     /// Runs an async XPC call and waits for its reply, or throws ETIMEDOUT.
-    private static func blocking(timeout: TimeInterval = DaemonStore.defaultTimeout,
+    private static func blocking(timeout: TimeInterval = DaemonStore.setupTimeout,
                                  _ body: (@escaping () -> Void) -> Void) throws {
         let sem = DispatchSemaphore(value: 0)
         body { sem.signal() }
@@ -705,7 +678,7 @@ public final class DaemonStore: LUNStore {
     }
 
     /// The target's local cache size, or 0. Its own short timeout, so a slow
-    /// answer costs a mount seconds, not the 30 s a data call is allowed.
+    /// answer costs a mount seconds, not the 100 s a data call is allowed.
     /// Only for a daemon that has the method — see `DaemonCapabilities`: one
     /// that lacks it does not stay silent, it drops the connection.
     static func localCacheSetting(from proxy: ISCSIDaemonProtocol, session: String,
@@ -734,7 +707,7 @@ public final class DaemonStore: LUNStore {
         }
         var data: Data?
         var err: Error?
-        try daemonCall { proxy, done in
+        try daemonCall("a read") { proxy, done in
             proxy.read(session: session, offset: NSNumber(value: offset),
                        length: NSNumber(value: length)) { d, e in
                 data = d; err = e; done()
@@ -746,22 +719,25 @@ public final class DaemonStore: LUNStore {
     }
 
     /// A write the daemon does not answer in time is not a failed write: the
-    /// daemon keeps retrying it (up to three 30 s attempts and a recovery),
-    /// and it may land after FSKit has been told it failed — after a read
-    /// has cached the old bytes, or after a newer write to the same blocks.
-    /// Nothing here can order or undo that, so the volume stops: fail-stop,
-    /// not a guess about what the media holds.
+    /// daemon may still be retrying it (up to three 30 s attempts and a
+    /// recovery), and it may land after FSKit has been told it failed — after
+    /// a read has cached the old bytes, or after a newer write to the same
+    /// blocks. Nothing here can order or undo that, so `daemonCall` stops the
+    /// volume: fail-stop, not a guess about what the media holds.
+    ///
+    /// A write the daemon answers with an error does not stop it, whatever
+    /// the error. The daemon replies only once it has stopped resending, so
+    /// no resend of ours can land later. With quick reconnects its three 30 s
+    /// attempts end at about 90 s, inside `defaultTimeout`; slow ones run
+    /// past it, and then the timeout above stops the volume instead. What a
+    /// target does with a command from a connection it has lost is beyond
+    /// any initiator.
     private func rawWrite(offset: UInt64, data: Data) throws {
         var err: Error?
-        do {
-            try daemonCall { proxy, done in
-                proxy.write(session: session, offset: NSNumber(value: offset), data: data) { e in
-                    err = e; done()
-                }
+        try daemonCall("a write, which may still land,") { proxy, done in
+            proxy.write(session: session, offset: NSNumber(value: offset), data: data) { e in
+                err = e; done()
             }
-        } catch let error as POSIXError where error.code == .ETIMEDOUT {
-            latchDead("a write went unanswered for \(Int(callTimeout)) s and may still land")
-            throw POSIXError(.EIO)
         }
         if let err { throw err }
     }
@@ -864,7 +840,7 @@ public final class DaemonStore: LUNStore {
                 fsLog.error("slow flush: \(Self.ms(took), privacy: .public) ms in the daemon")
             }
         }
-        try daemonCall { proxy, done in
+        try daemonCall("a flush") { proxy, done in
             proxy.flush(session: session) { e in err = e; done() }
         }
         if let err { throw err }

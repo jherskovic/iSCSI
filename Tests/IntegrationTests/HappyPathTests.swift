@@ -3,10 +3,23 @@ import Testing
 @testable import MockTarget
 @testable import iSCSIKit
 
+/// Every test that reads runs twice: status on the final Data-In (phase
+/// collapse), and status in a SCSI Response after the Data-In sequence. LIO
+/// sends both, so the initiator must complete a read either way.
 @Suite("Integration: happy paths", .timeLimit(.minutes(1)))
 struct HappyPathTests {
-    @Test func loginInquiryLogout() async throws {
-        let (connection, harness, result) = try await loggedInConnection()
+    static let statusModes = [false, true]
+
+    private static func config(separateStatus: Bool) -> MockTargetConfig {
+        var config = MockTargetConfig()
+        config.separateReadStatus = separateStatus
+        return config
+    }
+
+    @Test(arguments: statusModes)
+    func loginInquiryLogout(separateStatus: Bool) async throws {
+        let (connection, harness, result) = try await loggedInConnection(
+            targetConfig: Self.config(separateStatus: separateStatus))
         #expect(result.tsih == 0x0BAD)
         #expect(!result.parameters.headerDigest)
 
@@ -21,11 +34,13 @@ struct HappyPathTests {
 
         let logout = try await connection.logout()
         #expect(logout.response == .success)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
-    @Test func smallWriteReadRoundTrip() async throws {
-        let (connection, harness, _) = try await loggedInConnection()
+    @Test(arguments: statusModes)
+    func smallWriteReadRoundTrip(separateStatus: Bool) async throws {
+        let (connection, harness, _) = try await loggedInConnection(
+            targetConfig: Self.config(separateStatus: separateStatus))
         let payload = Data((0 ..< 1024).map { UInt8($0 & 0xFF) })
 
         let write = try await connection.execute(SCSITask(
@@ -42,12 +57,13 @@ struct HappyPathTests {
         ))
         #expect(read.isGood)
         #expect(read.data == payload)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
-    @Test func largeWriteExercisesR2T() async throws {
+    @Test(arguments: statusModes)
+    func largeWriteExercisesR2T(separateStatus: Bool) async throws {
         // Small bursts force: immediate data + unsolicited tail + several R2Ts.
-        var targetConfig = MockTargetConfig()
+        var targetConfig = Self.config(separateStatus: separateStatus)
         targetConfig.firstBurstLength = 4096
         targetConfig.maxBurstLength = 8192
         targetConfig.maxRecvDataSegmentLength = 4096
@@ -69,13 +85,14 @@ struct HappyPathTests {
             direction: .read(expectedLength: 65536)
         ))
         #expect(read.data == payload)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
-    @Test func solicitedOnlyWritePath() async throws {
+    @Test(arguments: statusModes)
+    func solicitedOnlyWritePath(separateStatus: Bool) async throws {
         // Target insists InitialR2T=Yes and ImmediateData=No: every byte moves
         // via R2T-solicited Data-Out.
-        var targetConfig = MockTargetConfig()
+        var targetConfig = Self.config(separateStatus: separateStatus)
         targetConfig.preferInitialR2T = true
         targetConfig.preferImmediateData = false
         let (connection, harness, result) = try await loggedInConnection(targetConfig: targetConfig)
@@ -97,11 +114,12 @@ struct HappyPathTests {
             direction: .read(expectedLength: 8192)
         ))
         #expect(read.data == payload)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
-    @Test func digestsNegotiatedAndUsed() async throws {
-        var targetConfig = MockTargetConfig()
+    @Test(arguments: statusModes)
+    func digestsNegotiatedAndUsed(separateStatus: Bool) async throws {
+        var targetConfig = Self.config(separateStatus: separateStatus)
         targetConfig.digestPick = "CRC32C"
         let (connection, harness, result) = try await loggedInConnection(targetConfig: targetConfig) {
             $0.desired.offerDigests = true
@@ -118,12 +136,14 @@ struct HappyPathTests {
             lun: 0, cdb: CDB.read16(lba: 0, blocks: 4), direction: .read(expectedLength: 2048)
         ))
         #expect(read.data == payload)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
-    @Test func readCapacityAndTestUnitReady() async throws {
+    @Test(arguments: statusModes)
+    func readCapacityAndTestUnitReady(separateStatus: Bool) async throws {
         let disk = RAMDisk(blockSize: 512, capacityBlocks: 4096)
-        let (connection, harness, _) = try await loggedInConnection(disk: disk)
+        let (connection, harness, _) = try await loggedInConnection(
+            targetConfig: Self.config(separateStatus: separateStatus), disk: disk)
 
         let tur = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
         #expect(tur.isGood)
@@ -134,7 +154,7 @@ struct HappyPathTests {
         #expect(capacity.isGood)
         #expect(capacity.data.beU64(0) == 4095) // last LBA
         #expect(capacity.data.beU32(8) == 512) // block size
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func synchronizeCacheReachesDisk() async throws {
@@ -143,14 +163,14 @@ struct HappyPathTests {
         _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.synchronizeCache16()))
         _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.synchronizeCache16()))
         #expect(await disk.flushCount == 2)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func nopPingRoundTrip() async throws {
         let (connection, harness, _) = try await loggedInConnection()
         try await connection.ping(payload: Data("hello".utf8))
         try await connection.ping()
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func targetInitiatedPingIsEchoed() async throws {
@@ -162,7 +182,7 @@ struct HappyPathTests {
         try await Task.sleep(for: .milliseconds(50))
         let echoes = await harness.target.pingEchoes
         #expect(echoes == [Data("mock-ping".utf8)])
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func chapLoginSucceeds() async throws {
@@ -177,7 +197,7 @@ struct HappyPathTests {
         #expect(result.tsih != 0)
         let tur = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
         #expect(tur.isGood)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func mutualChapVerifiesTarget() async throws {
@@ -195,7 +215,7 @@ struct HappyPathTests {
             )
         )
         _ = try await connection.execute(SCSITask(lun: 0, cdb: CDB.testUnitReady()))
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func chapWrongSecretFails() async throws {
@@ -211,7 +231,7 @@ struct HappyPathTests {
         await #expect(throws: ConnectionError.self) {
             _ = try await connection.login()
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func discoverySendTargets() async throws {
@@ -228,7 +248,7 @@ struct HappyPathTests {
         #expect(targets.count == 2)
         #expect(targets[0].name == "iqn.2026-08.test.example:disk0")
         #expect(targets[1].addresses == ["10.0.0.5:3260,1", "10.0.0.6:3260,2"])
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
     @Test func discoveryTextContinuationReassembled() async throws {
@@ -244,11 +264,13 @@ struct HappyPathTests {
             initiatorName: "iqn.2026-08.com.example:initiator"
         )
         #expect(targets.count == 2)
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 
-    @Test func concurrentCommandsInterleave() async throws {
-        let (connection, harness, _) = try await loggedInConnection()
+    @Test(arguments: statusModes)
+    func concurrentCommandsInterleave(separateStatus: Bool) async throws {
+        let (connection, harness, _) = try await loggedInConnection(
+            targetConfig: Self.config(separateStatus: separateStatus))
         // Several tasks in flight at once; all must complete correctly.
         try await withThrowingTaskGroup(of: Void.self) { group in
             for i in 0 ..< 8 {
@@ -270,6 +292,6 @@ struct HappyPathTests {
             }
             try await group.waitForAll()
         }
-        harness.serveTask.cancel()
+        await harness.finish()
     }
 }

@@ -246,3 +246,85 @@ struct NVMeTCPFramerTests {
         #expect(throws: NVMeTCPError.self) { try third.next() }
     }
 }
+
+/// Bitwise CRC32C (Castagnoli, reflected polynomial 0x82F63B78), written out
+/// here so the vector below does not lean on the production table code it
+/// is meant to check.
+private func referenceCRC32C(_ bytes: [UInt8]) -> UInt32 {
+    var crc: UInt32 = 0xFFFF_FFFF
+    for byte in bytes {
+        crc ^= UInt32(byte)
+        for _ in 0 ..< 8 {
+            crc = crc & 1 != 0 ? (crc >> 1) ^ 0x82F6_3B78 : crc >> 1
+        }
+    }
+    return ~crc
+}
+
+/// A digest on the wire: the CRC's four bytes, least significant first.
+private func le32(_ value: UInt32) -> [UInt8] {
+    (0 ..< 4).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) }
+}
+
+@Suite("NVMe/TCP wire vectors")
+struct NVMeTCPWireVectorTests {
+    /// C2HData, CID 0x1234, DATAO 0x2000, LAST_PDU, 16 data bytes, both
+    /// digests — byte by byte from NVMe/TCP 1.1 §3.6.2.7 (CH, PSH, HDGST
+    /// over CH+PSH, DATA at PDO, DDGST over DATA only).
+    static let data = Array("NVMe/TCP vector!".utf8)
+
+    static func wire() -> [UInt8] {
+        var header: [UInt8] = [
+            0x07,                       // PDU-type: C2HData
+            0x07,                       // FLAGS: HDGSTF | DDGSTF | LAST_PDU
+            24,                         // HLEN
+            28,                         // PDO: after HLEN and the 4-byte HDGST
+        ]
+        header += le32(UInt32(24 + 4 + data.count + 4))    // PLEN
+        header += [0x34, 0x12, 0x00, 0x00]                  // CCCID, reserved
+        header += le32(0x2000)                              // DATAO
+        header += le32(UInt32(data.count))                  // DATAL
+        header += [0, 0, 0, 0]                              // reserved
+        #expect(header.count == 24)
+        return header + le32(referenceCRC32C(header)) + data + le32(referenceCRC32C(data))
+    }
+
+    @Test func theReferenceCRCMatchesTheCastagnoliCheckValue() {
+        #expect(referenceCRC32C(Array("123456789".utf8)) == 0xE306_9283)
+    }
+
+    @Test func aDigestedC2HDataVectorDeframes() throws {
+        var deframer = NVMeTCPDeframer(digests: NVMeTCPDigests(header: true, data: true))
+        deframer.append(Data(Self.wire()))
+        let raw = try #require(try deframer.next())
+        #expect(!raw.dataDigestFailed)
+        #expect(deframer.buffered == 0)
+        let pdu = try C2HDataPDU(raw: raw)
+        #expect(pdu.cccid == 0x1234)
+        #expect(pdu.dataOffset == 0x2000)
+        #expect(pdu.data == Data(Self.data))
+        #expect(pdu.last && !pdu.success)
+    }
+
+    @Test func theSerializerProducesTheSameBytes() {
+        let pdu = C2HDataPDU(cccid: 0x1234, dataOffset: 0x2000, data: Data(Self.data), last: true, success: false)
+        let wire = NVMeTCPSerializer(digests: NVMeTCPDigests(header: true, data: true)).serialize(pdu.encode())
+        #expect(Array(wire) == Self.wire())
+    }
+
+    @Test func aFlippedBitInEachDigestIsCaughtWhereItBelongs() throws {
+        let digests = NVMeTCPDigests(header: true, data: true)
+        var badHeader = Self.wire()
+        badHeader[24] ^= 0x01                               // HDGST
+        var deframer = NVMeTCPDeframer(digests: digests)
+        deframer.append(Data(badHeader))
+        #expect(throws: NVMeTCPError.headerDigestMismatch) { try deframer.next() }
+
+        var badData = Self.wire()
+        badData[badData.count - 1] ^= 0x80                  // DDGST
+        deframer = NVMeTCPDeframer(digests: digests)
+        deframer.append(Data(badData))
+        let raw = try #require(try deframer.next())
+        #expect(raw.dataDigestFailed)                       // non-fatal: delivered, marked
+    }
+}

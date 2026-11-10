@@ -383,6 +383,9 @@ private struct TargetRow: View {
         if let path = row.volumePath { return path }
         if let failure { return "Could not attach at login — \(failure.message)" }
         if let attachment = row.attachment, let device = attachment.device {
+            if let locked = attachment.lockedVolumes.first {
+                return "connected as \(device) — “\(locked)” is encrypted and locked"
+            }
             return attachment.isBlank == true
                 ? "connected as \(device) — not formatted yet"
                 : "connected as \(device) — no volume mounted"

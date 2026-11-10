@@ -119,14 +119,22 @@ struct NVMeHostileTests {
         await fleet.shutdown()
     }
 
+    /// The overrun PDU starts exactly where the real data ended, so the
+    /// contiguity check passes and only the read-buffer bounds check can
+    /// refuse it: a fatal Data Transfer Out of Range, not a sequence error.
     @Test func c2hDataPastTheReadBufferIsRefused() async throws {
         let fleet = hostileFleet { $0.c2hDataOverrun = true }
         let controller = try await activatedController(
             fleet: fleet, policy: testPolicy(retries: 0, recoveryAttempts: 1))
         let device = NVMeBlockDevice(controller: controller, nsid: 1)
-        await #expect(throws: ConnectionError.self) {
+        await #expect {
             _ = try await device.read(offset: 0, length: 4096)
+        } throws: { error in
+            guard case ConnectionError.protocolError(let reason) = error else { return false }
+            return reason.contains("C2HData outside the read buffer")
         }
+        #expect(await eventually { await fleet.subsystem.h2cTermReqsReceived.count == 1 })
+        #expect(await fleet.subsystem.h2cTermReqsReceived == [.dataTransferOutOfRange])
         await fleet.shutdown()
     }
 

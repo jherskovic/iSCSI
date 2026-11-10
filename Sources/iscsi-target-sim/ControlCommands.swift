@@ -12,6 +12,9 @@ struct ControlCommands: Sendable {
     let server: MockTargetServer
     let faults: FaultBox
     let stop: StopSignal
+    /// Which protocol the simulator serves: a fault the other one reads is
+    /// refused rather than silently doing nothing.
+    let served: FaultSetting.Served
 
     func run(_ line: String) async -> String {
         let parts = line.split(separator: " ").map(String.init)
@@ -82,8 +85,7 @@ struct ControlCommands: Sendable {
 
         case "fault":
             guard args.count >= 1 else { return "err usage: fault <name> [value]" }
-            let value = args.count >= 2 ? args[1] : "on"
-            return applyFault(name: args[0], value: value)
+            return applyFault(name: args[0], value: args.count >= 2 ? args[1] : nil)
 
         case "quit", "shutdown":
             await stop.signal()
@@ -96,55 +98,17 @@ struct ControlCommands: Sendable {
 
     // MARK: - Faults
 
-    private func applyFault(name: String, value: String) -> String {
-        let on = ["on", "true", "yes", "1"].contains(value.lowercased())
-        let off = ["off", "false", "no", "0"].contains(value.lowercased())
-        var applied = true
-
+    private func applyFault(name: String, value: String?) -> String {
+        var refusal: String?
         faults.mutate { f in
-            switch name.lowercased() {
-            case "corruptdatain":
-                f.corruptDataInPayload = on
-            case "corruptheader":
-                f.corruptHeaderDigestOnce = on
-            case "stallcommands":
-                f.stallCommands = on
-            case "stallafterr2t":
-                f.stallAfterR2T = on
-            case "swallownops":
-                f.swallowNops = on
-            case "checkcondition":
-                f.checkConditionAll = on
-            case "rejectcommands":
-                f.rejectAllCommands = on
-            case "freezewindow":
-                f.freezeWindow = on
-            case "duplicatestatsn":
-                f.duplicateStatSN = on
-            case "oversizedatain":
-                f.oversizeDataIn = on
-            case "unsolicitedr2t":
-                f.unsolicitedR2T = on
-            case "rejectlogin":
-                // Class 2 / detail 1: authentication failure.
-                f.rejectLoginStatus = on ? (class: 2, detail: 1) : nil
-            case "dropafterpdus":
-                f.dropAfterSentPDUs = off ? nil : Int(value)
-            case "dropduringdatain":
-                f.dropDuringDataInAt = off ? nil : Int(value)
-            case "responsedelayms":
-                if off || value == "0" {
-                    f.responseDelay = nil
-                } else if let ms = Int(value) {
-                    f.responseDelay = .milliseconds(ms)
-                }
-            case "statsnjump":
-                f.statSNJump = UInt32(value) ?? 0
-            default:
-                applied = false
+            do {
+                try FaultSetting.apply(name, value, to: &f, serving: served)
+            } catch {
+                refusal = "\(error)"
             }
         }
-        return applied ? "ok fault \(name)=\(value)" : "err unknown fault '\(name)'"
+        if let refusal { return "err \(refusal)" }
+        return "ok fault \(name)=\(value ?? "on")"
     }
 
     private func describeFaults(_ f: MockTargetFaults) -> String {
@@ -164,6 +128,9 @@ struct ControlCommands: Sendable {
         if let n = f.dropAfterSentPDUs { set.append("dropAfterPDUs=\(n)") }
         if let n = f.dropDuringDataInAt { set.append("dropDuringDataIn=\(n)") }
         if let d = f.responseDelay { set.append("responseDelay=\(d)") }
+        if let until = f.holdIOUntil, ContinuousClock.now < until {
+            set.append("holdIO=\(ContinuousClock.now.duration(to: until)) more")
+        }
         if f.statSNJump != 0 { set.append("statSNJump=\(f.statSNJump)") }
         return set.isEmpty ? "none" : set.joined(separator: ",")
     }

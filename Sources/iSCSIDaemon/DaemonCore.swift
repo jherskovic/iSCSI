@@ -26,6 +26,13 @@ public actor DaemonCore {
         /// that missed it.
         var writeGeneration: UInt64 = 0
         var flushedGeneration: UInt64 = 0
+        /// Bytes written, and how many of them the last successful periodic
+        /// flush started after: the difference is what the next flush has to
+        /// commit, which its slow-flush log line reports. On 2026-11-09 flushes
+        /// grew from 2 s to 29 s through one long copy, and without this the
+        /// log could not say whether that tracked the data or the target.
+        var bytesWritten: UInt64 = 0
+        var bytesFlushed: UInt64 = 0
         /// Reads, writes and flushes in progress on this session right now,
         /// and the most there have been at once.
         var inFlight = 0
@@ -383,12 +390,17 @@ public actor DaemonCore {
         guard let entry = sessions[handle],
               entry.writeGeneration > entry.flushedGeneration else { return }
         let goal = entry.writeGeneration
+        let mark = entry.bytesWritten
+        let pending = String(format: "%.1f", Double(mark &- entry.bytesFlushed) / 1_048_576)
         do {
-            try await timed(handle, "periodic flush") { try await entry.device.flush() }
+            try await timed(handle, "periodic flush (\(pending) MiB written since the last)") {
+                try await entry.device.flush()
+            }
             // Only advance to what this flush provably covered; a write that
             // landed while the flush was in flight stays dirty.
             if let current = sessions[handle], current.flushedGeneration < goal {
                 sessions[handle]?.flushedGeneration = goal
+                sessions[handle]?.bytesFlushed = mark
             }
         } catch {
             // The next tick retries. A failing flush must not tear the session
@@ -457,6 +469,7 @@ public actor DaemonCore {
             try await device.write(offset: offset, data: data)
         }
         sessions[handle]?.writeGeneration += 1
+        sessions[handle]?.bytesWritten += UInt64(data.count)
     }
 
     public func flush(_ handle: String) async throws {

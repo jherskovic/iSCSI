@@ -64,6 +64,54 @@ struct NVMeRecoveryTests {
         await fleet.shutdown()
     }
 
+    /// A header digest error is fatal for the connection (NVMe/TCP 1.1
+    /// §3.5): the host names it in an H2CTermReq, the controller pair goes,
+    /// and the command is retried on a fresh pair — never completed from a
+    /// header that failed its digest.
+    @Test func aHeaderDigestErrorTearsTheQueueDownAndTheCommandIsRetried() async throws {
+        var corrupt = MockTargetFaults()
+        corrupt.corruptHeaderDigestOnce = true
+        let fleet = NVMeFleet(faultScripts: [Self.healthy, corrupt, Self.healthy])
+        let controller = try await activatedController(
+            fleet: fleet, policy: testPolicy(retries: 1, recoveryAttempts: 2)) { $0.requestDigests = true }
+        #expect(await controller.digests.header)
+        let device = NVMeBlockDevice(controller: controller, nsid: 1)
+        _ = try await device.readCapacity()                     // admin queue: clean
+
+        let pattern = Data((0 ..< 4096).map { UInt8(($0 &* 29) & 0xFF) })
+        try await device.write(offset: 0, data: pattern)       // first I/O completion arrives corrupted
+        #expect(await eventually { await fleet.subsystem.h2cTermReqsReceived.count == 1 })
+        #expect(await fleet.subsystem.h2cTermReqsReceived == [.headerDigestError])
+        #expect(await controller.recoveryCount == 1)
+        #expect(await fleet.connectionsServed == 4)
+        #expect(try await device.read(offset: 0, length: 4096) == pattern)
+        await fleet.shutdown()
+    }
+
+    /// A controller that solicits a write and then never takes the data:
+    /// the task deadline, not the controller, ends the wait, and the retry
+    /// runs on a fresh pair rather than behind the wedged one.
+    @Test func aWriteStalledAfterItsR2TTimesOutAndRunsOnAFreshPair() async throws {
+        var config = MockNVMeConfig()
+        config.inCapsuleDataBytes = 0                          // every write is solicited
+        var stall = MockTargetFaults()
+        stall.stallAfterR2T = true
+        let fleet = NVMeFleet(config: config, faultScripts: [Self.healthy, stall, Self.healthy])
+        var policy = testPolicy(retries: 1, recoveryAttempts: 2)
+        policy.taskTimeout = .milliseconds(300)
+        let controller = try await activatedController(fleet: fleet, policy: policy)
+        let device = NVMeBlockDevice(controller: controller, nsid: 1)
+        _ = try await device.readCapacity()
+
+        let pattern = Data((0 ..< 8192).map { UInt8(($0 &* 11) & 0xFF) })
+        // Bounded here too, so a missing task deadline fails rather than hangs.
+        try await withDeadline(.seconds(10)) { try await device.write(offset: 0, data: pattern) }
+        #expect(await fleet.subsystem.r2tsSent == 2)           // one swallowed, one answered
+        #expect(await controller.recoveryCount == 1)
+        #expect(try await device.read(offset: 0, length: 8192) == pattern)
+        await fleet.shutdown()
+    }
+
     static let rejecting: MockTargetFaults = {
         var f = MockTargetFaults(); f.rejectLoginStatus = (class: 3, detail: 1); return f
     }()
@@ -173,6 +221,37 @@ struct NVMeRecoveryTests {
             fleet: fleet, policy: testPolicy(retries: 1, recoveryAttempts: 2))
         await fleet.shutdown()
         await #expect(throws: (any Error).self) { _ = try await controller.activeNamespaces() }
+        await fleet.shutdown()
+    }
+
+    /// The 2026-11-09 failure, daemon side: a NAS holding I/O behind a slow
+    /// flush while its admin queue still answers. The attempt times out, the
+    /// controller reconnects and resends, and the resend lands once the hold
+    /// ends. The extension saw none of that, because it gave up at the same
+    /// 30 s; it now outwaits one retry (`DaemonStore.defaultTimeout`).
+    @Test func aWriteHeldPastTheTaskTimeoutLandsOnTheResend() async throws {
+        let faultBox = FaultBox()
+        let fleet = NVMeFleet(disk: RAMDisk(blockSize: 512, capacityBlocks: 8192))
+        var policy = testPolicy()
+        policy.taskTimeout = .milliseconds(300)
+        let controller = NVMeController(config: testControllerConfig(), policy: policy) {
+            let (initiatorSide, targetSide) = MemoryPipe.pair()
+            let subsystem = await fleet.subsystem
+            Task { await subsystem.serve(targetSide, faultBox: faultBox) }
+            return initiatorSide
+        }
+        try await controller.activate()
+        let device = NVMeBlockDevice(controller: controller, nsid: 1)
+        _ = try await device.readCapacity()
+
+        faultBox.mutate { $0.holdIOUntil = .now + .milliseconds(500) }
+        let payload = Data(repeating: 0x5A, count: 4096)
+        let started = ContinuousClock.now
+        try await device.write(offset: 0, data: payload)
+        let took = ContinuousClock.now - started
+        #expect(took >= .milliseconds(450), "the write was not held")
+        #expect(took < .seconds(5))
+        #expect(try await device.read(offset: 0, length: payload.count) == payload)
         await fleet.shutdown()
     }
 }

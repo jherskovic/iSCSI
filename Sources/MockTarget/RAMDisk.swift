@@ -149,9 +149,6 @@ public actor RAMDisk {
         commitDirty()
     }
 
-    /// Older name kept because the counter it bumps is asserted in tests.
-    public func recordFlush() { flush() }
-
     /// Target power loss: the cache evaporates, committed blocks survive.
     /// Returns how many blocks were lost.
     @discardableResult

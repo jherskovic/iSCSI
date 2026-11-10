@@ -45,6 +45,10 @@ struct Attachment: Identifiable, Equatable, Sendable {
     /// not mount may be data macOS cannot read — ext4, ZFS, a locked volume —
     /// and must never be met with advice to erase it.
     var isBlank: Bool? = nil
+    /// Encrypted APFS volumes on the disk that are locked, by name: why a
+    /// disk that is neither blank nor unreadable mounted nothing. Asked only
+    /// when nothing mounted (`LockedAPFSVolumes`).
+    var lockedVolumes: [String] = []
 
     var isFullyAttached: Bool { device != nil && !volumePaths.isEmpty }
     /// Mounted by this app, but no record derives its mount point any more:
@@ -276,7 +280,7 @@ final class AttachmentManager: ObservableObject {
         // detach` both hang indefinitely under a wedged NAS). On `@MainActor`
         // that is a beach-balled app, so the blocking sequence runs on a
         // detached task over `Sendable` inputs and only the result crosses back.
-        let probe: (device: String?, volumes: [String], isBlank: Bool?) = try await Task.detached {
+        let probe: (device: String?, volumes: [String], isBlank: Bool?, locked: [String]) = try await Task.detached {
             // Idempotent: attaching something already attached should report the
             // existing volume, not stack a second mount on the same path.
             let fskitWasMounted = Self.isMounted(hiddenPath)
@@ -309,7 +313,7 @@ final class AttachmentManager: ObservableObject {
             case .reuse(let existing):
                 let volumes = Self.mountPoints(ofDevice: existing)
                 Self.disableAccessTimes(on: volumes)
-                return (existing, volumes, nil)
+                return (existing, volumes, nil, Self.lockedVolumes(device: existing, ifNoneOf: volumes))
             case .replaceStale(let stale):
                 // Left by a logout that took the FSKit mount down but not the
                 // device; it serves nothing, so forcing it off loses nothing.
@@ -341,7 +345,8 @@ final class AttachmentManager: ObservableObject {
             }
             let result = try attached ?? Self.attachWithHdiutil(image: imagePath, blockSize: blockSize)
             Self.disableAccessTimes(on: result.volumes)
-            return (result.device, result.volumes, isBlank)
+            return (result.device, result.volumes, isBlank,
+                    Self.lockedVolumes(device: result.device, ifNoneOf: result.volumes))
         }.value
 
         // Recorded before anything else can go wrong: throwing after the
@@ -349,7 +354,7 @@ final class AttachmentManager: ObservableObject {
         // detachable.
         let attachment = Attachment(tag: tag, targetID: targetID, hiddenPath: hiddenPath,
                                     device: probe.device, volumePaths: probe.volumes,
-                                    isBlank: probe.isBlank)
+                                    isBlank: probe.isBlank, lockedVolumes: probe.locked)
         attachments.removeAll { $0.tag == tag }
         attachments.append(attachment)
         attachmentsGeneration &+= 1
@@ -498,11 +503,13 @@ final class AttachmentManager: ObservableObject {
         let found = await Task.detached { () -> [Attachment] in
             probes.map { candidate in
                 let device = Self.attachedDevice(forImage: candidate.imagePath)
+                let volumes = device.map { Self.mountPoints(ofDevice: $0) } ?? []
                 return Attachment(
                     tag: candidate.tag, targetID: candidate.targetID,
                     hiddenPath: candidate.hiddenPath, device: device,
-                    volumePaths: device.map { Self.mountPoints(ofDevice: $0) } ?? [],
-                    mountSource: candidate.source)
+                    volumePaths: volumes,
+                    mountSource: candidate.source,
+                    lockedVolumes: Self.lockedVolumes(device: device, ifNoneOf: volumes))
             }
         }.value
         // Someone mutated the list while we were probing (a detach, an attach,
@@ -625,6 +632,21 @@ final class AttachmentManager: ObservableObject {
               let entities = entry["system-entities"] as? [[String: Any]]
         else { return false }
         return entities.count > 1
+    }
+
+    /// The locked encrypted volumes on `device`, when nothing of it mounted.
+    /// `diskutil apfs list` reads container metadata already in memory, so it
+    /// does not wait on the target; and it only runs when there is something
+    /// to explain.
+    nonisolated private static func lockedVolumes(device: String?, ifNoneOf volumes: [String]) -> [String] {
+        guard let device, volumes.isEmpty,
+              let result = try? run("/usr/sbin/diskutil", ["apfs", "list", "-plist"]),
+              result.status == 0 else { return [] }
+        let locked = LockedAPFSVolumes.find(onDisk: device, apfsList: result.stdout).map(\.name)
+        if !locked.isEmpty {
+            attachLog.log("\(device, privacy: .public) holds locked encrypted volumes: \(locked.joined(separator: ", "), privacy: .public)")
+        }
+        return locked
     }
 
     nonisolated private static func isMounted(_ path: String) -> Bool {
