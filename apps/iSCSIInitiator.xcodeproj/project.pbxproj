@@ -55,6 +55,7 @@
 		A62AA91BCC64D9EF76D8FB54 /* FSKitSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF1BC41F137227EA4CAFCF0D /* FSKitSteps.swift */; };
 		ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B994EEC4E49C9C783699E6 /* FSKitProbe.swift */; };
 		AF1FD391FC1153FBE7F490E4 /* iSCSIBootstrap.iig in Sources */ = {isa = PBXBuildFile; fileRef = EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */; };
+		B0869DF917D63CF47DD90CF3 /* EncryptedVolumePassword.swift in Sources */ = {isa = PBXBuildFile; fileRef = A47B4F8C6EC6DE467EA518BA /* EncryptedVolumePassword.swift */; };
 		B131D51A4DE8326CD0998844 /* UninstallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66A066551C98F53B7638A06D /* UninstallView.swift */; };
 		B13203674D0BEFBA9F41CB56 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 962359150D6304F53498F15A /* InfoPlist.strings */; };
 		B77CB9C6828A0BC03BDBDF53 /* FSKitEnablement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 205C0EEE79FC0ACFEE720391 /* FSKitEnablement.swift */; };
@@ -199,6 +200,7 @@
 		90DA087A85B91E84CD0AB5D4 /* iSCSIApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iSCSIApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		979635E6CF9EE6B49425E909 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		A26BAD13A2C510F79CA489A4 /* NVMeDetach.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVMeDetach.swift; sourceTree = "<group>"; };
+		A47B4F8C6EC6DE467EA518BA /* EncryptedVolumePassword.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedVolumePassword.swift; sourceTree = "<group>"; };
 		A69431A8E793158D26316EAD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A767737B068A2842AF2F71A8 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		A78E2D4EB65C66F2C89DCBF1 /* TargetsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TargetsView.swift; sourceTree = "<group>"; };
@@ -363,6 +365,7 @@
 				24DACD1EADC8A79E88E09803 /* AutoAttacher.swift */,
 				EE16E15977B192C9F17111AD /* DaemonClient.swift */,
 				CC3157616295AC33CB39EFB3 /* DiskImages2Attach.swift */,
+				A47B4F8C6EC6DE467EA518BA /* EncryptedVolumePassword.swift */,
 				3CFABF815361ED5F578A112C /* LastPortal.swift */,
 				89472971AD8F995DD4FCCA0D /* LoginItem.swift */,
 				ED9A77FA78FACFBDB5AB51F4 /* NetworkInterfaceNames.swift */,
@@ -736,6 +739,7 @@
 				63DF83BB8A3C38F8726719F4 /* DaemonController.swift in Sources */,
 				CCCCC5B27408C33929C740B2 /* DiscoveryView.swift in Sources */,
 				41FB9E5D490B8BBCBE30E03C /* DiskImages2Attach.swift in Sources */,
+				B0869DF917D63CF47DD90CF3 /* EncryptedVolumePassword.swift in Sources */,
 				83E3A3242A55B4C0F8AA573B /* ExtensionController.swift in Sources */,
 				B77CB9C6828A0BC03BDBDF53 /* FSKitEnablement.swift in Sources */,
 				ABB27E93C69F98C678E76D94 /* FSKitProbe.swift in Sources */,

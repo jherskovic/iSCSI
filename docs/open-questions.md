@@ -1389,6 +1389,43 @@ app and `iscsictl` both still use them, and they work. The warning is harmless
 until they stop working, but `diskutil image attach` is the DiskImages2 engine,
 which is opt-in because of items 16 and 17, so moving is not a small change.
 
+## 20. Encrypted APFS volumes are unlocked only on the `hdiutil` path (2026-11-10)
+
+When a disk's only volumes are locked, the app attaches it without mounting
+it. It then unlocks each locked volume with the password macOS saved for it,
+using `diskutil apfs unlockVolume`. That password is the login keychain item
+whose account and service are both the volume's UUID
+(`EncryptedVolumePassword`). With no saved password, or when the unlock
+fails, the volume stays locked and nothing is shown. Disk Utility's Mount
+unlocks it and can save the password for next time.
+
+**Why not mount first.** An attach that mounts makes `hdiutil` fail with "no
+mountable file systems" and eject the disk within milliseconds. That failure
+also wakes macOS's own prompt (APFSUserAgent), which then asks for the
+password of a disk that is already gone and answers "The disk can't be
+unlocked". `-mount optional` changes neither. A `-nomount` attach wakes no
+agent at all.
+
+**Verified** on 26.7.2 with build 55.2 against the simulator (a 4Kn LUN with
+one locked volume):
+
+- with no saved password, nothing popped up;
+- after Disk Utility saved the password, the next attach showed macOS's
+  one-time "Always Allow" prompt and unlocked the volume;
+- the attach after that unlocked it in 0.6 s with no prompt.
+
+**Untested:**
+
+- the DiskImages2 engine on 27. It still mounts first and tries the saved
+  password afterwards, which works only if the disk is still attached by
+  then, and it may wake macOS's prompt too;
+- the `hdiutil` path on 27;
+- a NAS LUN;
+- a disk with locked and unlocked volumes together, which mounts normally
+  and is unlocked afterwards.
+
+`iscsictl nvme attach` does no unlocking: it is the app's code alone.
+
 ## A note on method
 
 Four things were got wrong during this work and three had the same cause:

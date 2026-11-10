@@ -19,9 +19,12 @@ struct LockedAPFSVolumesTests {
          "Volumes": volumes]
     }
 
-    private func volume(_ id: String, _ name: String, locked: Bool, fileVault: Bool = true) -> [String: Any] {
-        ["DeviceIdentifier": id, "Name": name, "Locked": locked,
-         "FileVault": fileVault, "Encryption": fileVault, "Roles": [String]()]
+    private func volume(_ id: String, _ name: String, locked: Bool, fileVault: Bool = true,
+                        uuid: String? = nil) -> [String: Any] {
+        var entry: [String: Any] = ["DeviceIdentifier": id, "Name": name, "Locked": locked,
+                                    "FileVault": fileVault, "Encryption": fileVault, "Roles": [String]()]
+        if let uuid { entry["APFSVolumeUUID"] = uuid }
+        return entry
     }
 
     @Test("a locked volume on a partition of the attached disk is found, by name")
@@ -32,6 +35,18 @@ struct LockedAPFSVolumesTests {
         #expect(LockedAPFSVolumes.find(onDisk: "/dev/disk15", apfsList: plist)
                 == [.init(name: "ssd-vms", identifier: "disk16s1")])
         #expect(LockedAPFSVolumes.find(onDisk: "disk15", apfsList: plist).count == 1)
+    }
+
+    /// What macOS files a volume's saved password under, so the app can find it.
+    @Test("a locked volume carries its APFS volume UUID")
+    func lockedVolumeCarriesItsUUID() throws {
+        let plist = try listing([
+            container(stores: ["disk15s2"], volumes: [
+                volume("disk16s1", "ssd-vms", locked: true, uuid: "381B489E-9CDE-446D-BCB1-93F17EC6A526"),
+            ]),
+        ])
+        #expect(LockedAPFSVolumes.find(onDisk: "/dev/disk15", apfsList: plist).first?.uuid
+                == "381B489E-9CDE-446D-BCB1-93F17EC6A526")
     }
 
     @Test("an unlocked volume, encrypted or not, is not reported")
@@ -62,6 +77,18 @@ struct LockedAPFSVolumesTests {
         // No name: the device stands in for it.
         #expect(LockedAPFSVolumes.find(onDisk: "/dev/disk15", apfsList: plist)
                 == [.init(name: "disk16s1", identifier: "disk16s1")])
+    }
+
+    /// What tells "no locked volumes" from "APFS has not brought it up yet".
+    @Test("a container on the disk is seen, and one on another disk is not")
+    func containerOnTheDisk() throws {
+        let plist = try listing([
+            container(stores: ["disk15s2"], volumes: [volume("disk16s1", "plain", locked: false)]),
+            container(stores: ["disk150s2"], volumes: []),
+        ])
+        #expect(LockedAPFSVolumes.hasContainer(onDisk: "/dev/disk15", apfsList: plist))
+        #expect(!LockedAPFSVolumes.hasContainer(onDisk: "/dev/disk7", apfsList: plist))
+        #expect(!LockedAPFSVolumes.hasContainer(onDisk: "/dev/disk15", apfsList: Data()))
     }
 
     @Test("an unreadable listing reports nothing rather than guessing")

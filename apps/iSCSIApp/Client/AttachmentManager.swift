@@ -313,7 +313,8 @@ final class AttachmentManager: ObservableObject {
             case .reuse(let existing):
                 let volumes = Self.mountPoints(ofDevice: existing)
                 Self.disableAccessTimes(on: volumes)
-                return (existing, volumes, nil, Self.lockedVolumes(device: existing, ifNoneOf: volumes))
+                let after = Self.unlockSavedVolumes(device: existing, volumes: volumes)
+                return (existing, after.volumes, nil, after.locked)
             case .replaceStale(let stale):
                 // Left by a logout that took the FSKit mount down but not the
                 // device; it serves nothing, so forcing it off loses nothing.
@@ -326,7 +327,17 @@ final class AttachmentManager: ObservableObject {
             // default of 512 (GitHub issue #2), and a blank 4Kn LUN should be
             // partitioned at 4096; see PartitionTableProbe. Every other disk
             // gets the default.
-            let (blockSize, isBlank) = Self.attachBlockSize(image: imagePath, volume: hiddenPath)
+            let (blockSize, isBlank, holdsAPFS) = Self.attachBlockSize(image: imagePath, volume: hiddenPath)
+
+            // A disk with locked volumes stays attached without mounting, so
+            // nothing asks for a password the attach could not use; its saved
+            // password, if any, unlocks it. DiskImages2 keeps its own attach,
+            // unchanged and untested with locked volumes.
+            if engine == .hdiutil, holdsAPFS,
+               let device = Self.attachUnmountedIfLocked(image: imagePath, blockSize: blockSize) {
+                let after = Self.unlockSavedVolumes(device: device, volumes: [])
+                return (device, after.volumes, isBlank, after.locked)
+            }
 
             var attached: (device: String?, volumes: [String])?
             if engine == .diskImages2 {
@@ -345,8 +356,8 @@ final class AttachmentManager: ObservableObject {
             }
             let result = try attached ?? Self.attachWithHdiutil(image: imagePath, blockSize: blockSize)
             Self.disableAccessTimes(on: result.volumes)
-            return (result.device, result.volumes, isBlank,
-                    Self.lockedVolumes(device: result.device, ifNoneOf: result.volumes))
+            let after = Self.unlockSavedVolumes(device: result.device, volumes: result.volumes)
+            return (result.device, after.volumes, isBlank, after.locked)
         }.value
 
         // Recorded before anything else can go wrong: throwing after the
@@ -528,11 +539,11 @@ final class AttachmentManager: ObservableObject {
     /// whether the disk is blank; nil when it could not be read.
     nonisolated private static func attachBlockSize(
         image: String, volume: String
-    ) -> (blockSize: Int?, isBlank: Bool?) {
-        guard let handle = FileHandle(forReadingAtPath: image) else { return (nil, nil) }
+    ) -> (blockSize: Int?, isBlank: Bool?, holdsAPFS: Bool) {
+        guard let handle = FileHandle(forReadingAtPath: image) else { return (nil, nil, false) }
         defer { try? handle.close() }
         guard let prefix = try? handle.read(upToCount: PartitionTableProbe.prefixLength) else {
-            return (nil, nil)
+            return (nil, nil, false)
         }
         var stats = statfs()
         let lunBlockSize = statfs(volume, &stats) == 0 ? Int(stats.f_bsize) : nil
@@ -545,7 +556,49 @@ final class AttachmentManager: ObservableObject {
             blank \(isBlank, privacy: .public) → \
             \(chosen.map { "-blocksize \($0)" } ?? "default", privacy: .public)
             """)
-        return (chosen, isBlank)
+        return (chosen, isBlank, PartitionTableProbe.holdsAPFS(prefix: prefix))
+    }
+
+    /// For a disk holding APFS, ahead of the attach that mounts: attach it
+    /// without mounting and look for locked volumes. With none, detach and
+    /// return nil, and the usual attach goes ahead as it always has. With
+    /// some, keep this attach and return its device.
+    ///
+    /// The usual attach asks DiskArbitration to mount everything, and for a
+    /// disk whose only volumes are locked that goes wrong twice. `hdiutil`
+    /// fails with "no mountable file systems" and ejects the disk within
+    /// milliseconds. And macOS's APFSUserAgent, woken by the failed mount,
+    /// looks for a saved password and then puts up its prompt for the disk
+    /// that is already gone, so a password entered there can only fail ("The
+    /// disk can't be unlocked"). `-mount optional` changes neither (macOS
+    /// 26.7.2, 2026-11-09). A `-nomount` attach wakes nothing.
+    nonisolated private static func attachUnmountedIfLocked(image: String, blockSize: Int?) -> String? {
+        var arguments = ["attach", "-imagekey", "diskimage-class=CRawDiskImage", "-noverify",
+                         "-plist", "-nomount"]
+        if let blockSize { arguments += ["-blocksize", String(blockSize)] }
+        arguments.append(image)
+        guard let result = try? run("/usr/bin/hdiutil", arguments), result.status == 0,
+              let device = parseAttachPlist(result.stdout).device else { return nil }
+        // APFS lists the container a moment after the device appears; until
+        // it does, an empty answer means nothing.
+        var locked: [LockedAPFSVolumes.Volume] = []
+        for _ in 0 ..< 12 {
+            if let listing = try? run("/usr/sbin/diskutil", ["apfs", "list", "-plist"]),
+               listing.status == 0,
+               LockedAPFSVolumes.hasContainer(onDisk: device, apfsList: listing.stdout) {
+                locked = LockedAPFSVolumes.find(onDisk: device, apfsList: listing.stdout)
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        if !locked.isEmpty { return device }
+        if let detached = try? run("/usr/bin/hdiutil", ["detach", device]), detached.status == 0 {
+            return nil
+        }
+        // Never attach the same image twice: if this one will not go, it is
+        // the attach, with nothing mounted.
+        attachLog.error("could not detach \(device, privacy: .public) after looking for locked volumes; keeping it, unmounted")
+        return device
     }
 
     /// The DiskImages engine, as every release before macOS 27 did it.
@@ -639,14 +692,65 @@ final class AttachmentManager: ObservableObject {
     /// does not wait on the target; and it only runs when there is something
     /// to explain.
     nonisolated private static func lockedVolumes(device: String?, ifNoneOf volumes: [String]) -> [String] {
-        guard let device, volumes.isEmpty,
-              let result = try? run("/usr/sbin/diskutil", ["apfs", "list", "-plist"]),
-              result.status == 0 else { return [] }
-        let locked = LockedAPFSVolumes.find(onDisk: device, apfsList: result.stdout).map(\.name)
+        guard let device, volumes.isEmpty else { return [] }
+        let locked = lockedAPFSVolumes(onDevice: device).map(\.name)
         if !locked.isEmpty {
             attachLog.log("\(device, privacy: .public) holds locked encrypted volumes: \(locked.joined(separator: ", "), privacy: .public)")
         }
         return locked
+    }
+
+    nonisolated private static func lockedAPFSVolumes(onDevice device: String) -> [LockedAPFSVolumes.Volume] {
+        guard let result = try? run("/usr/sbin/diskutil", ["apfs", "list", "-plist"]),
+              result.status == 0 else { return [] }
+        return LockedAPFSVolumes.find(onDisk: device, apfsList: result.stdout)
+    }
+
+    /// An attach's last step when nothing of the disk mounted: unlock each
+    /// locked encrypted volume whose password macOS saved in the keychain
+    /// (`EncryptedVolumePassword`), then report what is mounted and what is
+    /// still locked, with the same rule as `lockedVolumes`: locked volumes
+    /// are only reported while nothing mounted.
+    ///
+    /// Best effort, and silent. No saved password, a denied keychain prompt,
+    /// a wrong password or a volume that will not mount leaves that volume
+    /// locked and is only logged; the attach itself has succeeded either way.
+    nonisolated private static func unlockSavedVolumes(
+        device: String?, volumes: [String]
+    ) -> (volumes: [String], locked: [String]) {
+        guard let device, volumes.isEmpty else { return (volumes, []) }
+        let locked = lockedAPFSVolumes(onDevice: device)
+        guard !locked.isEmpty else { return (volumes, []) }
+        var unlockedAny = false
+        for volume in locked {
+            guard let uuid = volume.uuid,
+                  let password = EncryptedVolumePassword.saved(forVolumeUUID: uuid) else { continue }
+            // Unprivileged, and it mounts the volume as well (0.28 s on the
+            // 26 VM). On stdin, so the password is in no argument list.
+            let result = try? run("/usr/sbin/diskutil",
+                                  ["apfs", "unlockVolume", volume.identifier, "-stdinpassphrase"],
+                                  input: password)
+            if result?.status == 0 {
+                unlockedAny = true
+                attachLog.log("unlocked \(volume.name, privacy: .public) (\(volume.identifier, privacy: .public)) with its saved password")
+            } else {
+                attachLog.notice("could not unlock \(volume.name, privacy: .public) with its saved password: \(result?.combined ?? "diskutil did not run", privacy: .public)")
+            }
+        }
+        guard unlockedAny else {
+            let names = locked.map(\.name)
+            attachLog.log("\(device, privacy: .public) holds locked encrypted volumes: \(names.joined(separator: ", "), privacy: .public)")
+            return (volumes, names)
+        }
+        // `diskutil` has mounted it by the time it returns; hdiutil's view of
+        // the mount can trail by a moment.
+        var mounted = mountPoints(ofDevice: device)
+        for _ in 0 ..< 8 where mounted.isEmpty {
+            Thread.sleep(forTimeInterval: 0.25)
+            mounted = mountPoints(ofDevice: device)
+        }
+        disableAccessTimes(on: mounted)
+        return (mounted, lockedVolumes(device: device, ifNoneOf: mounted))
     }
 
     nonisolated private static func isMounted(_ path: String) -> Bool {
@@ -783,15 +887,24 @@ final class AttachmentManager: ObservableObject {
         }
     }
 
+    /// - Parameter input: written to the child's stdin, which is then closed;
+    ///   how a secret reaches a tool without appearing in its arguments.
     @discardableResult
-    nonisolated private static func run(_ path: String, _ arguments: [String]) throws -> ProcessResult {
+    nonisolated private static func run(_ path: String, _ arguments: [String],
+                                        input: Data? = nil) throws -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
         process.standardError = err
+        let stdin = input.map { _ in Pipe() }
+        if let stdin { process.standardInput = stdin }
         try process.run()
+        if let stdin, let input {
+            stdin.fileHandleForWriting.write(input)
+            try? stdin.fileHandleForWriting.close()
+        }
         // Read before waiting: hdiutil's -plist output can fill the pipe
         // buffer, and an undrained child blocks forever.
         let outData = out.fileHandleForReading.readDataToEndOfFile()

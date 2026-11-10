@@ -55,6 +55,49 @@ public enum PartitionTableProbe {
         return nil
     }
 
+    /// Whether `prefix` — the first bytes of the disk — shows an APFS
+    /// container: a GPT partition of APFS's type, or a container written to
+    /// the whole disk ("NXSB" at byte 32 of its first block). Encrypted
+    /// volumes live only in one, and the attach treats such a disk with more
+    /// care (`AttachmentManager.attachUnmountedIfLocked`).
+    public static func holdsAPFS(prefix: Data) -> Bool {
+        if prefix.count >= 36,
+           prefix[(prefix.startIndex + 32) ..< (prefix.startIndex + 36)].elementsEqual(containerMagic) {
+            return true
+        }
+        guard let blockSize = gptBlockSize(prefix: prefix) else { return false }
+        let header = blockSize
+        let entriesLBA = littleEndian(prefix, at: header + 72, bytes: 8)
+        let count = littleEndian(prefix, at: header + 80, bytes: 4)
+        let size = littleEndian(prefix, at: header + 84, bytes: 4)
+        // A sane table only: 128-byte entries or larger, at most a few
+        // hundred, starting inside what was read.
+        guard size >= 128, size <= 4096, count <= 1024,
+              entriesLBA < UInt64(prefix.count / blockSize) else { return false }
+        let first = Int(entriesLBA) * blockSize
+        for index in 0 ..< Int(count) {
+            let offset = first + index * Int(size)
+            guard offset + apfsPartitionType.count <= prefix.count else { break }
+            let start = prefix.startIndex + offset
+            if prefix[start ..< start + apfsPartitionType.count].elementsEqual(apfsPartitionType) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// 7C3457EF-0000-11AA-AA11-00306543ECAC as GPT stores it: the first
+    /// three fields little-endian.
+    static let apfsPartitionType: [UInt8] = [0xEF, 0x57, 0x34, 0x7C, 0x00, 0x00, 0xAA, 0x11,
+                                             0xAA, 0x11, 0x00, 0x30, 0x65, 0x43, 0xEC, 0xAC]
+    private static let containerMagic = Array("NXSB".utf8)
+
+    private static func littleEndian(_ data: Data, at offset: Int, bytes: Int) -> UInt64 {
+        guard offset >= 0, data.count >= offset + bytes else { return 0 }
+        let start = data.startIndex + offset
+        return data[start ..< start + bytes].reversed().reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+    }
+
     private static let signature = Array("EFI PART".utf8)
     /// `MyLBA`, a little-endian UInt64 at offset 24 of the header.
     private static let myLBAOffset = 24

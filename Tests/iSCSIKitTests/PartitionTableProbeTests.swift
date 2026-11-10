@@ -149,4 +149,66 @@ struct PartitionTableProbeTests {
         let padded = Data(count: 100) + disk(headersAt: [4096])
         #expect(PartitionTableProbe.gptBlockSize(prefix: padded.dropFirst(100)) == 4096)
     }
+
+    // MARK: - APFS
+
+    private static let efiType: [UInt8] = [0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11,
+                                           0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B]
+    private static let hfsPlusType: [UInt8] = [0x00, 0x53, 0x46, 0x48, 0x00, 0x00, 0xAA, 0x11,
+                                               0xAA, 0x11, 0x00, 0x30, 0x65, 0x43, 0xEC, 0xAC]
+
+    /// The start of a disk `diskutil` partitioned at `blockSize`: its real
+    /// header, and the entry array at LBA 2 holding `types` in order.
+    private func partitioned(blockSize: Int, types: [[UInt8]]) -> Data {
+        var prefix = [UInt8](repeating: 0, count: 64 << 10)
+        let hex = blockSize == 512 ? Self.diskutilHeader512 : Self.diskutilHeader4096
+        prefix.replaceSubrange(blockSize ..< blockSize + 92, with: bytes(hex: hex))
+        for (index, type) in types.enumerated() {
+            let entry = 2 * blockSize + index * 128
+            prefix.replaceSubrange(entry ..< entry + 16, with: type)
+        }
+        return Data(prefix)
+    }
+
+    @Test("a disk partitioned as APFS holds APFS, at either block size")
+    func apfsPartition() {
+        for blockSize in [512, 4096] {
+            let prefix = partitioned(blockSize: blockSize, types: [PartitionTableProbe.apfsPartitionType])
+            #expect(PartitionTableProbe.holdsAPFS(prefix: prefix), "block size \(blockSize)")
+        }
+    }
+
+    @Test("an EFI partition first, then APFS: what a larger disk gets")
+    func efiThenAPFS() {
+        let prefix = partitioned(blockSize: 512, types: [Self.efiType, PartitionTableProbe.apfsPartitionType])
+        #expect(PartitionTableProbe.holdsAPFS(prefix: prefix))
+    }
+
+    @Test("a GPT of other partitions does not hold APFS")
+    func otherPartitions() {
+        let prefix = partitioned(blockSize: 4096, types: [Self.efiType, Self.hfsPlusType])
+        #expect(!PartitionTableProbe.holdsAPFS(prefix: prefix))
+    }
+
+    @Test("an APFS container written to the whole disk holds APFS")
+    func wholeDiskContainer() {
+        var prefix = [UInt8](repeating: 0, count: 4096)
+        prefix.replaceSubrange(32 ..< 36, with: Array("NXSB".utf8))
+        #expect(PartitionTableProbe.holdsAPFS(prefix: Data(prefix)))
+    }
+
+    @Test("blank, MBR-only and nonsense tables do not hold APFS, and do not trap")
+    func noAPFS() {
+        #expect(!PartitionTableProbe.holdsAPFS(prefix: Data(count: 1 << 20)))
+        #expect(!PartitionTableProbe.holdsAPFS(prefix: disk(headersAt: [])))
+        #expect(!PartitionTableProbe.holdsAPFS(prefix: Data()))
+        // A header that puts its entries past what was read, or claims
+        // absurd sizes, is not followed.
+        var far = [UInt8](partitioned(blockSize: 512, types: [PartitionTableProbe.apfsPartitionType]))
+        far.replaceSubrange((512 + 72) ..< (512 + 80), with: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F])
+        #expect(!PartitionTableProbe.holdsAPFS(prefix: Data(far)))
+        var huge = [UInt8](partitioned(blockSize: 512, types: [PartitionTableProbe.apfsPartitionType]))
+        huge.replaceSubrange((512 + 84) ..< (512 + 88), with: [0xFF, 0xFF, 0xFF, 0xFF])
+        #expect(!PartitionTableProbe.holdsAPFS(prefix: Data(huge)))
+    }
 }
