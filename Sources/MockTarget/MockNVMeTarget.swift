@@ -362,6 +362,9 @@ actor MockNVMeQueue {
         if queueID == 0 {
             try await handleAdmin(sqe, controllerID: controllerID)
         } else {
+            if let until = faults.holdIOUntil, ContinuousClock.now < until {
+                try await Task.sleep(until: until, clock: .continuous)
+            }
             try await handleIO(sqe, data: cmd.inCapsuleData)
         }
     }

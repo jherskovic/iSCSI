@@ -138,6 +138,15 @@ struct ControlCommands: Sendable {
                 } else if let ms = Int(value) {
                     f.responseDelay = .milliseconds(ms)
                 }
+            case "holdioms":
+                // From now: `fault holdioms 45000` holds NVMe I/O for 45 s.
+                if off || value == "0" {
+                    f.holdIOUntil = nil
+                } else if let ms = Int(value) {
+                    f.holdIOUntil = .now + .milliseconds(ms)
+                } else {
+                    applied = false
+                }
             case "statsnjump":
                 f.statSNJump = UInt32(value) ?? 0
             default:
@@ -164,6 +173,9 @@ struct ControlCommands: Sendable {
         if let n = f.dropAfterSentPDUs { set.append("dropAfterPDUs=\(n)") }
         if let n = f.dropDuringDataInAt { set.append("dropDuringDataIn=\(n)") }
         if let d = f.responseDelay { set.append("responseDelay=\(d)") }
+        if let until = f.holdIOUntil, ContinuousClock.now < until {
+            set.append("holdIO=\(ContinuousClock.now.duration(to: until)) more")
+        }
         if f.statSNJump != 0 { set.append("statSNJump=\(f.statSNJump)") }
         return set.isEmpty ? "none" : set.joined(separator: ",")
     }
