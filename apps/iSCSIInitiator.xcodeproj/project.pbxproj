@@ -26,6 +26,7 @@
 		3982D9B9A332FCB9061C3BFA /* iSCSIDext.iig in Sources */ = {isa = PBXBuildFile; fileRef = 3DC08C498B489B3118E2CF64 /* iSCSIDext.iig */; };
 		418C66FD8AB5C17288BCD8E0 /* me.herko.iSCSIInitiator.daemon.plist in CopyFiles */ = {isa = PBXBuildFile; fileRef = 3D7813599A3D7B14A72BA71F /* me.herko.iSCSIInitiator.daemon.plist */; };
 		41FB9E5D490B8BBCBE30E03C /* DiskImages2Attach.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC3157616295AC33CB39EFB3 /* DiskImages2Attach.swift */; };
+		47250D1C65339576A69B6F66 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 69213C5A862E3B432A489F5D /* Localizable.xcstrings */; };
 		47569C58A7D54351DA940C94 /* NetworkInterfaceNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED9A77FA78FACFBDB5AB51F4 /* NetworkInterfaceNames.swift */; };
 		4B36ECFA1BF51406DD4D11F0 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE16E15977B192C9F17111AD /* DaemonClient.swift */; };
 		4C6B35B76B114701F6D7FFAD /* NVMeAdd.swift in Sources */ = {isa = PBXBuildFile; fileRef = 711FBD32F1908DA6254300C0 /* NVMeAdd.swift */; };
@@ -41,6 +42,7 @@
 		6F063F974119BF682CF7091B /* FSKitRegistrationAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D348D6F794376FF5B84124D /* FSKitRegistrationAudit.swift */; };
 		6F7C99E9771924C6C8601DC8 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD45EF66B5901CBA63524A52 /* AppDelegate.swift */; };
 		70B474C0AD5BCE9F6C94C962 /* CommandLineTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8357529A12CBF7C315FFD02E /* CommandLineTool.swift */; };
+		735DDE5A18DDD0F0C1CA4DD4 /* LocalizedStorageError.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC92CE210A348574D9BEDCE3 /* LocalizedStorageError.swift */; };
 		7DF0B704FFA3482AABAFE5F3 /* iSCSIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1930AC270A5C69BFDB1258AA /* iSCSIKit */; };
 		806A6B4A377EDE0322099A45 /* Uninstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05248BE0BC00DDCB8993C611 /* Uninstaller.swift */; };
 		834DE1E9C3D343D8B7027A79 /* iSCSIDaemonKit in Frameworks */ = {isa = PBXBuildFile; productRef = 31DCE2C37A7F2B58783C7457 /* iSCSIDaemonKit */; };
@@ -187,6 +189,7 @@
 		61D2387091929A6D361CF0DE /* iscsictl */ = {isa = PBXFileReference; includeInIndex = 0; path = iscsictl; sourceTree = BUILT_PRODUCTS_DIR; };
 		63687E9A8247C4F8AD9C2785 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		66A066551C98F53B7638A06D /* UninstallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UninstallView.swift; sourceTree = "<group>"; };
+		69213C5A862E3B432A489F5D /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		6B913BC483648A1C6DE80191 /* iSCSIFSExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = iSCSIFSExtension.entitlements; sourceTree = "<group>"; };
 		6D391D2F85F1E895FFA385D9 /* DaemonController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonController.swift; sourceTree = "<group>"; };
 		711FBD32F1908DA6254300C0 /* NVMeAdd.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVMeAdd.swift; sourceTree = "<group>"; };
@@ -210,6 +213,7 @@
 		B808F3CCD9834015B10E1D56 /* OtherCopies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OtherCopies.swift; sourceTree = "<group>"; };
 		BD45EF66B5901CBA63524A52 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		CC3157616295AC33CB39EFB3 /* DiskImages2Attach.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskImages2Attach.swift; sourceTree = "<group>"; };
+		CC92CE210A348574D9BEDCE3 /* LocalizedStorageError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizedStorageError.swift; sourceTree = "<group>"; };
 		CEB7014D643231D7883A0AD4 /* SidebarRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarRow.swift; sourceTree = "<group>"; };
 		D3CE19CCF76F0D1615284CE8 /* initiator.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = initiator.icon; sourceTree = "<group>"; };
 		DD771E80CF6EBE9DCF6AA988 /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
@@ -221,6 +225,7 @@
 		EC6B007DE0F85E36DA01B694 /* iSCSIBootstrap.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = iSCSIBootstrap.iig; sourceTree = "<group>"; };
 		ED9A77FA78FACFBDB5AB51F4 /* NetworkInterfaceNames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkInterfaceNames.swift; sourceTree = "<group>"; };
 		EE16E15977B192C9F17111AD /* DaemonClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonClient.swift; sourceTree = "<group>"; };
+		F2BAFC4F0686DC68FFCFCA7C /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
 		F9E5E4079C9AAECB94704229 /* iSCSIDext.dext */ = {isa = PBXFileReference; explicitFileType = "wrapper.driver-extension"; includeInIndex = 0; path = iSCSIDext.dext; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -289,6 +294,7 @@
 				D3CE19CCF76F0D1615284CE8 /* initiator.icon */,
 				5F8B8631D4F5E81291847966 /* iSCSIApp.entitlements */,
 				0FC18B26402E15EC48C74856 /* iSCSIApp.swift */,
+				69213C5A862E3B432A489F5D /* Localizable.xcstrings */,
 				5FF3AB83DB47EADB7AF28ECC /* Client */,
 				962359150D6304F53498F15A /* InfoPlist.strings */,
 				2DBB9BD9979EA5791B8473D2 /* LaunchDaemons */,
@@ -367,6 +373,7 @@
 				CC3157616295AC33CB39EFB3 /* DiskImages2Attach.swift */,
 				A47B4F8C6EC6DE467EA518BA /* EncryptedVolumePassword.swift */,
 				3CFABF815361ED5F578A112C /* LastPortal.swift */,
+				CC92CE210A348574D9BEDCE3 /* LocalizedStorageError.swift */,
 				89472971AD8F995DD4FCCA0D /* LoginItem.swift */,
 				ED9A77FA78FACFBDB5AB51F4 /* NetworkInterfaceNames.swift */,
 				506DA6C808D5BBEAD9778417 /* UpdateController.swift */,
@@ -631,6 +638,7 @@
 			knownRegions = (
 				Base,
 				en,
+				"zh-Hans",
 			);
 			mainGroup = 42F85755989DD49B28E3E3E8;
 			minimizedProjectReferenceProxies = 1;
@@ -668,6 +676,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B13203674D0BEFBA9F41CB56 /* InfoPlist.strings in Resources */,
+				47250D1C65339576A69B6F66 /* Localizable.xcstrings in Resources */,
 				BF50F567786DC8AD3B01B8D8 /* initiator.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -748,6 +757,7 @@
 				2E1FFE246D597C651BD5C482 /* InstallLocation.swift in Sources */,
 				639F557EB39F50C31EEB5B6F /* InterfacePicker.swift in Sources */,
 				9FAF8F9B4328CBD250375CA0 /* LastPortal.swift in Sources */,
+				735DDE5A18DDD0F0C1CA4DD4 /* LocalizedStorageError.swift in Sources */,
 				F2BDB790A0FAAE061BED83E9 /* LoginItem.swift in Sources */,
 				19AEC47ED3920AE1C239870B /* MenuBarContent.swift in Sources */,
 				5D2750BDD476A45989A9568C /* MenuBarLabel.swift in Sources */,
@@ -796,6 +806,7 @@
 			isa = PBXVariantGroup;
 			children = (
 				979635E6CF9EE6B49425E909 /* en */,
+				F2BAFC4F0686DC68FFCFCA7C /* zh-Hans */,
 			);
 			name = InfoPlist.strings;
 			sourceTree = "<group>";
@@ -1007,6 +1018,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
 			};
@@ -1139,6 +1151,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
 			};

@@ -27,7 +27,7 @@ import iSCSIKit
 @MainActor
 final class CommandLineTool: SetupStep {
     let id = "command-line"
-    let title = "iscsictl on the command line"
+    let title = String(localized: "iscsictl on the command line")
     let isOptional = true
     private(set) var state: StepState = .checking
     /// Why the last attempt failed. Cancelling the prompt is not a failure.
@@ -38,20 +38,18 @@ final class CommandLineTool: SetupStep {
         switch Self.currentLink() {
         case .ours:
             failure = nil
-            state = .satisfied("\(path) links to this app")
+            state = .satisfied(String(localized: "\(path) links to this app"))
         case .absent:
-            state = .actionable(failure ?? "Optional. Adds a link in /usr/local/bin so "
-                                + "iscsictl runs from any Terminal, for every account "
-                                + "on this Mac. macOS asks for an administrator's password.")
+            state = .actionable(failure ?? String(localized: "Optional. Adds a link in /usr/local/bin so iscsictl runs from any Terminal, for every account on this Mac. macOS asks for an administrator's password."))
         case .otherLink(let destination):
-            state = .blocked("\(path) already links to \(destination), so it is left alone.")
+            state = .blocked(String(localized: "\(path) already links to \(destination), so it is left alone."))
         case .notALink:
-            state = .blocked("\(path) already exists and is not a link, so it is left alone.")
+            state = .blocked(String(localized: "\(path) already exists and is not a link, so it is left alone."))
         }
     }
 
     var actionLabel: String? {
-        if case .actionable = state { return "Add Link" }
+        if case .actionable = state { return String(localized: "Add Link") }
         return nil
     }
 
@@ -64,7 +62,7 @@ final class CommandLineTool: SetupStep {
             Self.asAdministrator(Self.addScript, arguments: [tool])
         }.value
         if case .failed(let why) = outcome {
-            failure = "The link could not be added: \(why)"
+            failure = String(localized: "The link could not be added: \(why)")
         }
     }
 

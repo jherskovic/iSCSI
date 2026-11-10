@@ -23,7 +23,7 @@ struct SidebarRow: View {
             if isWorking {
                 ProgressView()
                     .controlSize(.small)
-                    .accessibilityLabel("Working")
+                    .accessibilityLabel(String(localized: "Working"))
             }
         }
         .badge(!isWorking && needsAttention ? Text("!") : nil)

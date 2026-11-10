@@ -17,22 +17,20 @@ struct InterfacePicker: View {
 
     var body: some View {
         Group {
-            Picker("Network interface", selection: $name) {
-                Text("Automatic (macOS chooses)").tag(String?.none)
+            Picker(String(localized: "Network interface"), selection: $name) {
+                Text(String(localized: "Automatic (macOS chooses)")).tag(String?.none)
                 ForEach(choices) { choice in
                     Text(choice.label).tag(String?.some(choice.name))
                 }
             }
             if name != nil {
-                Picker("When unavailable", selection: $fallback) {
-                    Text("Fail the connection").tag(false)
-                    Text("Use another interface").tag(true)
+                Picker(String(localized: "When unavailable"), selection: $fallback) {
+                    Text(String(localized: "Fail the connection")).tag(false)
+                    Text(String(localized: "Use another interface")).tag(true)
                 }
                 Text(fallback
-                     ? "Falls back to whatever macOS picks when this interface is missing "
-                       + "or has no route, and tries it again at the next reconnect."
-                     : "Never uses another interface — not Wi-Fi, not a VPN. If this one "
-                       + "is unavailable, the connection fails.")
+                     ? String(localized: "Falls back to whatever macOS picks when this interface is missing or has no route, and tries it again at the next reconnect.")
+                     : String(localized: "Never uses another interface — not Wi-Fi, not a VPN. If this one is unavailable, the connection fails."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

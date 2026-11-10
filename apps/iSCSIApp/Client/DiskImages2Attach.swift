@@ -30,8 +30,8 @@ enum DiskImages2Attach {
 
         var description: String {
             switch self {
-            case .unavailable(let why): return "DiskImages2 attach unavailable: \(why)"
-            case .refused(let why): return "DiskImages2 attach failed: \(why)"
+            case .unavailable(let why): return String(localized: "DiskImages2 attach unavailable: \(why)")
+            case .refused(let why): return String(localized: "DiskImages2 attach failed: \(why)")
             }
         }
     }
@@ -43,7 +43,7 @@ enum DiskImages2Attach {
     /// whole-disk BSD name, such as "disk9".
     static func attach(image: URL, blockSize: Int, autoMount: Bool) throws -> String {
         guard dlopen("/System/Library/PrivateFrameworks/DiskImages2.framework/DiskImages2", RTLD_NOW) != nil else {
-            throw Failure.unavailable("could not load DiskImages2.framework")
+            throw Failure.unavailable(String(localized: "could not load DiskImages2.framework"))
         }
         guard let paramsClass = NSClassFromString("DIAttachParams") else {
             throw Failure.unavailable("no DIAttachParams")

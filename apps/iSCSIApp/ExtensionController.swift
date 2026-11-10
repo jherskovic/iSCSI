@@ -35,7 +35,7 @@ final class ExtensionController: NSObject, ObservableObject {
     static let dextBundleID = "me.herko.iSCSIInitiator.dext"
 
     @Published var dextActivated = false
-    @Published var dextStatus = "Not activated"
+    @Published var dextStatus = String(localized: "Not activated")
     @Published var log = ""
 
     private let logger = Logger(subsystem: "me.herko.iSCSIInitiator.app", category: "sysext")
@@ -45,7 +45,7 @@ final class ExtensionController: NSObject, ObservableObject {
     }
 
     func activate() {
-        appendLog("Requesting activation of \(Self.dextBundleID)…")
+        appendLog(String(localized: "Requesting activation of \(Self.dextBundleID)…"))
         let request = OSSystemExtensionRequest.activationRequest(
             forExtensionWithIdentifier: Self.dextBundleID,
             queue: .main
@@ -55,7 +55,7 @@ final class ExtensionController: NSObject, ObservableObject {
     }
 
     func deactivate() {
-        appendLog("Requesting deactivation…")
+        appendLog(String(localized: "Requesting deactivation…"))
         let request = OSSystemExtensionRequest.deactivationRequest(
             forExtensionWithIdentifier: Self.dextBundleID,
             queue: .main
@@ -84,8 +84,8 @@ extension ExtensionController: OSSystemExtensionRequestDelegate {
 
     nonisolated func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         Task { @MainActor in
-            self.dextStatus = "Awaiting approval in System Settings → General → Login Items & Extensions → Driver Extensions"
-            self.appendLog("User approval required.")
+            self.dextStatus = String(localized: "Awaiting approval in System Settings → General → Login Items & Extensions → Driver Extensions")
+            self.appendLog(String(localized: "User approval required."))
         }
     }
 
@@ -96,12 +96,12 @@ extension ExtensionController: OSSystemExtensionRequestDelegate {
         let willReboot = (result == .willCompleteAfterReboot)
         Task { @MainActor in
             if willReboot {
-                self.dextStatus = "Will complete after reboot"
-                self.appendLog("Completed pending reboot.")
+                self.dextStatus = String(localized: "Will complete after reboot")
+                self.appendLog(String(localized: "Completed pending reboot."))
             } else {
                 self.dextActivated.toggle()
-                self.dextStatus = self.dextActivated ? "Activated" : "Deactivated"
-                self.appendLog("Request finished: \(self.dextStatus).")
+                self.dextStatus = self.dextActivated ? String(localized: "Activated") : String(localized: "Deactivated")
+                self.appendLog(String(localized: "Request finished: \(self.dextStatus)."))
             }
         }
     }
@@ -110,8 +110,8 @@ extension ExtensionController: OSSystemExtensionRequestDelegate {
         let ns = error as NSError
         let detail = "domain=\(ns.domain) code=\(ns.code) desc=\(ns.localizedDescription) userInfo=\(ns.userInfo)"
         Task { @MainActor in
-            self.dextStatus = "Failed"
-            self.appendLog("Request failed: \(detail)")
+            self.dextStatus = String(localized: "Failed")
+            self.appendLog(String(localized: "Request failed: \(detail)"))
         }
     }
 }

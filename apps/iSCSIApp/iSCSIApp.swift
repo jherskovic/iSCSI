@@ -49,7 +49,7 @@ struct ISCSIInitiatorApp: App {
     }
 
     var body: some Scene {
-        Window("iSCSI/NVMe/TCP Initiator", id: "main") {
+        Window(String(localized: "iSCSI/NVMe/TCP Initiator"), id: "main") {
             MainWindow(model: model)
                 .frame(minWidth: 760, minHeight: 480)
         }
@@ -61,7 +61,7 @@ struct ISCSIInitiatorApp: App {
         .handlesExternalEvents(matching: [MainWindowLink.host])
         .commands {
             CommandGroup(after: .toolbar) {
-                Button("Refresh") { Task { await model.refresh() } }
+                Button(String(localized: "Refresh")) { Task { await model.refresh() } }
                     .keyboardShortcut("r")
             }
 
@@ -96,10 +96,10 @@ struct MainWindow: View {
 
         var title: String {
             switch self {
-            case .targets:  return "Targets"
-            case .discover: return "Discover"
-            case .sessions: return "Sessions"
-            case .setup:    return "Setup"
+            case .targets:  return String(localized: "Targets")
+            case .discover: return String(localized: "Discover")
+            case .sessions: return String(localized: "Sessions")
+            case .setup:    return String(localized: "Setup")
             }
         }
 
@@ -162,10 +162,10 @@ struct MainWindow: View {
 
                         HStack {
                             Spacer()
-                            Button("Remove iSCSI/NVMe/TCP Initiator…") { isUninstalling = true }
+                            Button(String(localized: "Remove iSCSI/NVMe/TCP Initiator…")) { isUninstalling = true }
                         }
 
-                        DisclosureGroup("Diagnostics") {
+                        DisclosureGroup(String(localized: "Diagnostics")) {
                             VStack(alignment: .leading, spacing: 12) {
                                 FSKitProbeView()
                                 DaemonPanelView()
@@ -175,7 +175,7 @@ struct MainWindow: View {
                     }
                     .padding()
                 }
-                .navigationTitle("Setup")
+                .navigationTitle(String(localized: "Setup"))
             }
         }
         .onOpenURL { _ in

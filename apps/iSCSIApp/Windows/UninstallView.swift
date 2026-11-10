@@ -26,7 +26,7 @@ struct UninstallView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Remove iSCSI/NVMe/TCP Initiator")
+            Text(String(localized: "Remove iSCSI/NVMe/TCP Initiator"))
                 .font(.title2).bold()
 
             if uninstaller.steps.isEmpty {
@@ -34,8 +34,7 @@ struct UninstallView: View {
             } else {
                 stepList
                 if let failure = uninstaller.trashFailure {
-                    Text("The app could not move itself to the Trash: \(failure) "
-                         + "Finder is showing it — drag it to the Trash.")
+                    Text(String(localized: "The app could not move itself to the Trash: \(failure) Finder is showing it — drag it to the Trash."))
                         .font(.callout).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -47,15 +46,14 @@ struct UninstallView: View {
         }
         .padding(20)
         .frame(width: 520, height: 460)
-        .confirmationDialog("Remove iSCSI/NVMe/TCP Initiator and everything it stored?",
+        .confirmationDialog(String(localized: "Remove iSCSI/NVMe/TCP Initiator and everything it stored?"),
                             isPresented: $confirming, titleVisibility: .visible) {
-            Button("Remove Everything", role: .destructive) {
+            Button(String(localized: "Remove Everything"), role: .destructive) {
                 Task { await uninstaller.run() }
             }
-            Button("Cancel", role: .cancel) { }
+            Button(String(localized: "Cancel"), role: .cancel) { }
         } message: {
-            Text("Your saved targets and their passwords will be deleted. "
-                 + "Nothing on the storage device itself is touched.")
+            Text(String(localized: "Your saved targets and their passwords will be deleted. Nothing on the storage device itself is touched."))
         }
     }
 
@@ -63,20 +61,15 @@ struct UninstallView: View {
     /// want to know before clicking an uninstall button — what will not.
     private var explanation: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Volumes are unmounted first, and nothing is forced. "
-                  + "If something is using a volume, removal stops and says so.",
+            Label(String(localized: "Volumes are unmounted first, and nothing is forced. If something is using a volume, removal stops and says so."),
                   systemImage: "eject")
-            Label("This account's saved targets and stored passwords are deleted.",
+            Label(String(localized: "This account's saved targets and stored passwords are deleted."),
                   systemImage: "key")
-            Label("The background service is unregistered and the filesystem "
-                  + "extension is turned off. An iscsictl link is removed if this "
-                  + "app added one, which needs an administrator's password.",
+            Label(String(localized: "The background service is unregistered and the filesystem extension is turned off. An iscsictl link is removed if this app added one, which needs an administrator's password."),
                   systemImage: "gearshape")
-            Label("**Nothing on the storage device itself is changed.** "
-                  + "Your data stays where it is.", systemImage: "externaldrive")
+            Label(String(localized: "**Nothing on the storage device itself is changed.** Your data stays where it is."), systemImage: "externaldrive")
                 .foregroundStyle(.primary)
-            Text("The app itself goes last: when everything else is removed, "
-                 + "a button moves it to the Trash and quits.")
+            Text(String(localized: "The app itself goes last: when everything else is removed, a button moves it to the Trash and quits."))
                 .font(.callout).foregroundStyle(.secondary)
         }
         .font(.callout)
@@ -108,17 +101,17 @@ struct UninstallView: View {
         HStack {
             if uninstaller.finished {
                 Text(uninstaller.steps.contains(where: { isFailure($0.outcome) })
-                     ? "Some things could not be removed."
-                     : "Everything has been removed.")
+                     ? String(localized: "Some things could not be removed.")
+                     : String(localized: "Everything has been removed."))
                     .font(.callout).foregroundStyle(.secondary)
             } else if let reason = uninstaller.stoppedBecause {
-                Text("Stopped: \(reason)")
+                Text(String(localized: "Stopped: \(reason)"))
                     .font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Close") { dismiss() }
+            Button(String(localized: "Close")) { dismiss() }
             if uninstaller.finished {
-                Button("Move App to Trash") {
+                Button(String(localized: "Move App to Trash")) {
                     Task {
                         guard await uninstaller.moveAppToTrash() else { return }
                         movedToTrash()
@@ -128,7 +121,7 @@ struct UninstallView: View {
                 .disabled(uninstaller.trashing)
                 .buttonStyle(.borderedProminent)
             } else {
-                Button("Remove Everything…") { confirming = true }
+                Button(String(localized: "Remove Everything…")) { confirming = true }
                     .buttonStyle(.borderedProminent)
                     .disabled(uninstaller.isRunning)
             }
@@ -151,7 +144,7 @@ struct UninstallView: View {
         case .pending, .running: return nil
         case .done(let what):    return what
         case .failed(let why):   return why
-        case .skipped:           return "not run"
+        case .skipped:           return String(localized: "not run")
         }
     }
 

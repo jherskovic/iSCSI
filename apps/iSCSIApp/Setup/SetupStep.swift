@@ -40,7 +40,7 @@ enum StepState: Equatable {
 
     var detail: String {
         switch self {
-        case .checking:            return "checking…"
+        case .checking:            return String(localized: "checking…")
         case .satisfied(let why):  return why
         case .actionable(let why): return why
         case .blocked(let why):    return why

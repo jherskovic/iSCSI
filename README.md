@@ -1,5 +1,7 @@
 # macOS iSCSI/NVMe-TCP Initiator
 
+[简体中文使用与翻译说明](README.zh-CN.md)
+
 [![version](https://img.shields.io/github/v/release/jherskovic/iSCSI-NVMe-TCP?sort=semver&display_name=tag&label=version)](https://github.com/jherskovic/iSCSI-NVMe-TCP/releases/latest)
 [![license](https://img.shields.io/github/license/jherskovic/iSCSI-NVMe-TCP)](LICENSE)
 [![build](https://github.com/jherskovic/iSCSI-NVMe-TCP/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jherskovic/iSCSI-NVMe-TCP/actions/workflows/ci.yml)

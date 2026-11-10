@@ -18,8 +18,8 @@ struct SessionsView: View {
     var body: some View {
         Group {
             if model.sessions.isEmpty {
-                ContentUnavailableView("No Active Sessions", systemImage: "bolt.horizontal",
-                                       description: Text("Attach a target to open a session."))
+                ContentUnavailableView(String(localized: "No Active Sessions"), systemImage: "bolt.horizontal",
+                                       description: Text(String(localized: "Attach a target to open a session.")))
             } else {
                 List(model.sessions, selection: $selected) { session in
                     SessionSummary(session: session)
@@ -27,7 +27,7 @@ struct SessionsView: View {
                 }
             }
         }
-        .navigationTitle("Sessions")
+        .navigationTitle(String(localized: "Sessions"))
         .inspector(isPresented: .constant(selected != nil)) {
             if let session = model.sessions.first(where: { $0.id == selected }) {
                 SessionDetail(session: session)
@@ -75,48 +75,47 @@ private struct SessionDetail: View {
     private var interfaceText: String {
         guard let name = session.interfaceName else { return "—" }
         guard let from = session.interfaceFallbackFrom else { return name }
-        return "\(name) (fell back from \(from))"
+        return String(localized: "\(name) (fell back from \(from))")
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                group("Device") {
-                    row(session.isNVMe ? "Subsystem" : "Target", session.targetIQN)
-                    row(session.isNVMe ? "Namespace ID" : "LUN", String(session.lun))
-                    if let size = session.blockSize { row("Block size", "\(size) bytes") }
-                    if let count = session.blockCount { row("Blocks", String(count)) }
+                group(String(localized: "Device")) {
+                    row(session.isNVMe ? String(localized: "Subsystem") : String(localized: "Target"), session.targetIQN)
+                    row(session.isNVMe ? String(localized: "Namespace ID") : String(localized: "LUN"), String(session.lun))
+                    if let size = session.blockSize { row(String(localized: "Block size"), String(localized: "\(size) bytes")) }
+                    if let count = session.blockCount { row(String(localized: "Blocks"), String(count)) }
                     if let bytes = session.byteCount {
-                        row("Capacity", ByteCountFormatter.string(
+                        row(String(localized: "Capacity"), ByteCountFormatter.string(
                             fromByteCount: Int64(bytes), countStyle: .file))
                     }
                 }
 
-                group("Network") {
-                    row("Interface", interfaceText)
+                group(String(localized: "Network")) {
+                    row(String(localized: "Interface"), interfaceText)
                 }
 
-                group("Durability") {
-                    row("Write cache", session.writeCacheEnabled.map {
-                        $0 ? "Enabled on the target" : "Disabled on the target"
-                    } ?? "Not reported")
-                    row("Write-through", session.writeThrough ? "On (FUA on every write)" : "Off")
-                    row("Session recoveries", String(session.recoveryCount))
+                group(String(localized: "Durability")) {
+                    row(String(localized: "Write cache"), session.writeCacheEnabled.map {
+                        $0 ? String(localized: "Enabled on the target") : String(localized: "Disabled on the target")
+                    } ?? String(localized: "Not reported"))
+                    row(String(localized: "Write-through"), session.writeThrough ? String(localized: "On (FUA on every write)") : String(localized: "Off"))
+                    row(String(localized: "Session recoveries"), String(session.recoveryCount))
                 }
                 // The combination that quietly risks data, spelled out rather
                 // than left to be inferred from two rows above: a target caching
                 // writes while we do not force them through, on a path that
                 // never receives a flush.
                 if session.writeCacheEnabled == true && !session.writeThrough {
-                    Label("This target caches writes and write-through is off. "
-                          + "Data acknowledged as written may not survive a power loss.",
+                    Label(String(localized: "This target caches writes and write-through is off. Data acknowledged as written may not survive a power loss."),
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                group("Negotiated") {
+                group(String(localized: "Negotiated")) {
                     ForEach(session.negotiated.keys.sorted(), id: \.self) { key in
                         row(key, session.negotiated[key] ?? "")
                     }

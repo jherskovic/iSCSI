@@ -98,15 +98,15 @@ final class UpdateController: NSObject, ObservableObject {
         NSApp.activate()
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Quitting now installs version \(version)"
-        alert.informativeText = """
+        alert.messageText = String(localized: "Quitting now installs version \(version)")
+        alert.informativeText = String(localized: """
             The update installs when the app quits, and installing replaces the \
             filesystem extension that \(subjectForAlert()) is using.
 
             Detach first, or keep the app open and quit later.
-            """
-        alert.addButton(withTitle: "Detach and Quit")
-        alert.addButton(withTitle: "Don't Quit")
+            """)
+        alert.addButton(withTitle: String(localized: "Detach and Quit"))
+        alert.addButton(withTitle: String(localized: "Don't Quit"))
         guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
 
         Task { @MainActor [weak self] in
@@ -119,12 +119,12 @@ final class UpdateController: NSObject, ObservableObject {
             NSApp.reply(toApplicationShouldTerminate: false)
             let still = NSAlert()
             still.alertStyle = .informational
-            still.messageText = "The app is staying open"
-            still.informativeText = """
+            still.messageText = String(localized: "The app is staying open")
+            still.informativeText = String(localized: """
                 Still attached: \(subjectForAlert()). Quitting would install the \
                 update under it. Detach it — in each account that has one — and \
                 quit again.
-                """
+                """)
             still.runModal()
         }
         return .terminateLater
@@ -198,7 +198,7 @@ private extension UpdateController {
     func subjectForAlert() -> String {
         let names = attachedVolumeNames()
         return names.isEmpty
-            ? "a volume that is attached"
+            ? String(localized: "a volume that is attached")
             : ListFormatter.localizedString(byJoining: names.map { "“\($0)”" })
     }
 
@@ -210,8 +210,8 @@ private extension UpdateController {
         let alert = NSAlert()
         // Informational, not a warning: refusing is the app working correctly.
         alert.alertStyle = .informational
-        alert.messageText = "Version \(version) will install after you detach"
-        alert.informativeText = """
+        alert.messageText = String(localized: "Version \(version) will install after you detach")
+        alert.informativeText = String(localized: """
             Installing now would replace the filesystem extension that \
             \(subject) is using, and anything writing to it at that moment \
             would lose the process answering its reads and writes.
@@ -219,9 +219,9 @@ private extension UpdateController {
             The update is downloaded and ready. It will install itself and \
             relaunch the app as soon as the last volume is detached. Quitting \
             the app installs it too, so a quit asks you to detach first.
-            """
-        alert.addButton(withTitle: "Detach and Install")
-        alert.addButton(withTitle: "Later")
+            """)
+        alert.addButton(withTitle: String(localized: "Detach and Install"))
+        alert.addButton(withTitle: String(localized: "Later"))
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task { @MainActor [weak self] in
@@ -244,7 +244,7 @@ struct CheckForUpdatesButton: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button { updates.checkForUpdates() } label: {
-                Label("Check for Updates…", systemImage: "arrow.down.circle")
+                Label(String(localized: "Check for Updates…"), systemImage: "arrow.down.circle")
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .padding(.horizontal, 12).padding(.vertical, 5)
@@ -255,8 +255,7 @@ struct CheckForUpdatesButton: View {
             if let version = updates.pendingUpdateVersion {
                 // Standing reminder after the dialog; names the relaunch
                 // because that is the startling part.
-                Text("Version \(version) is ready. It will install and relaunch "
-                     + "once every volume is detached.")
+                Text(String(localized: "Version \(version) is ready. It will install and relaunch once every volume is detached."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -272,7 +271,7 @@ struct AppMenuUpdatesItem: View {
     @ObservedObject var updates: UpdateController
 
     var body: some View {
-        Button("Check for Updates…") { updates.checkForUpdates() }
+        Button(String(localized: "Check for Updates…")) { updates.checkForUpdates() }
             .disabled(!updates.canCheckForUpdates)
     }
 }

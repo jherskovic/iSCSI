@@ -20,7 +20,7 @@ import Foundation
 @MainActor
 final class InstallLocation: SetupStep {
     let id = "location"
-    let title = "Installed in Applications"
+    let title = String(localized: "Installed in Applications")
     private(set) var state: StepState = .checking
 
     /// Where the running bundle actually is, which is not necessarily where the
@@ -55,9 +55,7 @@ final class InstallLocation: SetupStep {
     func check() async {
         if isTranslocated {
             state = .actionable(
-                "running from a temporary read-only copy (App Translocation). "
-                + "Move it to Applications and reopen — a daemon registered from "
-                + "here would point at a path that disappears.")
+                String(localized: "running from a temporary read-only copy (App Translocation). Move it to Applications and reopen — a daemon registered from here would point at a path that disappears."))
             return
         }
         guard isInApplications else {
@@ -65,17 +63,13 @@ final class InstallLocation: SetupStep {
             // near miss this is most likely to be reporting and "Applications"
             // alone reads as if that would do.
             state = .actionable(
-                "running from \(bundleURL.deletingLastPathComponent().path). "
-                + "A LaunchDaemon has to be reachable before anyone logs in, and "
-                + "it runs as root from wherever this app lives — so the app needs "
-                + "to be in /Applications, which only an administrator can change, "
-                + "rather than in your home folder.")
+                String(localized: "running from \(bundleURL.deletingLastPathComponent().path). A LaunchDaemon has to be reachable before anyone logs in, and it runs as root from wherever this app lives — so the app needs to be in /Applications, which only an administrator can change, rather than in your home folder."))
             return
         }
         state = .satisfied(bundleURL.path)
     }
 
-    var actionLabel: String? { state.isSatisfied ? nil : "Reveal in Finder" }
+    var actionLabel: String? { state.isSatisfied ? nil : String(localized: "Reveal in Finder") }
 
     /// Deliberately not a move-and-relaunch.
     ///

@@ -34,7 +34,7 @@ enum FSKitEnablement {
     /// Sendable so the attempt can run off the main actor — a TCC denial can
     /// block on a consent prompt, and that must not freeze the UI.
     struct Report: Sendable {
-        var containerSource: String = "(not resolved)"
+        var containerSource: String = String(localized: "(not resolved)")
         var path: String = ""
         var before: [String]?
         var after: [String]?
@@ -95,7 +95,7 @@ enum FSKitEnablement {
             let data = try Data(contentsOf: plist)
             guard let list = try PropertyListSerialization.propertyList(
                 from: data, format: nil) as? [String] else {
-                report.failure = "enabledModules.plist is not an array of strings"
+                report.failure = String(localized: "enabledModules.plist is not an array of strings")
                 return report
             }
             identifiers = list
@@ -105,11 +105,9 @@ enum FSKitEnablement {
             // one of them is fatal. Say which.
             let ns = error as NSError
             if ns.domain == NSCocoaErrorDomain && ns.code == NSFileReadNoSuchFileError {
-                report.failure = "no enabledModules.plist at that path — refusing to "
-                    + "invent one, since writing a fresh file would drop Apple's own "
-                    + "modules from the enabled set"
+                report.failure = String(localized: "no enabledModules.plist at that path — refusing to invent one, since writing a fresh file would drop Apple's own modules from the enabled set")
             } else {
-                report.failure = "read failed: \(describe(error))"
+                report.failure = String(localized: "read failed: \(describe(error))")
             }
             return report
         }
@@ -129,19 +127,19 @@ enum FSKitEnablement {
                 fromPropertyList: identifiers, format: .binary, options: 0)
             do {
                 try data.write(to: plist, options: .atomic)
-                report.writeMode = "atomic replace"
+                report.writeMode = String(localized: "atomic replace")
             } catch {
                 let atomicFailure = describe(error)
                 do {
                     try data.write(to: plist)
-                    report.writeMode = "in-place (atomic replace failed: \(atomicFailure))"
+                    report.writeMode = String(localized: "in-place (atomic replace failed: \(atomicFailure))")
                 } catch {
                     report.failure = "atomic: \(atomicFailure) — in-place: \(describe(error))"
                     return report
                 }
             }
         } catch {
-            report.failure = "could not serialize: \(describe(error))"
+            report.failure = String(localized: "could not serialize: \(describe(error))")
             return report
         }
 
@@ -153,10 +151,10 @@ enum FSKitEnablement {
             from: data, format: nil) as? [String] {
             report.after = list
             if !list.contains(moduleBundleID) {
-                report.failure = "write reported success but the entry is not there on re-read"
+                report.failure = String(localized: "write reported success but the entry is not there on re-read")
             }
         } else {
-            report.failure = "wrote, but could not read the file back to confirm"
+            report.failure = String(localized: "wrote, but could not read the file back to confirm")
         }
 
         return report
@@ -171,8 +169,7 @@ enum FSKitEnablement {
         if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
             parts.append("underlying \(underlying.domain) \(underlying.code)")
             if underlying.domain == NSPOSIXErrorDomain {
-                parts.append("errno \(underlying.code) "
-                             + "(\(String(cString: strerror(Int32(underlying.code)))))")
+                parts.append("errno \(underlying.code) (\(String(cString: strerror(Int32(underlying.code)))))")
             }
         }
         return parts.joined(separator: "; ")

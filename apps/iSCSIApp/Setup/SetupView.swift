@@ -37,17 +37,17 @@ struct SetupView: View {
             Task { await setup.checkAll() }
         }
         .confirmationDialog(
-            consentFor?.consentTitle ?? "Continue?",
+            consentFor?.consentTitle ?? String(localized: "Continue?"),
             isPresented: Binding(get: { consentFor != nil },
                                  set: { if !$0 { consentFor = nil } }),
             presenting: consentFor
         ) { report in
-            Button(report.actionLabel ?? "Continue") {
+            Button(report.actionLabel ?? String(localized: "Continue")) {
                 let id = report.id
                 consentFor = nil
                 Task { await setup.perform(id) }
             }
-            Button("Not now", role: .cancel) { consentFor = nil }
+            Button(String(localized: "Not now"), role: .cancel) { consentFor = nil }
         } message: { report in
             Text(report.consentPrompt ?? "")
         }
@@ -61,7 +61,7 @@ struct SetupView: View {
                 Image(systemName: setup.isReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .foregroundStyle(setup.isReady ? .green : .orange)
             }
-            Text(setup.isReady ? "Ready" : "Setup")
+            Text(setup.isReady ? String(localized: "Ready") : String(localized: "Setup"))
                 .font(.headline)
             Spacer()
             Button("Re-check") { Task { await setup.checkAll() } }
@@ -99,7 +99,7 @@ struct SetupView: View {
                 Button {} label: {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text(setup.busyLabel ?? "Working")
+                        Text(setup.busyLabel ?? String(localized: "Working"))
                     }
                 }
                 .buttonStyle(.borderedProminent)
