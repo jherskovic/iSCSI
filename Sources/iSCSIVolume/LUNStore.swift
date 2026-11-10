@@ -737,6 +737,14 @@ public final class DaemonStore: LUNStore {
     /// a read has cached the old bytes, or after a newer write to the same
     /// blocks. Nothing here can order or undo that, so `daemonCall` stops the
     /// volume: fail-stop, not a guess about what the media holds.
+    ///
+    /// A write the daemon answers with an error does not stop it, whatever
+    /// the error. The daemon replies only once it has stopped resending, so
+    /// no resend of ours can land later. With quick reconnects its three 30 s
+    /// attempts end at about 90 s, inside `defaultTimeout`; slow ones run
+    /// past it, and then the timeout above stops the volume instead. What a
+    /// target does with a command from a connection it has lost is beyond
+    /// any initiator.
     private func rawWrite(offset: UInt64, data: Data) throws {
         var err: Error?
         try daemonCall("a write, which may still land,") { proxy, done in
