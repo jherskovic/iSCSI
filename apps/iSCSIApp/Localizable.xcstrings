@@ -1527,6 +1527,16 @@
         }
       }
     },
+    "LUNs": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LUN"
+          }
+        }
+      }
+    },
     "Later": {
       "localizations": {
         "zh-Hans": {
@@ -3383,6 +3393,26 @@
         }
       }
     },
+    "iSCSI/NVMe/TCP Initiator wants to add the iscsictl command to /usr/local/bin.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iSCSI/NVMe/TCP Initiator 希望将 iscsictl 命令添加到 /usr/local/bin。"
+          }
+        }
+      }
+    },
+    "iSCSI/NVMe/TCP Initiator wants to remove the iscsictl command from /usr/local/bin.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iSCSI/NVMe/TCP Initiator 希望从 /usr/local/bin 移除 iscsictl 命令。"
+          }
+        }
+      }
+    },
     "iSCSI/NVMe/TCP Initiator will add its filesystem extension to the list macOS keeps of enabled extensions, at\n\n~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist\n\nNothing else on that list is changed, and nothing is restarted now, so nothing mounted is disconnected. The extension turns on the next time the service that reads the list restarts — at the latest when this Mac restarts.\n\nThis is normally done by the switch in System Settings, but that switch does not work on this version of macOS.": {
       "localizations": {
         "zh-Hans": {
@@ -3527,6 +3557,16 @@
       }
     },
     "namespace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命名空间"
+          }
+        }
+      }
+    },
+    "namespaces": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3907,7 +3947,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "后台服务返回了当前版本无法读取的响应（%1$@）。这通常表示应用与后台服务的版本不一致；可在“设置检查”页面重新安装后台服务。"
+            "value": "后台服务返回了当前版本无法读取的响应（%1$@）。这通常表示应用与后台服务的版本不一致；可在“初始设置”页面重新安装后台服务。"
           }
         }
       }

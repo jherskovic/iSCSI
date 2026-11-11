@@ -56,10 +56,11 @@ final class CommandLineTool: SetupStep {
     func perform() async {
         failure = nil
         let tool = Self.tool
+        let prompt = String(localized: "iSCSI/NVMe/TCP Initiator wants to add the iscsictl command to /usr/local/bin.")
         // Off the main actor, like every subprocess the app waits on: this one
         // waits for a person to type a password.
         let outcome = await Task.detached {
-            Self.asAdministrator(Self.addScript, arguments: [tool])
+            Self.asAdministrator(Self.addScript, arguments: [tool, prompt])
         }.value
         if case .failed(let why) = outcome {
             failure = String(localized: "The link could not be added: \(why)")
@@ -92,7 +93,8 @@ final class CommandLineTool: SetupStep {
     /// Only after `currentLink()` says `.ours`: the caller is what makes this
     /// safe, and `rm` with no flags is what keeps a mistake small.
     nonisolated static func removeLink() async -> Outcome {
-        await Task.detached { asAdministrator(removeScript) }.value
+        let prompt = String(localized: "iSCSI/NVMe/TCP Initiator wants to remove the iscsictl command from /usr/local/bin.")
+        return await Task.detached { asAdministrator(removeScript, arguments: [prompt]) }.value
     }
 
     // MARK: - Privileged commands
@@ -104,15 +106,17 @@ final class CommandLineTool: SetupStep {
         on run argv
             do shell script "/bin/mkdir -p /usr/local/bin && /bin/ln -s " ¬
                 & quoted form of (item 1 of argv) & " \(CommandLineLink.path)" ¬
-                with prompt "iSCSI/NVMe/TCP Initiator wants to add the iscsictl command to /usr/local/bin." ¬
+                with prompt (item 2 of argv) ¬
                 with administrator privileges
         end run
         """
 
     private nonisolated static let removeScript = """
-        do shell script "/bin/rm \(CommandLineLink.path)" ¬
-            with prompt "iSCSI/NVMe/TCP Initiator wants to remove the iscsictl command from /usr/local/bin." ¬
-            with administrator privileges
+        on run argv
+            do shell script "/bin/rm \(CommandLineLink.path)" ¬
+                with prompt (item 1 of argv) ¬
+                with administrator privileges
+        end run
         """
 
     private nonisolated static func asAdministrator(

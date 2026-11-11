@@ -579,7 +579,7 @@ struct TargetEditor: View {
                             .disabled(findingUnits || !canFindUnits || identityLocked)
                             .help(credentialIncomplete
                                   ? String(localized: "Enter the CHAP secret first.")
-                                  : String(localized: "Ask the target which \(isNVMe ? "namespaces" : "LUNs") it has."))
+                                  : unitsHelp)
                     }
                     if findingUnits {
                         HStack(spacing: 6) {
@@ -853,6 +853,11 @@ struct TargetEditor: View {
         let number = "\(isNVMe ? String(localized: "Namespace") : "LUN") \(unit.lun)"
         guard let bytes = unit.byteCount else { return number }
         return number + " — " + ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    private var unitsHelp: String {
+        let kind = isNVMe ? String(localized: "namespaces") : String(localized: "LUNs")
+        return String(localized: "Ask the target which \(kind) it has.")
     }
 
     /// Ask the target what it has. One answer fills the field outright; more
