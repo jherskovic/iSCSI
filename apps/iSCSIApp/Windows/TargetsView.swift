@@ -35,7 +35,7 @@ struct TargetsView: View {
         let rows = model.rows
         Group {
             if rows.isEmpty && model.isAwaitingFirstRead {
-                ProgressView("Loading targets…")
+                ProgressView(String(localized: "Loading targets…"))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if rows.isEmpty && !model.isReady {
                 notReady
@@ -50,15 +50,15 @@ struct TargetsView: View {
                     }
                 }
                 .formStyle(.grouped)
-                .alert(removing.map { "Remove “\($0.displayName)”?" } ?? "",
+                .alert(removing.map { String(localized: "Remove “\($0.displayName)”?") } ?? "",
                        isPresented: Binding(get: { removing != nil },
                                             set: { if !$0 { removing = nil } }),
                        presenting: removing) { target in
-                    Button("Remove", role: .destructive) {
+                    Button(String(localized: "Remove"), role: .destructive) {
                         if selection == target.id { selection = nil }
                         Task { await model.delete(target) }
                     }
-                    Button("Cancel", role: .cancel) {}
+                    Button(String(localized: "Cancel"), role: .cancel) {}
                 } message: { target in
                     Text(removalMessage(for: target))
                 }
@@ -69,7 +69,7 @@ struct TargetsView: View {
                 LoginItemBanner(model: model)
             }
         }
-        .navigationTitle("Targets")
+        .navigationTitle(String(localized: "Targets"))
         // A removed target takes its selection with it, or the − would stay
         // live for a row that is no longer there.
         .onChange(of: model.targets.map(\.id)) { _, ids in
@@ -88,11 +88,8 @@ struct TargetsView: View {
         .alert(item: $model.pendingDetach) { target in
             Alert(
                 title: Text("Eject “\(target.displayName)”?"),
-                message: Text("Its volume is still mounted. Detaching will eject "
-                            + "the volume first; anything still using files on it "
-                            + "— a running virtual machine, an open document — "
-                            + "should be shut down before continuing."),
-                primaryButton: .default(Text("Eject and Detach")) {
+                message: Text(String(localized: "Its volume is still mounted. Detaching will eject the volume first; anything still using files on it — a running virtual machine, an open document — should be shut down before continuing.")),
+                primaryButton: .default(Text(String(localized: "Eject and Detach"))) {
                     Task { await model.detach(target, ejectingMounted: true) }
                 },
                 secondaryButton: .cancel())
@@ -144,16 +141,15 @@ struct TargetsView: View {
                     if model.busy.contains(orphan.tag) {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Eject") { Task { await model.detachOrphan(orphan) } }
+                        Button(String(localized: "Eject")) { Task { await model.detachOrphan(orphan) } }
                     }
                 }
                 .padding(.vertical, 4)
             }
         } header: {
-            Text("Other Attached Disks")
+            Text(String(localized: "Other Attached Disks"))
         } footer: {
-            Text("Attached under a target's earlier address, name or LUN, or for a "
-                 + "target that has since been removed.")
+            Text(String(localized: "Attached under a target's earlier address, name or LUN, or for a target that has since been removed."))
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -163,7 +159,7 @@ struct TargetsView: View {
             return orphan.hiddenPath
         }
         let what = orphan.volumePaths.isEmpty
-            ? "\(unit.name) \(unit.isNVMe ? "namespace" : "LUN") \(unit.unit)"
+            ? "\(unit.name) \(unit.isNVMe ? String(localized: "namespace") : "LUN") \(unit.unit)"
             : orphan.volumePaths.joined(separator: ", ")
         return "\(what) — \(unit.portal)"
     }
@@ -180,8 +176,8 @@ struct TargetsView: View {
             .disabled(!model.isReady)
             // Explaining the disabled control beats leaving the user to guess
             // why the only button on an empty screen does nothing.
-            .help(model.isReady ? "Add an \(kind.title) target"
-                                : "Finish setup before adding targets")
+            .help(model.isReady ? String(localized: "Add an \(kind.title) target")
+                                : String(localized: "Finish setup before adding targets"))
             .accessibilityLabel("Add \(kind.title) Target")
 
             Divider().frame(height: 14)
@@ -194,8 +190,8 @@ struct TargetsView: View {
             // Not mid-attach: `AppModel.delete` refuses then, and a button
             // that does nothing when clicked is worse than a disabled one.
             .disabled(selected == nil || selected?.isBusy == true)
-            .help(selected.map { "Remove “\($0.target.displayName)”" }
-                  ?? "Select a \(kind.title) target to remove it")
+            .help(selected.map { String(localized: "Remove “\($0.target.displayName)”") }
+                  ?? String(localized: "Select a \(kind.title) target to remove it"))
             .accessibilityLabel("Remove \(kind.title) Target")
 
             Spacer()
@@ -209,24 +205,20 @@ struct TargetsView: View {
     private func removalMessage(for target: TargetRecord) -> String {
         let mounted = model.rows.first { $0.id == target.id }?.attachment != nil
         if mounted {
-            return "Its volume is still mounted and will be ejected first; anything "
-                + "still using files on it — a running virtual machine, an open "
-                + "document — should be shut down before continuing."
+            return String(localized: "Its volume is still mounted and will be ejected first; anything still using files on it — a running virtual machine, an open document — should be shut down before continuing.")
         }
         return target.chapUser == nil
-            ? "Its settings are removed from this Mac. Nothing on the target changes."
-            : "Its settings and saved CHAP secret are removed from this Mac. "
-            + "Nothing on the target changes."
+            ? String(localized: "Its settings are removed from this Mac. Nothing on the target changes.")
+            : String(localized: "Its settings and saved CHAP secret are removed from this Mac. Nothing on the target changes.")
     }
 
     /// With setup unfinished and nothing configured, two empty groups with
     /// disabled + buttons would say nothing about why.
     private var notReady: some View {
         ContentUnavailableView {
-            Label("No Targets", systemImage: "externaldrive.badge.plus")
+            Label(String(localized: "No Targets"), systemImage: "externaldrive.badge.plus")
         } description: {
-            Text("Finish setup first — the background service and filesystem "
-                 + "extension have to be running before a target can be attached.")
+            Text(String(localized: "Finish setup first — the background service and filesystem extension have to be running before a target can be attached."))
         }
     }
 }
@@ -251,18 +243,18 @@ private struct LoginItemBanner: View {
 
     private var text: String {
         if !LoginItem.canRegisterFromHere {
-            return "Attach at login needs the app in /Applications."
+            return String(localized: "Attach at login needs the app in /Applications.")
         }
         if model.loginItemStatus == .requiresApproval {
-            return "Attach at login is turned off in System Settings."
+            return String(localized: "Attach at login is turned off in System Settings.")
         }
-        return "iSCSI/NVMe/TCP Initiator is not set to open at login, so nothing will attach."
+        return String(localized: "iSCSI/NVMe/TCP Initiator is not set to open at login, so nothing will attach.")
     }
 
     private var buttonTitle: String {
-        if !LoginItem.canRegisterFromHere { return "Show in Finder" }
-        if model.loginItemStatus == .requiresApproval { return "Open Login Items…" }
-        return "Turn On"
+        if !LoginItem.canRegisterFromHere { return String(localized: "Show in Finder") }
+        if model.loginItemStatus == .requiresApproval { return String(localized: "Open Login Items…") }
+        return String(localized: "Turn On")
     }
 
     private func act() {
@@ -317,12 +309,12 @@ private struct TargetRow: View {
                 // Any layer up is something to detach: a blank LUN's raw
                 // device, or what a refused detach left listed.
                 if row.isAttached {
-                    Button("Reveal") { model.reveal(row) }
+                    Button(String(localized: "Reveal")) { model.reveal(row) }
                         .buttonStyle(.link)
                 }
-                Button("Detach") { Task { await model.detach(row.target) } }
+                Button(String(localized: "Detach")) { Task { await model.detach(row.target) } }
             } else {
-                Button("Attach") { Task { await model.attach(row.target) } }
+                Button(String(localized: "Attach")) { Task { await model.attach(row.target) } }
                     .disabled(!model.isReady)
             }
 
@@ -343,8 +335,8 @@ private struct TargetRow: View {
                     in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .padding(.horizontal, -6)
         .contextMenu {
-            Button("Edit…", action: edit)
-            Button("Remove…", role: .destructive, action: remove)
+            Button(String(localized: "Edit…"), action: edit)
+            Button(String(localized: "Remove…"), role: .destructive, action: remove)
                 .disabled(row.isBusy)
         }
     }
@@ -381,21 +373,20 @@ private struct TargetRow: View {
     /// where it lives.
     private var subtitle: String {
         if let path = row.volumePath { return path }
-        if let failure { return "Could not attach at login — \(failure.message)" }
+        if let failure { return String(localized: "Could not attach at login — \(failure.message)") }
         if let attachment = row.attachment, let device = attachment.device {
             if let locked = attachment.lockedVolumes.first {
-                return "connected as \(device) — “\(locked)” is encrypted and locked"
+                return String(localized: "connected as \(device) — “\(locked)” is encrypted and locked")
             }
             return attachment.isBlank == true
-                ? "connected as \(device) — not formatted yet"
-                : "connected as \(device) — no volume mounted"
+                ? String(localized: "connected as \(device) — not formatted yet")
+                : String(localized: "connected as \(device) — no volume mounted")
         }
         if let bytes = row.session?.byteCount {
             return "\(row.target.host) — "
                  + ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
         }
-        return "\(row.target.host):\(row.target.port) · "
-             + "\(row.target.isNVMe ? "NSID" : "LUN") \(row.target.lun)"
+        return "\(row.target.host):\(row.target.port) · \(row.target.isNVMe ? "NSID" : "LUN") \(row.target.lun)"
     }
 }
 
@@ -509,9 +500,8 @@ struct TargetEditor: View {
         guard identityLocked, let existing,
               let row = model.rows.first(where: { $0.id == existing.id }) else { return nil }
         return row.attachment != nil
-            ? "Detach to change the address, port, name or \(isNVMe ? "namespace" : "LUN")."
-            : "Connected — attached in another account, or still connecting — so the "
-              + "address, port, name and \(isNVMe ? "namespace" : "LUN") can't change."
+            ? String(localized: "Detach to change the address, port, name or \(isNVMe ? String(localized: "namespace") : "LUN").")
+            : String(localized: "Connected — attached in another account, or still connecting — so the address, port, name and \(isNVMe ? String(localized: "namespace") : "LUN") can't change.")
     }
 
     /// The name this Mac presents for the protocol being edited.
@@ -540,7 +530,7 @@ struct TargetEditor: View {
             Form {
                 Section {
                     if existing == nil {
-                        Picker("Protocol", selection: protocolPicker) {
+                        Picker(String(localized: "Protocol"), selection: protocolPicker) {
                             Text("iSCSI").tag(false)
                             Text("NVMe/TCP").tag(true)
                         }
@@ -548,25 +538,23 @@ struct TargetEditor: View {
                     } else {
                         // Shown, not offered: the other protocol is a new
                         // target, added from its own list.
-                        LabeledContent("Protocol") {
+                        LabeledContent(String(localized: "Protocol")) {
                             Text(isNVMe ? "NVMe/TCP" : "iSCSI").bold()
                         }
                     }
-                    TextField("Name", text: $displayName, prompt: Text("Photos archive"))
+                    TextField(String(localized: "Name"), text: $displayName, prompt: Text(String(localized: "Photos archive")))
                     Group {
-                        TextField("Address", text: $host, prompt: Text("nas.local"))
-                        TextField("Port", text: $port)
-                        TextField(isNVMe ? "Subsystem NQN" : "Target", text: $targetIQN,
+                        TextField(String(localized: "Address"), text: $host, prompt: Text("nas.local"))
+                        TextField(String(localized: "Port"), text: $port)
+                        TextField(isNVMe ? String(localized: "Subsystem NQN") : String(localized: "Target"), text: $targetIQN,
                                   prompt: Text(isNVMe ? "nqn.2011-06.com.truenas:uuid:…:disk0"
                                                       : "iqn.2026-08.com.example:disk0"))
                     }
                     .disabled(identityLocked)
                     if protocolChanged {
                         Text(isNVMe
-                             ? "An NVMe/TCP subsystem name starts with “nqn.”. "
-                               + "For an iSCSI target, add one under iSCSI."
-                             : "That is an NVMe/TCP subsystem name. "
-                               + "Add it under NVMe/TCP instead.")
+                             ? String(localized: "An NVMe/TCP subsystem name starts with “nqn.”. For an iSCSI target, add one under iSCSI.")
+                             : String(localized: "That is an NVMe/TCP subsystem name. Add it under NVMe/TCP instead."))
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
@@ -576,10 +564,10 @@ struct TargetEditor: View {
                             .foregroundStyle(.secondary)
                     }
                     HStack {
-                        TextField(isNVMe ? "Namespace ID" : "LUN", text: $lun)
+                        TextField(isNVMe ? String(localized: "Namespace ID") : String(localized: "LUN"), text: $lun)
                             .disabled(identityLocked)
                         if let foundUnits, !foundUnits.isEmpty {
-                            Menu("Choose") {
+                            Menu(String(localized: "Choose")) {
                                 ForEach(foundUnits, id: \.lun) { unit in
                                     Button(unitTitle(unit)) { lun = String(unit.lun) }
                                 }
@@ -587,16 +575,16 @@ struct TargetEditor: View {
                             .fixedSize()
                             .disabled(identityLocked)
                         }
-                        Button("Find") { findUnits() }
+                        Button(String(localized: "Find")) { findUnits() }
                             .disabled(findingUnits || !canFindUnits || identityLocked)
                             .help(credentialIncomplete
-                                  ? "Enter the CHAP secret first."
-                                  : "Ask the target which \(isNVMe ? "namespaces" : "LUNs") it has.")
+                                  ? String(localized: "Enter the CHAP secret first.")
+                                  : unitsHelp)
                     }
                     if findingUnits {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
-                            Text("Asking the target…")
+                            Text(String(localized: "Asking the target…"))
                         }
                         .font(.caption).foregroundStyle(.secondary)
                     } else if let findNote {
@@ -609,35 +597,33 @@ struct TargetEditor: View {
                 Section {
                     InterfacePicker(name: $networkInterface, fallback: $interfaceFallback)
                 } header: {
-                    Text("Network")
+                    Text(String(localized: "Network"))
                 } footer: {
-                    Text("Takes effect the next time this target is attached.")
+                    Text(String(localized: "Takes effect the next time this target is attached."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section {
-                    Toggle("Attach at login", isOn: $autoAttach)
+                    Toggle(String(localized: "Attach at login"), isOn: $autoAttach)
                 } footer: {
-                    Text("Attaches by itself when you log in to this Mac. If the target "
-                         + "can't be reached, keeps trying for 5 minutes, then shows a "
-                         + "warning here.")
+                    Text(String(localized: "Attaches by itself when you log in to this Mac. If the target can't be reached, keeps trying for 5 minutes, then shows a warning here."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
-                Section("Access") {
+                Section(String(localized: "Access")) {
                     // Both protocols gate on the name this Mac presents — a
                     // subsystem by host NQN, a target (optionally) by initiator
                     // IQN — so what to show here is ours. Only iSCSI has CHAP
                     // on top; that is the next section.
                     HStack {
-                        Text(isNVMe ? "This Mac's host NQN" : "This Mac's initiator IQN")
+                        Text(isNVMe ? String(localized: "This Mac's host NQN") : String(localized: "This Mac's initiator IQN"))
                         Spacer()
                         Text(hostIdentity ?? "—")
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
                             .lineLimit(1).truncationMode(.middle)
                         if let hostIdentity {
-                            Button("Copy") {
+                            Button(String(localized: "Copy")) {
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(hostIdentity, forType: .string)
                             }
@@ -650,25 +636,22 @@ struct TargetEditor: View {
                     // name then refuses this Mac. The NQN is UUID-derived and
                     // has no such clause to earn.
                     Text(isNVMe
-                         ? "Add it to the subsystem's allowed hosts on the storage device, "
-                           + "or allow any host there. Namespace IDs start at 1."
-                         : "Add it to the target's allowed initiators on the storage device, "
-                           + "or allow any initiator there. It follows this Mac's name, so "
-                           + "renaming the Mac changes it.")
+                         ? String(localized: "Add it to the subsystem's allowed hosts on the storage device, or allow any host there. Namespace IDs start at 1.")
+                         : String(localized: "Add it to the target's allowed initiators on the storage device, or allow any initiator there. It follows this Mac's name, so renaming the Mac changes it."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 if !isNVMe {
-                    Section("Authentication") {
-                        TextField("CHAP user", text: $chapUser)
-                        SecureField(hasStoredSecret ? "Saved — type to replace" : "CHAP secret",
+                    Section(String(localized: "Authentication")) {
+                        TextField(String(localized: "CHAP user"), text: $chapUser)
+                        SecureField(hasStoredSecret ? String(localized: "Saved — type to replace") : String(localized: "CHAP secret"),
                                     text: $chapSecret)
                         // Enforced, not just advised. RFC 7143 §12.1.1 sets 12 bytes
                         // as the floor, and the error a target returns for a short
                         // secret says only "authentication failure", which sends
                         // people looking in the wrong place.
-                        Text("Secrets must be at least 12 characters.")
+                        Text(String(localized: "Secrets must be at least 12 characters."))
                             .font(.caption)
                             .foregroundStyle(secretTooShort ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
                     }
@@ -680,11 +663,11 @@ struct TargetEditor: View {
                 // to test against will not answer a challenge. See the note on
                 // CHAP.mutualIsOffered.
                 if CHAP.mutualIsOffered && !isNVMe {
-                Section("Verify the target") {
-                    TextField("Mutual CHAP user", text: $mutualChapUser,
-                              prompt: Text("optional"))
-                    SecureField(hasStoredMutualSecret ? "Saved — type to replace"
-                                                      : "Mutual CHAP secret",
+                Section(String(localized: "Verify the target")) {
+                    TextField(String(localized: "Mutual CHAP user"), text: $mutualChapUser,
+                              prompt: Text(String(localized: "optional")))
+                    SecureField(hasStoredMutualSecret ? String(localized: "Saved — type to replace")
+                                                      : String(localized: "Mutual CHAP secret"),
                                 text: $mutualChapSecret)
                     // Its own section because it does the opposite job to the
                     // one above: that proves who we are to the target, this
@@ -692,45 +675,42 @@ struct TargetEditor: View {
                     // plaintext link it is the only thing that would catch a
                     // stand-in feeding this Mac a fabricated disk.
                     Text(mutualHalfConfigured
-                         ? "Enter the secret too, or clear the user — a name on its "
-                           + "own does not verify anything."
-                         : "Optional. Proves the target is who it claims to be.")
+                         ? String(localized: "Enter the secret too, or clear the user — a name on its own does not verify anything.")
+                         : String(localized: "Optional. Proves the target is who it claims to be."))
                         .font(.caption)
                         .foregroundStyle(mutualHalfConfigured ? AnyShapeStyle(.red)
                                                               : AnyShapeStyle(.secondary))
                 }
                 }
 
-                Section("Write safety") {
-                    Picker("Commit writes", selection: $flushInterval) {
-                        Text("On every write — safest").tag(Int?.none)
+                Section(String(localized: "Write safety")) {
+                    Picker(String(localized: "Commit writes"), selection: $flushInterval) {
+                        Text(String(localized: "On every write — safest")).tag(Int?.none)
                         ForEach([1, 5, 10, 30, 60], id: \.self) { seconds in
-                            Text("Every \(seconds) second\(seconds == 1 ? "" : "s")")
+                            Text(seconds == 1 ? String(localized: "Every second") : String(localized: "Every \(seconds) seconds"))
                                 .tag(Int?.some(seconds))
                         }
-                        Text("Never — target cache is non-volatile").tag(Int?.some(0))
+                        Text(String(localized: "Never — target cache is non-volatile")).tag(Int?.some(0))
                     }
                     Text(flushInterval == nil
-                         ? "Each write is on stable media before it is acknowledged."
-                         : "⚠ If the target loses power, this volume can be corrupted. "
-                           + "Takes effect the next time this target is attached.")
+                         ? String(localized: "Each write is on stable media before it is acknowledged.")
+                         : String(localized: "⚠ If the target loses power, this volume can be corrupted. Takes effect the next time this target is attached."))
                         .font(.caption)
                         .foregroundStyle(flushInterval == nil ? AnyShapeStyle(.secondary)
                                                               : AnyShapeStyle(.red))
                 }
 
                 Section {
-                    Picker("Size", selection: $localCacheGB) {
-                        Text("Off").tag(Int?.none)
+                    Picker(String(localized: "Size"), selection: $localCacheGB) {
+                        Text(String(localized: "Off")).tag(Int?.none)
                         ForEach(1 ... 16, id: \.self) { gb in
                             Text("\(gb) GB").tag(Int?.some(gb))
                         }
                     }
                 } header: {
-                    Text("Local cache")
+                    Text(String(localized: "Local cache"))
                 } footer: {
-                    Text("Kept on this Mac's disk, encrypted, only while the target is attached. "
-                         + "Takes effect the next time it is attached.")
+                    Text(String(localized: "Kept on this Mac's disk, encrypted, only while the target is attached. Takes effect the next time it is attached."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -745,9 +725,9 @@ struct TargetEditor: View {
                 flushInterval = old
                 showingFlushDisclaimer = true
             }
-            .alert("Give up per-write durability?", isPresented: $showingFlushDisclaimer) {
-                Button("Cancel", role: .cancel) { pendingFlushInterval = nil }
-                Button("Accept the Risk", role: .destructive) {
+            .alert(String(localized: "Give up per-write durability?"), isPresented: $showingFlushDisclaimer) {
+                Button(String(localized: "Cancel"), role: .cancel) { pendingFlushInterval = nil }
+                Button(String(localized: "Accept the Risk"), role: .destructive) {
                     suppressFlushPrompt = true
                     flushInterval = pendingFlushInterval
                     pendingFlushInterval = nil
@@ -759,8 +739,8 @@ struct TargetEditor: View {
             Divider()
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Save") { save() }
+                Button(String(localized: "Cancel")) { dismiss() }
+                Button(String(localized: "Save")) { save() }
                     .buttonStyle(.borderedProminent)
                     .disabled(!isValid)
             }
@@ -791,19 +771,16 @@ struct TargetEditor: View {
     private var flushDisclaimer: String {
         let cadence = switch pendingFlushInterval {
         case .some(0):
-            "No flushes will be sent while attached — only when the volume is detached."
+            String(localized: "No flushes will be sent while attached — only when the volume is detached.")
         case .some(let seconds):
-            "Cached writes will be committed every \(seconds) second\(seconds == 1 ? "" : "s") "
-            + "and when the volume is detached."
+            seconds == 1
+                ? String(localized: "Cached writes will be committed every second and when the volume is detached.")
+                : String(localized: "Cached writes will be committed every \(seconds) seconds and when the volume is detached.")
         default:
             ""
         }
-        return "Writes will be acknowledged while they are still in the target's "
-            + "volatile cache. " + cadence
-            + "\n\nIf the target loses power, uncommitted writes are lost out of "
-            + "order — which can corrupt the volume's structure, not just recent "
-            + "files. Choose this only if the target's cache is protected: "
-            + "battery-backed, on a UPS, or with its write cache disabled."
+        return String(localized: "Writes will be acknowledged while they are still in the target's volatile cache. ") + cadence
+            + String(localized: "\n\nIf the target loses power, uncommitted writes are lost out of order — which can corrupt the volume's structure, not just recent files. Choose this only if the target's cache is protected: battery-backed, on a UPS, or with its write cache disabled.")
     }
 
     /// A secret was typed and is too short. Only checks what was typed: an
@@ -873,9 +850,14 @@ struct TargetEditor: View {
     }
 
     private func unitTitle(_ unit: LUNInfo) -> String {
-        let number = "\(isNVMe ? "Namespace" : "LUN") \(unit.lun)"
+        let number = "\(isNVMe ? String(localized: "Namespace") : "LUN") \(unit.lun)"
         guard let bytes = unit.byteCount else { return number }
         return number + " — " + ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    private var unitsHelp: String {
+        let kind = isNVMe ? String(localized: "namespaces") : String(localized: "LUNs")
+        return String(localized: "Ask the target which \(kind) it has.")
     }
 
     /// Ask the target what it has. One answer fills the field outright; more
@@ -901,26 +883,26 @@ struct TargetEditor: View {
                     chapSecret: (asked.isNVMe || chapSecret.isEmpty) ? nil : chapSecret,
                     interface: interface)
                 foundUnits = units
-                let word = asked.isNVMe ? "namespace" : "LUN"
+                let word = asked.isNVMe ? String(localized: "namespace") : String(localized: "LUN")
                 let numbers = units.map { String($0.lun) }.joined(separator: ", ")
                 if units.isEmpty {
                     findFailed = true
-                    findNote = "The target reports no \(word)s."
+                    findNote = String(localized: "The target reports no \(word)s.")
                 } else if units.count == 1, let only = units.first {
                     lun = String(only.lun)
-                    findNote = "The target has one \(word): \(unitTitle(only))."
+                    findNote = String(localized: "The target has one \(word): \(unitTitle(only)).")
                 } else if units.contains(where: { String($0.lun) == lun }) {
-                    findNote = "The target has \(word)s \(numbers)."
+                    findNote = String(localized: "The target has \(word)s \(numbers).")
                 } else {
                     findFailed = true
-                    findNote = "The target has \(word)s \(numbers); \(lun) is not one of them. "
-                             + "Choose one."
+                    findNote = String(localized: "The target has \(word)s \(numbers); \(lun) is not one of them. Choose one.")
                 }
             } catch {
                 foundUnits = nil
                 findFailed = true
                 let ns = error as NSError
-                findNote = [ns.localizedDescription, ns.localizedRecoverySuggestion]
+                let details = LocalizedStorageError.details(ns)
+                findNote = [details.message, details.suggestion]
                     .compactMap { $0 }.joined(separator: " ")
             }
         }

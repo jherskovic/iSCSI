@@ -27,7 +27,7 @@ import iSCSIKit
 @MainActor
 final class CommandLineTool: SetupStep {
     let id = "command-line"
-    let title = "iscsictl on the command line"
+    let title = String(localized: "iscsictl on the command line")
     let isOptional = true
     private(set) var state: StepState = .checking
     /// Why the last attempt failed. Cancelling the prompt is not a failure.
@@ -38,33 +38,32 @@ final class CommandLineTool: SetupStep {
         switch Self.currentLink() {
         case .ours:
             failure = nil
-            state = .satisfied("\(path) links to this app")
+            state = .satisfied(String(localized: "\(path) links to this app"))
         case .absent:
-            state = .actionable(failure ?? "Optional. Adds a link in /usr/local/bin so "
-                                + "iscsictl runs from any Terminal, for every account "
-                                + "on this Mac. macOS asks for an administrator's password.")
+            state = .actionable(failure ?? String(localized: "Optional. Adds a link in /usr/local/bin so iscsictl runs from any Terminal, for every account on this Mac. macOS asks for an administrator's password."))
         case .otherLink(let destination):
-            state = .blocked("\(path) already links to \(destination), so it is left alone.")
+            state = .blocked(String(localized: "\(path) already links to \(destination), so it is left alone."))
         case .notALink:
-            state = .blocked("\(path) already exists and is not a link, so it is left alone.")
+            state = .blocked(String(localized: "\(path) already exists and is not a link, so it is left alone."))
         }
     }
 
     var actionLabel: String? {
-        if case .actionable = state { return "Add Link" }
+        if case .actionable = state { return String(localized: "Add Link") }
         return nil
     }
 
     func perform() async {
         failure = nil
         let tool = Self.tool
+        let prompt = String(localized: "iSCSI/NVMe/TCP Initiator wants to add the iscsictl command to /usr/local/bin.")
         // Off the main actor, like every subprocess the app waits on: this one
         // waits for a person to type a password.
         let outcome = await Task.detached {
-            Self.asAdministrator(Self.addScript, arguments: [tool])
+            Self.asAdministrator(Self.addScript, arguments: [tool, prompt])
         }.value
         if case .failed(let why) = outcome {
-            failure = "The link could not be added: \(why)"
+            failure = String(localized: "The link could not be added: \(why)")
         }
     }
 
@@ -94,7 +93,8 @@ final class CommandLineTool: SetupStep {
     /// Only after `currentLink()` says `.ours`: the caller is what makes this
     /// safe, and `rm` with no flags is what keeps a mistake small.
     nonisolated static func removeLink() async -> Outcome {
-        await Task.detached { asAdministrator(removeScript) }.value
+        let prompt = String(localized: "iSCSI/NVMe/TCP Initiator wants to remove the iscsictl command from /usr/local/bin.")
+        return await Task.detached { asAdministrator(removeScript, arguments: [prompt]) }.value
     }
 
     // MARK: - Privileged commands
@@ -106,15 +106,17 @@ final class CommandLineTool: SetupStep {
         on run argv
             do shell script "/bin/mkdir -p /usr/local/bin && /bin/ln -s " ¬
                 & quoted form of (item 1 of argv) & " \(CommandLineLink.path)" ¬
-                with prompt "iSCSI/NVMe/TCP Initiator wants to add the iscsictl command to /usr/local/bin." ¬
+                with prompt (item 2 of argv) ¬
                 with administrator privileges
         end run
         """
 
     private nonisolated static let removeScript = """
-        do shell script "/bin/rm \(CommandLineLink.path)" ¬
-            with prompt "iSCSI/NVMe/TCP Initiator wants to remove the iscsictl command from /usr/local/bin." ¬
-            with administrator privileges
+        on run argv
+            do shell script "/bin/rm \(CommandLineLink.path)" ¬
+                with prompt (item 1 of argv) ¬
+                with administrator privileges
+        end run
         """
 
     private nonisolated static func asAdministrator(

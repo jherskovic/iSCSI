@@ -66,7 +66,7 @@ struct Attachment: Identifiable, Equatable, Sendable {
             var parts: [String] = []
             if !volumePaths.isEmpty { parts.append(volumePaths.joined(separator: ", ")) }
             if let device { parts.append(device) }
-            if fskitMountPoint != nil { parts.append("the volume serving the LUN") }
+            if fskitMountPoint != nil { parts.append(String(localized: "the volume serving the LUN")) }
             return ListFormatter.localizedString(byJoining: parts)
         }
     }
@@ -83,20 +83,18 @@ enum DetachError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .inUse(let detail):
-            return "The volume is in use, so it was not ejected. \(detail)"
+            return String(localized: "The volume is in use, so it was not ejected. \(detail)")
         case .incomplete(let left):
-            return "Detaching did not finish: \(left) is still attached."
+            return String(localized: "Detaching did not finish: \(left) is still attached.")
         }
     }
 
     var recoverySuggestion: String? {
         switch self {
         case .inUse:
-            return "Quit the apps using files on it — Finder windows and Terminal "
-                 + "sessions inside it count — and detach again."
+            return String(localized: "Quit the apps using files on it — Finder windows and Terminal sessions inside it count — and detach again.")
         case .incomplete:
-            return "Detach again. If the storage device is unreachable, detaching "
-                 + "waits for it to answer."
+            return String(localized: "Detach again. If the storage device is unreachable, detaching waits for it to answer.")
         }
     }
 }
@@ -113,50 +111,43 @@ enum AttachmentError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidAddress(let host):
-            return "“\(host)” is not an address the target can be reached at."
+            return String(localized: "“\(host)” is not an address the target can be reached at.")
         case .fskitMountFailed(let detail, let duplicates):
             if duplicates.isEmpty {
-                return "Could not serve the LUN as a file: \(detail)"
+                return String(localized: "Could not serve the LUN as a file: \(detail)")
             }
             // Reached only when the automatic repair did not help; say that.
-            return "Could not serve the LUN as a file, even after removing "
-                 + "\(duplicates.count) stale copy(s) of the filesystem extension. "
-                 + "Details: \(detail)"
+            return String(localized: "Could not serve the LUN as a file, even after removing \(duplicates.count) stale copy(s) of the filesystem extension. Details: \(detail)")
         case .noImageServed(let path):
-            return "The filesystem extension mounted but produced no LUN file at \(path)."
+            return String(localized: "The filesystem extension mounted but produced no LUN file at \(path).")
         case .imageAttachFailed(let detail):
-            return "Could not attach the LUN as a disk: \(detail)"
+            return String(localized: "Could not attach the LUN as a disk: \(detail)")
         case .alreadyAttached(_, let ownAccount):
             return ownAccount
-                ? "This disk is already attached, under the settings the target had before it was edited."
-                : "Another account on this Mac has this disk attached."
+                ? String(localized: "This disk is already attached, under the settings the target had before it was edited.")
+                : String(localized: "Another account on this Mac has this disk attached.")
         }
     }
 
     var recoverySuggestion: String? {
         switch self {
         case .invalidAddress:
-            return "Edit the target: enter a host name, an IPv4 address or an IPv6 "
-                 + "address, without brackets, and put the port in the Port field."
+            return String(localized: "Edit the target: enter a host name, an IPv4 address or an IPv6 address, without brackets, and put the port in the Port field.")
         case .fskitMountFailed(_, let duplicates):
             if duplicates.isEmpty {
-                return "Check that the background service is running and the filesystem "
-                     + "extension is enabled, on the Setup screen."
+                return String(localized: "Check that the background service is running and the filesystem extension is enabled, on the Setup screen.")
             }
             // The extra copies are already gone; a relaunch settles whatever
             // still holds the old registration.
-            return "The extra copies were removed. Quit and reopen the app, then "
-                 + "try again. If a disk image of an older version is still "
-                 + "mounted in Finder, eject it first — that is usually where "
-                 + "the extra copies come from."
+            return String(localized: "The extra copies were removed. Quit and reopen the app, then try again. If a disk image of an older version is still mounted in Finder, eject it first — that is usually where the extra copies come from.")
         case .noImageServed:
-            return "The connection to the target may have dropped. Try again."
+            return String(localized: "The connection to the target may have dropped. Try again.")
         case .imageAttachFailed:
             return nil
         case .alreadyAttached(_, let ownAccount):
             return ownAccount
-                ? "Detach it under Other Attached Disks, then attach again."
-                : "Attaching it from two accounts at once would corrupt it. Detach it in that account first."
+                ? String(localized: "Detach it under Other Attached Disks, then attach again.")
+                : String(localized: "Attaching it from two accounts at once would corrupt it. Detach it in that account first.")
         }
     }
 }
@@ -429,18 +420,18 @@ final class AttachmentManager: ObservableObject {
         if let device = attachedDevice(forImage: image) {
             let unmounted = try? run("/usr/sbin/diskutil", ["unmountDisk", device])
             if unmounted?.status != 0, !force, attachedDevice(forImage: image) != nil {
-                return .inUse(unmounted?.combined ?? "diskutil did not run")
+                return .inUse(unmounted?.combined ?? String(localized: "diskutil did not run"))
             }
             let detached = try? run("/usr/bin/hdiutil", ["detach", device])
             if detached?.status != 0, attachedDevice(forImage: image) != nil {
-                guard force else { return .inUse(detached?.combined ?? "hdiutil did not run") }
+                guard force else { return .inUse(detached?.combined ?? String(localized: "hdiutil did not run")) }
                 _ = try? run("/usr/bin/hdiutil", ["detach", device, "-force"])
             }
         }
         if isMounted(mountPoint) {
             let unmounted = try? run("/sbin/umount", [mountPoint])
             if unmounted?.status != 0, isMounted(mountPoint) {
-                guard force else { return .inUse(unmounted?.combined ?? "umount did not run") }
+                guard force else { return .inUse(unmounted?.combined ?? String(localized: "umount did not run")) }
                 _ = try? run("/sbin/umount", ["-f", mountPoint])
             }
         }
@@ -651,7 +642,7 @@ final class AttachmentManager: ObservableObject {
         // and DiskImages2 name it without "/dev/".
         let fallback = reported.map { $0.hasPrefix("/dev/") ? $0 : "/dev/\($0)" }
         guard let device = attachedDevice(forImage: image) ?? fallback else {
-            throw AttachmentError.imageAttachFailed("DiskImages2 attached nothing for \(image)")
+            throw AttachmentError.imageAttachFailed(String(localized: "DiskImages2 attached nothing for \(image)"))
         }
         attachLog.log("""
             attached \(device, privacy: .public) with DiskImages2\

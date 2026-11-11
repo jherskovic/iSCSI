@@ -84,24 +84,23 @@ final class Uninstaller: ObservableObject {
         // A login-time run still retrying would mount behind "Detach volumes".
         model.autoAttacher.cancelAll()
         steps = [
-            Step(label: "Detach volumes", outcome: .pending),
-            Step(label: "Delete saved targets and passwords", outcome: .pending),
-            Step(label: "Remove the login item", outcome: .pending),
-            Step(label: "Remove the background service", outcome: .pending),
-            Step(label: "Turn off the filesystem extension", outcome: .pending),
-            Step(label: "Remove the iscsictl link", outcome: .pending),
-            Step(label: "Clean up", outcome: .pending),
+            Step(label: String(localized: "Detach volumes"), outcome: .pending),
+            Step(label: String(localized: "Delete saved targets and passwords"), outcome: .pending),
+            Step(label: String(localized: "Remove the login item"), outcome: .pending),
+            Step(label: String(localized: "Remove the background service"), outcome: .pending),
+            Step(label: String(localized: "Turn off the filesystem extension"), outcome: .pending),
+            Step(label: String(localized: "Remove the iscsictl link"), outcome: .pending),
+            Step(label: String(localized: "Clean up"), outcome: .pending),
         ]
 
         await step(0) { try await self.detachEverything() }
         if case .failed = steps[0].outcome {
-            stop(after: 0, because: "nothing else is removed while a volume is in use.")
+            stop(after: 0, because: String(localized: "nothing else is removed while a volume is in use."))
             return
         }
         await step(1) { try await self.removeDaemonData() }
         if case .failed = steps[1].outcome {
-            stop(after: 1, because: "the background service is kept until it has deleted "
-                 + "the saved passwords. Try again.")
+            stop(after: 1, because: String(localized: "the background service is kept until it has deleted the saved passwords. Try again."))
             return
         }
         await step(2) { try await self.unregisterLoginItem() }
@@ -164,7 +163,7 @@ final class Uninstaller: ObservableObject {
         if !remaining.isEmpty {
             throw UninstallError.stillMounted(remaining.map(FSKitRestart.describe))
         }
-        return attached.isEmpty ? "nothing was attached" : "detached \(detached)"
+        return attached.isEmpty ? String(localized: "nothing was attached") : String(localized: "detached \(detached)")
     }
 
     /// Until no row is busy, for at most a minute — longer than an attach
@@ -181,9 +180,9 @@ final class Uninstaller: ObservableObject {
         try await DaemonConnection.removeAllData()
         // Asked afterwards, and never a reason to fail: what went, went.
         switch (try? await DaemonConnection.otherAccountsWithData()) ?? 0 {
-        case 0: return "removed"
-        case 1: return "removed; another account's saved targets were kept"
-        case let others: return "removed; \(others) other accounts' saved targets were kept"
+        case 0: return String(localized: "removed")
+        case 1: return String(localized: "removed; another account's saved targets were kept")
+        case let others: return String(localized: "removed; \(others) other accounts' saved targets were kept")
         }
     }
 
@@ -191,13 +190,13 @@ final class Uninstaller: ObservableObject {
     /// app must not leave an entry behind that launches nothing.
     private func unregisterLoginItem() async throws -> String {
         let before = LoginItem.status
-        guard before != .notRegistered, before != .notFound else { return "was not set" }
+        guard before != .notRegistered, before != .notFound else { return String(localized: "was not set") }
         try await LoginItem.unregister()
         let status = LoginItem.status
         guard status == .notRegistered || status == .notFound else {
             throw UninstallError.loginItemStillRegistered(status)
         }
-        return "removed"
+        return String(localized: "removed")
     }
 
     private func unregisterDaemon() async throws -> String {
@@ -213,7 +212,7 @@ final class Uninstaller: ObservableObject {
         guard status == .notRegistered || status == .notFound else {
             throw UninstallError.daemonStillRegistered(status)
         }
-        return "unregistered"
+        return String(localized: "unregistered")
     }
 
     /// Undo what setup step E did, in the user's context — the only place it can
@@ -245,7 +244,7 @@ final class Uninstaller: ObservableObject {
             pluginkit.waitUntilExit()
         }.value
 
-        return removed ? "disabled and unregistered" : "was not enabled"
+        return removed ? String(localized: "disabled and unregistered") : String(localized: "was not enabled")
     }
 
     /// Only a link to this copy, so a link or a file that was already there
@@ -254,15 +253,15 @@ final class Uninstaller: ObservableObject {
     private func removeCommandLineLink() async throws -> String {
         switch CommandLineTool.currentLink() {
         case .absent:
-            return "was not set"
+            return String(localized: "was not set")
         case .otherLink, .notALink:
-            return "\(CommandLineLink.path) is not this app's, and was left alone"
+            return String(localized: "\(CommandLineLink.path) is not this app's, and was left alone")
         case .ours:
             break
         }
         switch await CommandLineTool.removeLink() {
-        case .done:              return "removed"
-        case .cancelled:         throw UninstallError.commandLineLinkKept("not removed")
+        case .done:              return String(localized: "removed")
+        case .cancelled:         throw UninstallError.commandLineLinkKept(String(localized: "not removed"))
         case .failed(let why):   throw UninstallError.commandLineLinkKept(why)
         }
     }
@@ -285,7 +284,7 @@ final class Uninstaller: ObservableObject {
     private func cleanCaches() async throws -> String {
         let root = AttachmentManager.cacheRoot.path
         guard FileManager.default.fileExists(atPath: root) else {
-            return "nothing left behind"
+            return String(localized: "nothing left behind")
         }
         let mounts = AttachmentManager.mountTable()
         let roots = Set([root, Self.resolved(root)].compactMap { $0 })
@@ -312,7 +311,7 @@ final class Uninstaller: ObservableObject {
             throw UninstallError.cacheUndeletable(
                 (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? [])
         }
-        return "removed"
+        return String(localized: "removed")
     }
 
     private nonisolated static func device(_ path: String) -> dev_t? {
@@ -379,47 +378,45 @@ enum UninstallError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .volumesBusy(let paths):
-            return "still in use: \(paths.joined(separator: ", "))"
+            return String(localized: "still in use: \(paths.joined(separator: ", "))")
         case .stillMounted(let disks):
-            return "still attached: \(disks.joined(separator: "; "))"
+            return String(localized: "still attached: \(disks.joined(separator: "; "))")
         case .operationsInFlight:
-            return "an attach or detach is still running"
+            return String(localized: "an attach or detach is still running")
         case .daemonStillRegistered(let status),
              .loginItemStillRegistered(let status):
-            return "the system still reports it as registered (status \(status.rawValue))"
+            return String(localized: "the system still reports it as registered (status \(status.rawValue))")
         case .commandLineLinkKept(let why):
             // The step list shows this line and not `recoverySuggestion`.
-            return "\(why). To remove it yourself: sudo rm \(CommandLineLink.path)"
+            return String(localized: "\(why). To remove it yourself: sudo rm \(CommandLineLink.path)")
         case .cacheNotEmpty(let names):
-            return "a volume is still mounted there: \(names.joined(separator: ", "))"
+            return String(localized: "a volume is still mounted there: \(names.joined(separator: ", "))")
         case .cacheUndeletable(let names):
             let folder = "~/Library/Caches/me.herko.iSCSIInitiator"
             return names.isEmpty
-                ? "\(folder) could not be removed"
-                : "could not delete \(names.joined(separator: ", ")) in \(folder)"
+                ? String(localized: "\(folder) could not be removed")
+                : String(localized: "could not delete \(names.joined(separator: ", ")) in \(folder)")
         }
     }
 
     var recoverySuggestion: String? {
         switch self {
         case .volumesBusy:
-            return "Close anything using the volume — including Finder windows and "
-                 + "Terminal sessions inside it — and try again."
+            return String(localized: "Close anything using the volume — including Finder windows and Terminal sessions inside it — and try again.")
         case .stillMounted:
-            return "Detach them — in each account that has one — and try again."
+            return String(localized: "Detach them — in each account that has one — and try again.")
         case .operationsInFlight:
-            return "Wait for it to finish and try again."
+            return String(localized: "Wait for it to finish and try again.")
         case .daemonStillRegistered:
-            return "Remove it in System Settings → General → Login Items & Extensions."
+            return String(localized: "Remove it in System Settings → General → Login Items & Extensions.")
         case .loginItemStillRegistered:
-            return "Remove iSCSI/NVMe/TCP Initiator from Open at Login in System Settings → "
-                 + "General → Login Items & Extensions."
+            return String(localized: "Remove iSCSI/NVMe/TCP Initiator from Open at Login in System Settings → General → Login Items & Extensions.")
         case .commandLineLinkKept:
             return nil
         case .cacheNotEmpty:
-            return "Restarting will release it, after which the folder can be deleted."
+            return String(localized: "Restarting will release it, after which the folder can be deleted.")
         case .cacheUndeletable:
-            return "Delete the folder in Finder once the app has quit."
+            return String(localized: "Delete the folder in Finder once the app has quit.")
         }
     }
 }

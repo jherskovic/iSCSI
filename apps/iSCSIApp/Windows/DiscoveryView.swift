@@ -37,34 +37,31 @@ struct DiscoveryView: View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
                 Section {
-                    Picker("Protocol", selection: $isNVMe) {
+                    Picker(String(localized: "Protocol"), selection: $isNVMe) {
                         Text("iSCSI").tag(false)
                         Text("NVMe/TCP").tag(true)
                     }
                     .pickerStyle(.segmented)
-                    TextField("Address", text: $host, prompt: Text("nas.local"))
+                    TextField(String(localized: "Address"), text: $host, prompt: Text("nas.local"))
                         .onSubmit(search)
-                    TextField("Port", text: $port)
+                    TextField(String(localized: "Port"), text: $port)
                 } header: {
-                    Text("Portal")
+                    Text(String(localized: "Portal"))
                 } footer: {
                     Text(isNVMe
-                         ? "NVMe/TCP subsystems list themselves to any host that can reach "
-                           + "the port. Whether this Mac may attach is decided per subsystem "
-                           + "by its host NQN, shown when you edit the target."
-                         : "Some devices require credentials before they will list "
-                           + "their targets. Leave these empty if yours does not.")
+                         ? String(localized: "NVMe/TCP subsystems list themselves to any host that can reach the port. Whether this Mac may attach is decided per subsystem by its host NQN, shown when you edit the target.")
+                         : String(localized: "Some devices require credentials before they will list their targets. Leave these empty if yours does not."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
-                Section("Network") {
+                Section(String(localized: "Network")) {
                     InterfacePicker(name: $networkInterface, fallback: $interfaceFallback)
                 }
 
                 if !isNVMe {
                     Section("Authentication (optional)") {
-                        TextField("CHAP user", text: $chapUser)
-                        SecureField("CHAP secret", text: $chapSecret)
+                        TextField(String(localized: "CHAP user"), text: $chapUser)
+                        SecureField(String(localized: "CHAP secret"), text: $chapSecret)
                     }
                 }
             }
@@ -82,7 +79,7 @@ struct DiscoveryView: View {
                         .lineLimit(2)
                 }
                 Spacer()
-                Button(isSearching ? "Searching…" : "Discover", action: search)
+                Button(isSearching ? String(localized: "Searching…") : String(localized: "Discover"), action: search)
                     .buttonStyle(.borderedProminent)
                     .disabled(host.isEmpty || isSearching || !model.isReady)
             }
@@ -92,7 +89,7 @@ struct DiscoveryView: View {
             Divider()
             results
         }
-        .navigationTitle("Discover")
+        .navigationTitle(String(localized: "Discover"))
     }
 
     @ViewBuilder
@@ -100,10 +97,8 @@ struct DiscoveryView: View {
         if isSearching {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if found.isEmpty && searched {
-            ContentUnavailableView("No Targets Offered", systemImage: "magnifyingglass",
-                                   description: Text("The device answered, but is not "
-                                                     + "offering any targets to this "
-                                                     + "initiator."))
+            ContentUnavailableView(String(localized: "No Targets Offered"), systemImage: "magnifyingglass",
+                                   description: Text(String(localized: "The device answered, but is not offering any targets to this initiator.")))
         } else {
             List(found, id: \.targetIQN) { target in
                 HStack {
@@ -119,17 +114,17 @@ struct DiscoveryView: View {
                     Spacer()
                     switch offer(for: target, from: lastSearch) {
                     case .add:
-                        Button("Add") { if let lastSearch { add(target, from: lastSearch) } }
+                        Button(String(localized: "Add")) { if let lastSearch { add(target, from: lastSearch) } }
                     case .saved:
-                        Text("Added").font(.caption).foregroundStyle(.secondary)
+                        Text(String(localized: "Added")).font(.caption).foregroundStyle(.secondary)
                     case .updateCredentials(let records):
                         // Without this the credentials that just listed the
                         // target were dropped, and the next attach went out
                         // with no CHAP and was refused.
                         Text(records.allSatisfy { $0.chapUser == nil }
-                             ? "Saved without CHAP" : "Saved with another CHAP user")
+                             ? String(localized: "Saved without CHAP") : String(localized: "Saved with another CHAP user"))
                             .font(.caption).foregroundStyle(.orange)
-                        Button("Use These Credentials") {
+                        Button(String(localized: "Use These Credentials")) {
                             if let lastSearch { useCredentials(of: lastSearch, on: records) }
                         }
                     }
@@ -209,7 +204,8 @@ struct DiscoveryView: View {
                 // Inline rather than in an alert: the user is mid-task with the
                 // fields still in front of them, and the fix is usually one of
                 // those fields.
-                failure = [ns.localizedDescription, ns.localizedRecoverySuggestion]
+                let details = LocalizedStorageError.details(ns)
+                failure = [details.message, details.suggestion]
                     .compactMap { $0 }.joined(separator: " ")
             }
         }

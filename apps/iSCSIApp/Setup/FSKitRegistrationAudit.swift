@@ -35,8 +35,7 @@ import iSCSIKit
 
 enum FSKitRegistrationAudit {
     private static let lsregister =
-        "/System/Library/Frameworks/CoreServices.framework"
-        + "/Frameworks/LaunchServices.framework/Support/lsregister"
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
     /// Every app bundle LaunchServices believes provides our filesystem module.
     /// One is healthy. More than one is the bug.

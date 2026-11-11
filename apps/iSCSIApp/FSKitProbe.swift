@@ -34,13 +34,13 @@ enum ModuleState: Equatable {
     var summary: String {
         switch self {
         case .notRegistered:
-            return "not registered — FSKit does not know this module exists"
+            return String(localized: "not registered — FSKit does not know this module exists")
         case .registeredDisabled:
-            return "registered, DISABLED — this is the gate"
+            return String(localized: "registered, DISABLED — this is the gate")
         case .enabled:
-            return "registered and ENABLED"
+            return String(localized: "registered and ENABLED")
         case .failed(let why):
-            return "query failed: \(why)"
+            return String(localized: "query failed: \(why)")
         }
     }
 
@@ -124,14 +124,14 @@ struct FSKitProbeView: View {
     @StateObject private var probe = FSKitProbe()
 
     var body: some View {
-        GroupBox("FSKit module (Backend A)") {
+        GroupBox(String(localized: "FSKit module (Backend A)")) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Circle().fill(probe.state.color).frame(width: 10, height: 10)
                     Text(probe.state.summary)
                     Spacer()
                     Button("Re-check") { Task { await probe.refresh() } }
-                    Button("Open System Settings") { probe.openSettings() }
+                    Button(String(localized: "Open System Settings")) { probe.openSettings() }
                 }
 
                 if case .registeredDisabled(let url) = probe.state {
@@ -142,7 +142,7 @@ struct FSKitProbeView: View {
 
                 if !probe.allModules.isEmpty {
                     Divider()
-                    Text("All installed modules")
+                    Text(String(localized: "All installed modules"))
                         .font(.caption).foregroundStyle(.secondary)
                     Text(probe.allModules.joined(separator: "\n"))
                         .font(.system(.caption, design: .monospaced))
@@ -160,7 +160,7 @@ struct FSKitProbeView: View {
                     Text("macOS 26.x fallback")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Attempt enablement write") {
+                    Button(String(localized: "Attempt enablement write")) {
                         Task { await probe.attemptEnablementWrite() }
                     }
                 }

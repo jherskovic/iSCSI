@@ -158,7 +158,7 @@ final class SetupCoordinator: ObservableObject {
 @MainActor
 final class DaemonStep: SetupStep {
     let id = "daemon"
-    let title = "Background service installed"
+    let title = String(localized: "Background service installed")
     private let controller: DaemonController
 
     init(controller: DaemonController) { self.controller = controller }
@@ -168,26 +168,19 @@ final class DaemonStep: SetupStep {
         case .checking:
             return .checking
         case .running(let info):
-            return .satisfied("running \(info.version), pid \(info.pid)")
+            return .satisfied(String(localized: "running \(info.version), pid \(info.pid)"))
         case .notRegistered:
-            return .actionable("iSCSI/NVMe/TCP Initiator needs a background service to "
-                               + "hold the connection to your storage.")
+            return .actionable(String(localized: "iSCSI/NVMe/TCP Initiator needs a background service to hold the connection to your storage."))
         case .requiresApproval:
-            return .actionable("macOS is waiting for you to allow the background "
-                               + "service in System Settings.")
+            return .actionable(String(localized: "macOS is waiting for you to allow the background service in System Settings."))
         case .registeredNotResponding:
-            return .actionable("the background service is approved but not running — "
-                               + "most often because it belongs to a copy of the app that "
-                               + "no longer exists. Reinstall it from this copy.")
+            return .actionable(String(localized: "the background service is approved but not running — most often because it belongs to a copy of the app that no longer exists. Reinstall it from this copy."))
         case .otherCopy(let path):
-            return .actionable("the background service belongs to another copy of the app "
-                               + "at \(path); it needs reinstalling from this one.")
+            return .actionable(String(localized: "the background service belongs to another copy of the app at \(path); it needs reinstalling from this one."))
         case .versionMismatch(let daemon, let app):
-            return .actionable("the background service is version \(daemon) but "
-                               + "this app is \(app); it needs reinstalling.")
+            return .actionable(String(localized: "the background service is version \(daemon) but this app is \(app); it needs reinstalling."))
         case .notFound:
-            return .blocked("this copy of the app is incomplete — its background "
-                            + "service is missing. Reinstall from the disk image.")
+            return .blocked(String(localized: "this copy of the app is incomplete — its background service is missing. Reinstall from the disk image."))
         case .failed(let why):
             return .blocked(why)
         }
@@ -195,10 +188,10 @@ final class DaemonStep: SetupStep {
 
     var actionLabel: String? {
         switch controller.state {
-        case .notRegistered:    return "Install"
-        case .requiresApproval: return "Open System Settings"
+        case .notRegistered:    return String(localized: "Install")
+        case .requiresApproval: return String(localized: "Open System Settings")
         case .versionMismatch, .otherCopy, .registeredNotResponding:
-            return "Reinstall"
+            return String(localized: "Reinstall")
         default:                return nil
         }
     }
@@ -211,23 +204,19 @@ final class DaemonStep: SetupStep {
     var consentPrompt: String? {
         let mounted = AppReplacement.mountsItWouldDisconnect(AttachmentManager.mountTable())
             .map(FSKitRestart.describe)
-        let naming = mounted.isEmpty ? "" : " Attached now: " + mounted.joined(separator: "; ") + "."
+        let naming = mounted.isEmpty ? "" : String(localized: " Attached now: \(mounted.joined(separator: "; ")).")
         switch controller.state {
         case .otherCopy:
-            return "This stops the background service running from the other copy and "
-                + "starts it from this one. Disks attached through it lose their "
-                + "connection — eject them in Finder first." + naming
+            return String(localized: "This stops the background service running from the other copy and starts it from this one. Disks attached through it lose their connection — eject them in Finder first.") + naming
         case .versionMismatch, .registeredNotResponding:
             guard !mounted.isEmpty else { return nil }
-            return "This stops the background service and starts it again, and disks "
-                + "attached through it lose their connection — eject them first, in "
-                + "each account that has one." + naming
+            return String(localized: "This stops the background service and starts it again, and disks attached through it lose their connection — eject them first, in each account that has one.") + naming
         default:
             return nil
         }
     }
 
-    var consentTitle: String? { "Reinstall the background service?" }
+    var consentTitle: String? { String(localized: "Reinstall the background service?") }
 
     func check() async { await controller.refresh() }
 

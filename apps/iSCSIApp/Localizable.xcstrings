@@ -1,0 +1,4147 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "\n\nIf the target loses power, uncommitted writes are lost out of order — which can corrupt the volume's structure, not just recent files. Choose this only if the target's cache is protected: battery-backed, on a UPS, or with its write cache disabled.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\n\n如果目标设备断电，未提交的写入可能无序丢失，既可能丢失新文件，也可能破坏整个卷的结构。仅当目标缓存具备电池或 UPS 保护，或已关闭写入缓存时，才应选择此设置。"
+          }
+        }
+      }
+    },
+    " (the full LaunchServices scan is still running)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "（LaunchServices 的完整扫描仍在进行）"
+          }
+        }
+      }
+    },
+    " Attached now: %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " 当前连接：%1$@。"
+          }
+        }
+      }
+    },
+    "!": {
+      "shouldTranslate": false
+    },
+    "%@\n\nForce Eject takes the volume away from whatever is using it. Anything those apps have not saved is lost, and a file being written at that moment can be left incomplete.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@\n\n强制推出会立即断开正在使用此卷的应用。尚未保存的内容会丢失，正在写入的文件也可能不完整。"
+          }
+        }
+      }
+    },
+    "%@ %llu": {
+      "shouldTranslate": false
+    },
+    "%@ (fell back from %@)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@（原接口 %2$@ 不可用，已切换）"
+          }
+        }
+      }
+    },
+    "%@ already exists and is not a link, so it is left alone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 已存在且不是符号链接，已保留原文件。"
+          }
+        }
+      }
+    },
+    "%@ already links to %@, so it is left alone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 已链接到 %2$@，已保留原链接。"
+          }
+        }
+      }
+    },
+    "%@ could not be removed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法移除 %1$@"
+          }
+        }
+      }
+    },
+    "%@ did not finish within 20 s": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 在 20 秒内未完成"
+          }
+        }
+      }
+    },
+    "%@ exited %d": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 已退出，状态码为 %2$d"
+          }
+        }
+      }
+    },
+    "%@ failed: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 失败：%2$@"
+          }
+        }
+      }
+    },
+    "%@ is not this app's, and was left alone": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 不属于此应用，已保留"
+          }
+        }
+      }
+    },
+    "%@ links to this app": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 已链接到此应用"
+          }
+        }
+      }
+    },
+    "%@ — macOS's list of extensions leaves it out, but FSKit loads it (checked with a local test mount)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 未出现在 macOS 的扩展列表中，但本机测试确认 FSKit 可以加载它"
+          }
+        }
+      }
+    },
+    "%@. To remove it yourself: sudo rm %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@。如需手动移除，请执行：sudo rm %2$@"
+          }
+        }
+      }
+    },
+    "%lld GB": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld GB"
+          }
+        }
+      }
+    },
+    "%lld bytes": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld 字节"
+          }
+        }
+      }
+    },
+    "(not resolved)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "（尚未解析）"
+          }
+        }
+      }
+    },
+    "**Nothing on the storage device itself is changed.** Your data stays where it is.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**不会更改存储设备上的任何内容。** 你的数据会保留在原处。"
+          }
+        }
+      }
+    },
+    "A disk request did not match the device's block layout.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "磁盘请求与设备的块布局不匹配。"
+          }
+        }
+      }
+    },
+    "A few permissions are still needed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还需要授予几项权限"
+          }
+        }
+      }
+    },
+    "Accept the Risk": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接受风险"
+          }
+        }
+      }
+    },
+    "Access": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "访问权限"
+          }
+        }
+      }
+    },
+    "Add": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加"
+          }
+        }
+      }
+    },
+    "Add %@ Target": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加 %1$@ 目标"
+          }
+        }
+      }
+    },
+    "Add Link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加命令行链接"
+          }
+        }
+      }
+    },
+    "Add an %@ target": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加 %1$@ 目标"
+          }
+        }
+      }
+    },
+    "Add it to the subsystem's allowed hosts on the storage device, or allow any host there. Namespace IDs start at 1.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在存储设备上，将此标识加入子系统的允许主机列表，或允许任意主机连接。命名空间 ID 从 1 开始。"
+          }
+        }
+      }
+    },
+    "Add it to the target's allowed initiators on the storage device, or allow any initiator there. It follows this Mac's name, so renaming the Mac changes it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在存储设备上，将此标识加入目标的允许发起端列表，或允许任意发起端连接。此标识随 Mac 名称生成，更改 Mac 名称后也会改变。"
+          }
+        }
+      }
+    },
+    "Added": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已添加"
+          }
+        }
+      }
+    },
+    "Address": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "地址"
+          }
+        }
+      }
+    },
+    "All installed modules": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所有已安装模块"
+          }
+        }
+      }
+    },
+    "An NVMe/TCP subsystem name starts with “nqn.”. For an iSCSI target, add one under iSCSI.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NVMe/TCP 子系统名称须以“nqn.”开头。如需添加 iSCSI 目标，请在 iSCSI 分组中添加。"
+          }
+        }
+      }
+    },
+    "Another account on this Mac has this disk attached.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 Mac 上的另一个账户已挂载此磁盘。"
+          }
+        }
+      }
+    },
+    "Ask the target which %@ it has.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查询目标提供的%1$@。"
+          }
+        }
+      }
+    },
+    "Asking the target…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在查询目标…"
+          }
+        }
+      }
+    },
+    "Attach": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "挂载"
+          }
+        }
+      }
+    },
+    "Attach a target to open a session.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "挂载一个存储目标即可建立连接。"
+          }
+        }
+      }
+    },
+    "Attach at login": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录时自动挂载"
+          }
+        }
+      }
+    },
+    "Attach at login is turned off in System Settings.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统设置中已关闭登录时自动挂载。"
+          }
+        }
+      }
+    },
+    "Attach at login needs the app in /Applications.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录时自动挂载需要将应用放在 /Applications 中。"
+          }
+        }
+      }
+    },
+    "Attached under a target's earlier address, name or LUN, or for a target that has since been removed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这些磁盘使用目标编辑前的地址、名称或 LUN 挂载，或其对应目标已被移除。"
+          }
+        }
+      }
+    },
+    "Attaches by itself when you log in to this Mac. If the target can't be reached, keeps trying for 5 minutes, then shows a warning here.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录此 Mac 时自动挂载。若目标无法访问，会持续重试 5 分钟，之后在此处显示提示。"
+          }
+        }
+      }
+    },
+    "Attaching it from two accounts at once would corrupt it. Detach it in that account first.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "两个账户同时挂载此磁盘会导致数据损坏。请先在另一个账户中断开。"
+          }
+        }
+      }
+    },
+    "Attaching it from two accounts at once would corrupt it. Eject it in the other account, then attach it here.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "两个账户同时挂载此磁盘会导致数据损坏。请先在另一个账户中推出，再在此处挂载。"
+          }
+        }
+      }
+    },
+    "Attaching storage at login": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录时正在挂载存储设备"
+          }
+        }
+      }
+    },
+    "Attaching “%@”": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在挂载“%1$@”"
+          }
+        }
+      }
+    },
+    "Attempt enablement write": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尝试写入启用设置"
+          }
+        }
+      }
+    },
+    "Authentication": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "身份验证"
+          }
+        }
+      }
+    },
+    "Authentication (optional)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "身份验证（选填）"
+          }
+        }
+      }
+    },
+    "Automatic (macOS chooses)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动（由 macOS 选择）"
+          }
+        }
+      }
+    },
+    "Background service installed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务已安装"
+          }
+        }
+      }
+    },
+    "Block size": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "块大小"
+          }
+        }
+      }
+    },
+    "Blocks": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "块数量"
+          }
+        }
+      }
+    },
+    "CHAP secret": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CHAP 密钥"
+          }
+        }
+      }
+    },
+    "CHAP user": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CHAP 用户名"
+          }
+        }
+      }
+    },
+    "Cached writes will be committed every %lld seconds and when the volume is detached.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每隔 %1$lld 秒及断开时提交缓存中的写入。"
+          }
+        }
+      }
+    },
+    "Cached writes will be committed every second and when the volume is detached.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每秒及断开时提交缓存中的写入。"
+          }
+        }
+      }
+    },
+    "Cancel": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "Capacity": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "容量"
+          }
+        }
+      }
+    },
+    "Changing the login item": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在更改登录项"
+          }
+        }
+      }
+    },
+    "Check for Updates…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查更新…"
+          }
+        }
+      }
+    },
+    "Check that the background service is running and the filesystem extension is enabled, on the Setup screen.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请前往“初始设置”，确认后台服务正在运行，文件系统扩展已启用。"
+          }
+        }
+      }
+    },
+    "Check the CHAP username and secret, the initiator IQN or host NQN, and the target's access rules. The original response below identifies the specific refusal.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请检查 CHAP 用户名和密钥、发起端 IQN 或主机 NQN，以及目标的访问规则。下方原始响应提供了具体拒绝原因。"
+          }
+        }
+      }
+    },
+    "Check the address, port and network interface, and confirm the storage device is online.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请检查地址、端口及网络接口，并确认存储设备在线。"
+          }
+        }
+      }
+    },
+    "Check the network and storage device, then reconnect.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请检查网络和存储设备，再重新连接。"
+          }
+        }
+      }
+    },
+    "Check the target's protocol settings. Keep the original diagnostic below when reporting this issue.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请检查目标的协议设置。反馈问题时，请保留下方原始诊断信息。"
+          }
+        }
+      }
+    },
+    "Choose": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择"
+          }
+        }
+      }
+    },
+    "Clean up": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理注册信息"
+          }
+        }
+      }
+    },
+    "Close": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭"
+          }
+        }
+      }
+    },
+    "Close anything using the volume — including Finder windows and Terminal sessions inside it — and try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请关闭正在使用此卷的应用，包括打开此卷的 Finder 窗口和终端会话，然后重试。"
+          }
+        }
+      }
+    },
+    "Commit writes": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提交写入"
+          }
+        }
+      }
+    },
+    "Connected — attached in another account, or still connecting — so the address, port, name and %@ can't change.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标已连接，可能正由另一账户挂载或仍在建立连接，因此无法更改地址、端口、名称和%1$@。"
+          }
+        }
+      }
+    },
+    "Continue": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续"
+          }
+        }
+      }
+    },
+    "Continue?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续？"
+          }
+        }
+      }
+    },
+    "Copy": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制"
+          }
+        }
+      }
+    },
+    "Could not attach at login — %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录时未能挂载：%1$@"
+          }
+        }
+      }
+    },
+    "Could not attach the LUN as a disk: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法将 LUN 挂载为磁盘：%1$@"
+          }
+        }
+      }
+    },
+    "Could not attach “%@” at login": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录时未能挂载“%1$@”"
+          }
+        }
+      }
+    },
+    "Could not connect to the storage target.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法连接存储目标。"
+          }
+        }
+      }
+    },
+    "Could not serve the LUN as a file, even after removing %lld stale copy(s) of the filesystem extension. Details: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已清理 %1$lld 个失效的文件系统扩展副本，仍无法将 LUN 提供为文件。详情：%2$@"
+          }
+        }
+      }
+    },
+    "Could not serve the LUN as a file: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法将 LUN 提供为文件：%1$@"
+          }
+        }
+      }
+    },
+    "Daemon (SMAppService)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务（SMAppService）"
+          }
+        }
+      }
+    },
+    "Delete saved targets and passwords": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除已保存的目标和密码"
+          }
+        }
+      }
+    },
+    "Delete the folder in Finder once the app has quit.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请退出应用后，在 Finder 中删除文件夹。"
+          }
+        }
+      }
+    },
+    "Detach": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断开"
+          }
+        }
+      }
+    },
+    "Detach All": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部断开"
+          }
+        }
+      }
+    },
+    "Detach again. If the storage device is unreachable, detaching waits for it to answer.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请再次尝试断开。如果存储设备无法访问，断开操作会等待设备响应。"
+          }
+        }
+      }
+    },
+    "Detach and Install": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断开并安装"
+          }
+        }
+      }
+    },
+    "Detach and Quit": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断开连接并退出"
+          }
+        }
+      }
+    },
+    "Detach it under Other Attached Disks, then attach again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在“其他已挂载磁盘”中断开此磁盘，再重新挂载。"
+          }
+        }
+      }
+    },
+    "Detach it, then edit it. Nothing was saved.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先断开挂载，再进行编辑。本次更改未保存。"
+          }
+        }
+      }
+    },
+    "Detach them — in each account that has one — and try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在所有连接了卷的账户中断开连接，然后重试。"
+          }
+        }
+      }
+    },
+    "Detach to change the address, port, name or %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先断开，再更改地址、端口、名称或%1$@。"
+          }
+        }
+      }
+    },
+    "Detach volumes": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断开已挂载的卷"
+          }
+        }
+      }
+    },
+    "Detaching did not finish: %@ is still attached.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未完全断开：%1$@ 仍处于挂载状态。"
+          }
+        }
+      }
+    },
+    "Detaching “%@”": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在断开“%1$@”"
+          }
+        }
+      }
+    },
+    "Device": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备"
+          }
+        }
+      }
+    },
+    "Diagnostics": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "诊断信息"
+          }
+        }
+      }
+    },
+    "Disabled on the target": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标端已停用"
+          }
+        }
+      }
+    },
+    "Discover": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发现设备"
+          }
+        }
+      }
+    },
+    "Disk Utility shows what is on it. Do not erase it unless you mean to delete what it holds.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可在“磁盘工具”中查看其中的内容。除非确实要删除其中的数据，否则请勿抹掉它。"
+          }
+        }
+      }
+    },
+    "DiskImages2 attach failed: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DiskImages2 挂载失败：%1$@"
+          }
+        }
+      }
+    },
+    "DiskImages2 attach unavailable: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DiskImages2 挂载功能不可用：%1$@"
+          }
+        }
+      }
+    },
+    "DiskImages2 attached nothing for %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DiskImages2 未能挂载 %1$@"
+          }
+        }
+      }
+    },
+    "Don't Quit": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不退出"
+          }
+        }
+      }
+    },
+    "Durability": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "数据持久性"
+          }
+        }
+      }
+    },
+    "Each write is on stable media before it is acknowledged.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每次写入均在数据落入持久存储后才确认成功。"
+          }
+        }
+      }
+    },
+    "Edit %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑 %1$@"
+          }
+        }
+      }
+    },
+    "Edit the target: enter a host name, an IPv4 address or an IPv6 address, without brackets, and put the port in the Port field.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请编辑目标：填写主机名、IPv4 地址或不带方括号的 IPv6 地址，并将端口填入“端口”栏。"
+          }
+        }
+      }
+    },
+    "Edit “%@”": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑“%1$@”"
+          }
+        }
+      }
+    },
+    "Edit…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑…"
+          }
+        }
+      }
+    },
+    "Eject": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推出"
+          }
+        }
+      }
+    },
+    "Eject and Detach": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推出并断开"
+          }
+        }
+      }
+    },
+    "Eject “%@”?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推出“%1$@”？"
+          }
+        }
+      }
+    },
+    "Enable": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用"
+          }
+        }
+      }
+    },
+    "Enable at Next Restart": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下次重启时启用"
+          }
+        }
+      }
+    },
+    "Enable the filesystem extension?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用文件系统扩展？"
+          }
+        }
+      }
+    },
+    "Enabled on the target": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标端已启用"
+          }
+        }
+      }
+    },
+    "Enter the CHAP secret first.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先输入 CHAP 密钥。"
+          }
+        }
+      }
+    },
+    "Enter the secret too, or clear the user — a name on its own does not verify anything.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请同时输入密钥，或清空用户名。仅填写用户名无法验证身份。"
+          }
+        }
+      }
+    },
+    "Every %lld seconds": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每隔 %1$lld 秒"
+          }
+        }
+      }
+    },
+    "Every second": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每秒"
+          }
+        }
+      }
+    },
+    "Everything has been removed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所有内容已移除。"
+          }
+        }
+      }
+    },
+    "FSKit module (Backend A)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSKit 模块（后端 A）"
+          }
+        }
+      }
+    },
+    "Fail the connection": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中止连接"
+          }
+        }
+      }
+    },
+    "Falls back to whatever macOS picks when this interface is missing or has no route, and tries it again at the next reconnect.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选接口不存在或没有可用路由时，改用 macOS 选择的接口；下次重连时会再次尝试原接口。"
+          }
+        }
+      }
+    },
+    "Filesystem extension enabled": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件系统扩展已启用"
+          }
+        }
+      }
+    },
+    "Filesystem extension registered": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件系统扩展已注册"
+          }
+        }
+      }
+    },
+    "Find": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查找"
+          }
+        }
+      }
+    },
+    "Finish setting up": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成初始设置"
+          }
+        }
+      }
+    },
+    "Finish setup before adding targets": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先完成初始设置，再添加目标"
+          }
+        }
+      }
+    },
+    "Finish setup first — the background service and filesystem extension have to be running before a target can be attached.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先完成初始设置。后台服务和文件系统扩展运行后，才能挂载存储目标。"
+          }
+        }
+      }
+    },
+    "Force Eject": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "强制推出"
+          }
+        }
+      }
+    },
+    "Give up per-write durability?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭每次写入的持久性保障？"
+          }
+        }
+      }
+    },
+    "In use by another session on this Mac.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 Mac 上的另一个账户正在使用此磁盘。"
+          }
+        }
+      }
+    },
+    "Install": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装"
+          }
+        }
+      }
+    },
+    "Installed in Applications": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已放入“应用程序”"
+          }
+        }
+      }
+    },
+    "Installing now would replace the filesystem extension that %@ is using, and anything writing to it at that moment would lose the process answering its reads and writes.\n\nThe update is downloaded and ready. It will install itself and relaunch the app as soon as the last volume is detached. Quitting the app installs it too, so a quit asks you to detach first.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "现在安装会替换%1$@正在使用的文件系统扩展，正在写入该卷的程序会失去负责处理读写的进程。\n\n更新已下载就绪。断开最后一个卷后，将自动安装更新并重新启动应用。退出应用也会安装更新，因此退出前会要求先断开连接。"
+          }
+        }
+      }
+    },
+    "Interface": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接口"
+          }
+        }
+      }
+    },
+    "It is on macOS's list of enabled extensions, and turns on the next time the system service that reads the list restarts — at the latest when this Mac restarts. Turning it on now would restart that service and disconnect what is mounted through it, in every account: %@. To turn it on without restarting the Mac, detach those, then choose Re-check.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此扩展已加入 macOS 的启用列表，将在相关系统服务下次启动时生效；重新启动 Mac 即可完成。立即重启服务会断开所有账户通过它挂载的卷：%1$@。如需立即启用，请先断开这些卷，再点击“重新检查”。"
+          }
+        }
+      }
+    },
+    "It is on macOS's list, but the system service that reads the list could not be restarted: %@. Choose Enable to try again, or restart this Mac.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此扩展已加入 macOS 的启用列表，但相关系统服务无法重启：%1$@。请点击“启用”重试，或重新启动 Mac。"
+          }
+        }
+      }
+    },
+    "It may still be starting up. Try again shortly.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备可能仍在启动，请稍后重试。"
+          }
+        }
+      }
+    },
+    "It will appear by itself if the target answers. Otherwise check the target and press Attach.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标恢复响应后会自动挂载。也可以检查目标设备，再点击“挂载”。"
+          }
+        }
+      }
+    },
+    "Its address, port, name or %@ can't change while it is attached: the app finds the mounted volume by them.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "挂载期间无法更改地址、端口、名称或%1$@，应用需要依靠这些信息定位已挂载的卷。"
+          }
+        }
+      }
+    },
+    "Its settings and saved CHAP secret are removed from this Mac. Nothing on the target changes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅移除此 Mac 保存的目标设置和 CHAP 密钥，不会更改目标设备。"
+          }
+        }
+      }
+    },
+    "Its settings are removed from this Mac. Nothing on the target changes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅移除此 Mac 保存的目标设置，不会更改目标设备。"
+          }
+        }
+      }
+    },
+    "Its volume is still mounted and will be ejected first; anything still using files on it — a running virtual machine, an open document — should be shut down before continuing.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此卷仍处于挂载状态，移除前会先推出。请先关闭正在使用其中的文件的应用，例如虚拟机或打开的文档。"
+          }
+        }
+      }
+    },
+    "Its volume is still mounted. Detaching will eject the volume first; anything still using files on it — a running virtual machine, an open document — should be shut down before continuing.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此卷仍处于挂载状态，断开时将先推出卷。请先关闭正在使用其中的文件的应用，例如虚拟机或打开的文档。"
+          }
+        }
+      }
+    },
+    "Keep the original diagnostic below and report this issue.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请保留下方原始诊断信息并反馈此问题。"
+          }
+        }
+      }
+    },
+    "Kept on this Mac's disk, encrypted, only while the target is attached. Takes effect the next time it is attached.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅在目标挂载期间保存在此 Mac 的磁盘上，并加密存储。下次挂载时生效。"
+          }
+        }
+      }
+    },
+    "LUN": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LUN"
+          }
+        }
+      }
+    },
+    "LUNs": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LUN"
+          }
+        }
+      }
+    },
+    "Later": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "稍后"
+          }
+        }
+      }
+    },
+    "Loading targets…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载存储目标…"
+          }
+        }
+      }
+    },
+    "Local cache": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地缓存"
+          }
+        }
+      }
+    },
+    "Move App to Trash": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将应用移到废纸篓"
+          }
+        }
+      }
+    },
+    "Mutual CHAP secret": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "双向 CHAP 密钥"
+          }
+        }
+      }
+    },
+    "Mutual CHAP user": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "双向 CHAP 用户名"
+          }
+        }
+      }
+    },
+    "NVMe/TCP": {
+      "shouldTranslate": false
+    },
+    "NVMe/TCP subsystems list themselves to any host that can reach the port. Whether this Mac may attach is decided per subsystem by its host NQN, shown when you edit the target.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任何能访问端口的主机都能发现 NVMe/TCP 子系统。此 Mac 是否有权连接，由各子系统根据主机 NQN 决定；可在编辑目标时查看该标识。"
+          }
+        }
+      }
+    },
+    "Name": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称"
+          }
+        }
+      }
+    },
+    "Namespace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命名空间"
+          }
+        }
+      }
+    },
+    "Namespace ID": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命名空间 ID"
+          }
+        }
+      }
+    },
+    "Negotiated": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "协商参数"
+          }
+        }
+      }
+    },
+    "Network": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网络"
+          }
+        }
+      }
+    },
+    "Network interface": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网络接口"
+          }
+        }
+      }
+    },
+    "Never uses another interface — not Wi-Fi, not a VPN. If this one is unavailable, the connection fails.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "始终只使用所选接口，不切换到 Wi-Fi 或 VPN 等其他接口；此接口不可用时连接失败。"
+          }
+        }
+      }
+    },
+    "Never — target cache is non-volatile": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不主动刷新（目标缓存须具备掉电保护）"
+          }
+        }
+      }
+    },
+    "No %@ targets": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚无 %1$@ 目标"
+          }
+        }
+      }
+    },
+    "No Active Sessions": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前没有活动连接"
+          }
+        }
+      }
+    },
+    "No Targets": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚无存储目标"
+          }
+        }
+      }
+    },
+    "No Targets Offered": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未发现可用目标"
+          }
+        }
+      }
+    },
+    "No flushes will be sent while attached — only when the volume is detached.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "挂载期间不会发送缓存刷新请求，仅在断开时刷新。"
+          }
+        }
+      }
+    },
+    "No targets yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未添加存储目标"
+          }
+        }
+      }
+    },
+    "Not now": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不"
+          }
+        }
+      }
+    },
+    "Not reported": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未提供"
+          }
+        }
+      }
+    },
+    "OK": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "好"
+          }
+        }
+      }
+    },
+    "Off": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭"
+          }
+        }
+      }
+    },
+    "On (FUA on every write)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已启用（每次写入均使用 FUA）"
+          }
+        }
+      }
+    },
+    "On every write — safest": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每次写入时提交（最安全）"
+          }
+        }
+      }
+    },
+    "Only this copy registered": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅当前副本已注册"
+          }
+        }
+      }
+    },
+    "Open Disk Utility, select it, and erase it as APFS or ExFAT. It will mount by itself afterwards.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请打开“磁盘工具”，选中该磁盘并抹掉为 APFS 或 ExFAT 格式。完成后会自动挂载。"
+          }
+        }
+      }
+    },
+    "Open Login Items…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开登录项…"
+          }
+        }
+      }
+    },
+    "Open System Settings": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开系统设置"
+          }
+        }
+      }
+    },
+    "Open the Setup screen to see what is missing.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请打开“初始设置”，查看尚未完成的项目。"
+          }
+        }
+      }
+    },
+    "Optional. Adds a link in /usr/local/bin so iscsictl runs from any Terminal, for every account on this Mac. macOS asks for an administrator's password.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可选：在 /usr/local/bin 中添加命令链接，供这台 Mac 上的所有账户在任意终端运行 iscsictl。macOS 会要求输入管理员密码。"
+          }
+        }
+      }
+    },
+    "Optional. Proves the target is who it claims to be.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可选，用于确认连接的是可信目标。"
+          }
+        }
+      }
+    },
+    "Original diagnostic:": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原始诊断信息："
+          }
+        }
+      }
+    },
+    "Other Attached Disks": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "其他已挂载磁盘"
+          }
+        }
+      }
+    },
+    "Photos archive": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "照片归档"
+          }
+        }
+      }
+    },
+    "Port": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "端口"
+          }
+        }
+      }
+    },
+    "Portal": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接地址"
+          }
+        }
+      }
+    },
+    "Protocol": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "协议"
+          }
+        }
+      }
+    },
+    "Quit": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "退出"
+          }
+        }
+      }
+    },
+    "Quit the apps using files on it — Finder windows and Terminal sessions inside it count — and detach again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请退出正在使用此卷中文件的应用，再尝试断开。打开此卷的 Finder 窗口和终端会话也会占用它。"
+          }
+        }
+      }
+    },
+    "Quitting now installs version %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "现在退出将安装版本 %1$@"
+          }
+        }
+      }
+    },
+    "Re-check": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新检查"
+          }
+        }
+      }
+    },
+    "Re-register": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新注册"
+          }
+        }
+      }
+    },
+    "Reading your targets": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在读取存储目标"
+          }
+        }
+      }
+    },
+    "Ready": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已就绪"
+          }
+        }
+      }
+    },
+    "Reconnect to the storage target.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请重新连接存储目标。"
+          }
+        }
+      }
+    },
+    "Refresh": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新"
+          }
+        }
+      }
+    },
+    "Register": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "注册"
+          }
+        }
+      }
+    },
+    "Reinstall": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新安装"
+          }
+        }
+      }
+    },
+    "Reinstall the background service?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新安装后台服务？"
+          }
+        }
+      }
+    },
+    "Remove": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除"
+          }
+        }
+      }
+    },
+    "Remove %@ Target": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除 %1$@ 目标"
+          }
+        }
+      }
+    },
+    "Remove Everything": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部移除"
+          }
+        }
+      }
+    },
+    "Remove Everything…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部移除…"
+          }
+        }
+      }
+    },
+    "Remove iSCSI/NVMe/TCP Initiator": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除 iSCSI/NVMe/TCP Initiator"
+          }
+        }
+      }
+    },
+    "Remove iSCSI/NVMe/TCP Initiator and everything it stored?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除 iSCSI/NVMe/TCP Initiator 及其保存的所有内容？"
+          }
+        }
+      }
+    },
+    "Remove iSCSI/NVMe/TCP Initiator from Open at Login in System Settings → General → Login Items & Extensions.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请前往“系统设置 → 通用 → 登录项与扩展”，从“登录时打开”中移除 iSCSI/NVMe/TCP Initiator。"
+          }
+        }
+      }
+    },
+    "Remove iSCSI/NVMe/TCP Initiator…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除 iSCSI/NVMe/TCP Initiator…"
+          }
+        }
+      }
+    },
+    "Remove it in System Settings → General → Login Items & Extensions.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在“系统设置 → 通用 → 登录项与扩展”中移除。"
+          }
+        }
+      }
+    },
+    "Remove the background service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除后台服务"
+          }
+        }
+      }
+    },
+    "Remove the iscsictl link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除 iscsictl 链接"
+          }
+        }
+      }
+    },
+    "Remove the login item": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除登录项"
+          }
+        }
+      }
+    },
+    "Remove the other copies' registrations?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除其他副本的注册信息？"
+          }
+        }
+      }
+    },
+    "Remove “%@”": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除“%1$@”"
+          }
+        }
+      }
+    },
+    "Remove “%@”?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除“%1$@”？"
+          }
+        }
+      }
+    },
+    "Remove…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除…"
+          }
+        }
+      }
+    },
+    "Removing “%@”": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在移除“%1$@”"
+          }
+        }
+      }
+    },
+    "Restarting will release it, after which the folder can be deleted.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新启动可解除占用，之后即可删除文件夹。"
+          }
+        }
+      }
+    },
+    "Reveal": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Finder 中显示"
+          }
+        }
+      }
+    },
+    "Reveal in Finder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Finder 中显示"
+          }
+        }
+      }
+    },
+    "Save": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存"
+          }
+        }
+      }
+    },
+    "Saved with another CHAP user": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存，CHAP 用户名不同"
+          }
+        }
+      }
+    },
+    "Saved without CHAP": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存，但未设置 CHAP"
+          }
+        }
+      }
+    },
+    "Saved — type to replace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存，输入新密钥以替换"
+          }
+        }
+      }
+    },
+    "Saving “%@”": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在保存“%1$@”"
+          }
+        }
+      }
+    },
+    "Searching…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在搜索…"
+          }
+        }
+      }
+    },
+    "Secrets must be at least 12 characters.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密钥至少需要 12 个字节（ASCII 字符至少 12 个）。"
+          }
+        }
+      }
+    },
+    "Select a %@ target to remove it": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择一个 %1$@ 目标以移除"
+          }
+        }
+      }
+    },
+    "Session recoveries": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接恢复次数"
+          }
+        }
+      }
+    },
+    "Sessions": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接状态"
+          }
+        }
+      }
+    },
+    "Setup": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "初始设置"
+          }
+        }
+      }
+    },
+    "Setup is not finished": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "初始设置尚未完成"
+          }
+        }
+      }
+    },
+    "Setup is not finished.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "初始设置尚未完成。"
+          }
+        }
+      }
+    },
+    "Show": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示"
+          }
+        }
+      }
+    },
+    "Show in Finder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Finder 中显示"
+          }
+        }
+      }
+    },
+    "Size": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "大小"
+          }
+        }
+      }
+    },
+    "Some devices require credentials before they will list their targets. Leave these empty if yours does not.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分设备需要验证身份后才会列出目标。如果设备没有此要求，请留空。"
+          }
+        }
+      }
+    },
+    "Some things could not be removed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分内容未能移除。"
+          }
+        }
+      }
+    },
+    "Still attached: %@. Quitting would install the update under it. Detach it — in each account that has one — and quit again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仍有连接：%1$@。退出会在其仍然连接时安装更新。请在所有连接了卷的账户中断开连接，然后再次退出。"
+          }
+        }
+      }
+    },
+    "Still trying to attach after 5 minutes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已重试挂载 5 分钟，仍未成功。"
+          }
+        }
+      }
+    },
+    "Stopped: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已停止：%1$@"
+          }
+        }
+      }
+    },
+    "Subsystem": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子系统"
+          }
+        }
+      }
+    },
+    "Subsystem NQN": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子系统 NQN"
+          }
+        }
+      }
+    },
+    "Takes effect the next time this target is attached.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下次挂载此目标时生效。"
+          }
+        }
+      }
+    },
+    "Target": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标"
+          }
+        }
+      }
+    },
+    "Targets": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储目标"
+          }
+        }
+      }
+    },
+    "That is an NVMe/TCP subsystem name. Add it under NVMe/TCP instead.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这是 NVMe/TCP 子系统名称，请在 NVMe/TCP 分组中添加。"
+          }
+        }
+      }
+    },
+    "The %@ is attached as %@ and has no filesystem on it yet, which is normal for a new %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 已连接为 %2$@，尚未创建文件系统。对于新的 %3$@，这是正常情况。"
+          }
+        }
+      }
+    },
+    "The %@ is attached as %@, and it is not empty, but macOS did not mount a volume from it. It may use a filesystem macOS cannot read, be encrypted and locked, or still be checking.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 已连接为 %2$@，其中已有数据，但 macOS 未能挂载其中的卷。它可能使用了 macOS 无法读取的文件系统、已加密且处于锁定状态，或仍在进行检查。"
+          }
+        }
+      }
+    },
+    "The app could not move itself to the Trash: %@ Finder is showing it — drag it to the Trash.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用无法自行移到废纸篓：%1$@ 已在 Finder 中显示，请手动拖入废纸篓。"
+          }
+        }
+      }
+    },
+    "The app is staying open": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用将继续运行"
+          }
+        }
+      }
+    },
+    "The app itself goes last: when everything else is removed, a button moves it to the Trash and quits.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最后处理应用本身：其他内容全部移除后，可点击按钮将应用移到废纸篓并退出。"
+          }
+        }
+      }
+    },
+    "The background service is unregistered and the filesystem extension is turned off. An iscsictl link is removed if this app added one, which needs an administrator's password.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将注销后台服务并停用文件系统扩展。若此应用创建过 iscsictl 链接，也会将其移除；此步骤需要管理员密码。"
+          }
+        }
+      }
+    },
+    "The connection to the storage target was interrupted.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与存储目标的连接已中断。"
+          }
+        }
+      }
+    },
+    "The connection to the target may have dropped. Try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与存储目标的连接可能已中断，请重试。"
+          }
+        }
+      }
+    },
+    "The device answered, but is not offering any targets to this initiator.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备已响应，但没有向此发起端提供任何目标。"
+          }
+        }
+      }
+    },
+    "The device may be restarting or rebalancing. Try connecting again shortly.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备可能正在重新启动或调整存储分布，请稍后重试。"
+          }
+        }
+      }
+    },
+    "The extra copies were removed. Quit and reopen the app, then try again. If a disk image of an older version is still mounted in Finder, eject it first — that is usually where the extra copies come from.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "多余副本的注册信息已清理。请退出并重新打开应用后重试。如果 Finder 中仍挂载着旧版本的磁盘映像，请先推出它；重复注册通常由此产生。"
+          }
+        }
+      }
+    },
+    "The filesystem extension mounted but produced no LUN file at %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件系统扩展已挂载，但未在 %1$@ 生成 LUN 文件。"
+          }
+        }
+      }
+    },
+    "The link could not be added: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法添加链接：%1$@"
+          }
+        }
+      }
+    },
+    "The original diagnostic below contains the device's status and any suggested remedy.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下方原始诊断信息包含设备返回的状态及相关处理建议。"
+          }
+        }
+      }
+    },
+    "The storage device is not ready.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储设备尚未就绪。"
+          }
+        }
+      }
+    },
+    "The storage device rejected a request.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储设备拒绝了请求。"
+          }
+        }
+      }
+    },
+    "The storage operation could not be completed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储操作未能完成。"
+          }
+        }
+      }
+    },
+    "The storage target did not complete a request in time.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储目标未能及时完成请求。"
+          }
+        }
+      }
+    },
+    "The storage target ended the connection.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储目标主动结束了连接。"
+          }
+        }
+      }
+    },
+    "The storage target refused this Mac's login.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储目标拒绝了此 Mac 的登录请求。"
+          }
+        }
+      }
+    },
+    "The storage target requested a different connection address.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储目标要求改用其他地址连接。"
+          }
+        }
+      }
+    },
+    "The storage target returned an incompatible response.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储目标返回了不兼容的响应。"
+          }
+        }
+      }
+    },
+    "The target has %@s %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标提供的%1$@：%2$@。"
+          }
+        }
+      }
+    },
+    "The target has %@s %@; %@ is not one of them. Choose one.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标提供的%1$@：%2$@，其中不包含 %3$@，请选择有效编号。"
+          }
+        }
+      }
+    },
+    "The target has one %@: %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标仅提供一个%1$@：%2$@。"
+          }
+        }
+      }
+    },
+    "The target reports no %@s.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标未提供任何%1$@。"
+          }
+        }
+      }
+    },
+    "The update installs when the app quits, and installing replaces the filesystem extension that %@ is using.\n\nDetach first, or keep the app open and quit later.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "退出应用时将安装更新，并替换%1$@正在使用的文件系统扩展。\n\n请先断开连接，或保持应用运行，稍后再退出。"
+          }
+        }
+      }
+    },
+    "The volume is in use, so it was not ejected. %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卷正在使用中，无法推出。%1$@"
+          }
+        }
+      }
+    },
+    "This Mac's host NQN": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 Mac 的主机 NQN"
+          }
+        }
+      }
+    },
+    "This Mac's initiator IQN": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 Mac 的发起端 IQN"
+          }
+        }
+      }
+    },
+    "This account's saved targets and stored passwords are deleted.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将删除当前账户保存的目标和密码。"
+          }
+        }
+      }
+    },
+    "This connection is no longer active.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此连接已失效。"
+          }
+        }
+      }
+    },
+    "This daemon was built with DEBUG and accepts XPC connections from any process. Never ship it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此后台服务是 DEBUG 构建，会接受任何进程的 XPC 连接。请勿将其作为正式版本使用。"
+          }
+        }
+      }
+    },
+    "This disk is already attached, under the settings the target had before it was edited.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此磁盘已按编辑前的目标设置挂载。"
+          }
+        }
+      }
+    },
+    "This removes macOS's registration of the copies listed above so only this one is used. It does not delete any files.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将移除上面列出的副本在 macOS 中的注册信息，只保留当前副本。不会删除任何文件。"
+          }
+        }
+      }
+    },
+    "This stops the background service and starts it again, and disks attached through it lose their connection — eject them first, in each account that has one.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这会停止并重新启动后台服务，通过它连接的磁盘将断开连接。请先在所有连接了磁盘的账户中推出这些磁盘。"
+          }
+        }
+      }
+    },
+    "This stops the background service running from the other copy and starts it from this one. Disks attached through it lose their connection — eject them in Finder first.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将停止另一副本的后台服务，并从当前副本启动。通过它挂载的磁盘会断开，请先在 Finder 中推出这些磁盘。"
+          }
+        }
+      }
+    },
+    "This target caches writes and write-through is off. Data acknowledged as written may not survive a power loss.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此目标启用了写入缓存，但未启用直写。即使写入已确认成功，断电时仍可能丢失数据。"
+          }
+        }
+      }
+    },
+    "Turn On": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启"
+          }
+        }
+      }
+    },
+    "Turn off the filesystem extension": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停用文件系统扩展"
+          }
+        }
+      }
+    },
+    "Turning it on means restarting a system service, which would disconnect what is mounted through it on this Mac, in every account: %@. Detach those, then choose Re-check — or choose Enable at Next Restart and restart this Mac.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用此扩展需要重启系统服务，会断开此 Mac 所有账户通过它挂载的卷：%1$@。请先断开这些卷再点击“重新检查”，或选择“下次重启时启用”并重新启动 Mac。"
+          }
+        }
+      }
+    },
+    "Turning on the login item": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在启用登录项"
+          }
+        }
+      }
+    },
+    "Unregister": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "注销"
+          }
+        }
+      }
+    },
+    "Use These Credentials": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用这些凭据"
+          }
+        }
+      }
+    },
+    "Use another interface": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "改用其他接口"
+          }
+        }
+      }
+    },
+    "Use the address in the original response below.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请使用下方原始响应中提供的地址。"
+          }
+        }
+      }
+    },
+    "Verify the target": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "验证目标身份"
+          }
+        }
+      }
+    },
+    "Version %@ is ready. It will install and relaunch once every volume is detached.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 版已就绪。断开所有卷后将安装更新并重新打开应用。"
+          }
+        }
+      }
+    },
+    "Version %@ will install after you detach": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断开所有卷后将安装 %1$@ 版"
+          }
+        }
+      }
+    },
+    "Volumes are unmounted first, and nothing is forced. If something is using a volume, removal stops and says so.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "首先卸载已挂载的卷，不会强制推出。若有卷正在使用中，移除操作会停止并说明原因。"
+          }
+        }
+      }
+    },
+    "Wait for it to finish and try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请等待操作完成后重试。"
+          }
+        }
+      }
+    },
+    "When unavailable": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接口不可用时"
+          }
+        }
+      }
+    },
+    "Working": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在处理"
+          }
+        }
+      }
+    },
+    "Write cache": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入缓存"
+          }
+        }
+      }
+    },
+    "Write safety": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入安全"
+          }
+        }
+      }
+    },
+    "Write-through": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直写"
+          }
+        }
+      }
+    },
+    "Writes will be acknowledged while they are still in the target's volatile cache. ": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "数据仍在目标设备的易失性缓存中时，就会确认写入成功。"
+          }
+        }
+      }
+    },
+    "Your saved targets and their passwords will be deleted. Nothing on the storage device itself is touched.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将删除已保存的目标和密码，不会改动存储设备上的数据。"
+          }
+        }
+      }
+    },
+    "a volume is still mounted there: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仍有卷挂载于此：%1$@"
+          }
+        }
+      }
+    },
+    "a volume that is attached": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已挂载的卷"
+          }
+        }
+      }
+    },
+    "already registered": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已注册"
+          }
+        }
+      }
+    },
+    "an attach or detach is still running": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接或断开操作仍在进行中"
+          }
+        }
+      }
+    },
+    "approved, but not answering — the daemon is not running": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已批准，但后台服务未运行，无法响应"
+          }
+        }
+      }
+    },
+    "atomic replace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原子替换"
+          }
+        }
+      }
+    },
+    "checking…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查…"
+          }
+        }
+      }
+    },
+    "connected as %@ — no volume mounted": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已连接为 %1$@ — 未挂载任何卷"
+          }
+        }
+      }
+    },
+    "connected as %@ — not formatted yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已连接为 %1$@，尚未格式化"
+          }
+        }
+      }
+    },
+    "connected as %@ — “%@” is encrypted and locked": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已连接为 %1$@ — “%2$@”已加密且处于锁定状态"
+          }
+        }
+      }
+    },
+    "could not ask FSKit: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法查询 FSKit：%1$@"
+          }
+        }
+      }
+    },
+    "could not create %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法创建 %1$@"
+          }
+        }
+      }
+    },
+    "could not delete %@ in %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法删除 %2$@ 中的 %1$@"
+          }
+        }
+      }
+    },
+    "could not enable it: %@. ": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法启用：%1$@。"
+          }
+        }
+      }
+    },
+    "could not load DiskImages2.framework": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法加载 DiskImages2.framework"
+          }
+        }
+      }
+    },
+    "could not serialize: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法序列化：%1$@"
+          }
+        }
+      }
+    },
+    "could not tell whether it is enabled: a local test mount failed: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机测试挂载失败，无法确认扩展是否启用：%1$@"
+          }
+        }
+      }
+    },
+    "detached %lld": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已断开 %1$lld 个连接"
+          }
+        }
+      }
+    },
+    "disabled and unregistered": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已停用并注销"
+          }
+        }
+      }
+    },
+    "diskutil did not run": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能运行 diskutil"
+          }
+        }
+      }
+    },
+    "enabled": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已启用"
+          }
+        }
+      }
+    },
+    "enabled (checked with a local test mount; macOS's list of extensions leaves it out)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已启用（macOS 的扩展列表中未显示，但本机测试挂载成功）"
+          }
+        }
+      }
+    },
+    "enabledModules.plist is not an array of strings": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "enabledModules.plist 的内容不是字符串数组"
+          }
+        }
+      }
+    },
+    "failed: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "失败：%1$@"
+          }
+        }
+      }
+    },
+    "hdiutil did not run": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能运行 hdiutil"
+          }
+        }
+      }
+    },
+    "iSCSI": {
+      "shouldTranslate": false
+    },
+    "iSCSI/NVMe/TCP Initiator": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iSCSI/NVMe/TCP Initiator"
+          }
+        }
+      }
+    },
+    "iSCSI/NVMe/TCP Initiator is not set to open at login, so nothing will attach.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未将 iSCSI/NVMe/TCP Initiator 设为登录时打开，因此不会自动挂载目标。"
+          }
+        }
+      }
+    },
+    "iSCSI/NVMe/TCP Initiator needs a background service to hold the connection to your storage.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iSCSI/NVMe/TCP Initiator 需要后台服务来保持与存储设备的连接。"
+          }
+        }
+      }
+    },
+    "iSCSI/NVMe/TCP Initiator wants to add the iscsictl command to /usr/local/bin.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iSCSI/NVMe/TCP Initiator 希望将 iscsictl 命令添加到 /usr/local/bin。"
+          }
+        }
+      }
+    },
+    "iSCSI/NVMe/TCP Initiator wants to remove the iscsictl command from /usr/local/bin.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iSCSI/NVMe/TCP Initiator 希望从 /usr/local/bin 移除 iscsictl 命令。"
+          }
+        }
+      }
+    },
+    "iSCSI/NVMe/TCP Initiator will add its filesystem extension to the list macOS keeps of enabled extensions, at\n\n~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist\n\nNothing else on that list is changed, and nothing is restarted now, so nothing mounted is disconnected. The extension turns on the next time the service that reads the list restarts — at the latest when this Mac restarts.\n\nThis is normally done by the switch in System Settings, but that switch does not work on this version of macOS.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iSCSI/NVMe/TCP Initiator 将把自身的文件系统扩展加入 macOS 的已启用扩展列表，文件位于：\n\n~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist\n\n列表中的其他项目不会改变，也不会立即重启任何服务，因此已挂载的卷不会断开。负责读取此列表的服务下次重启时，扩展就会启用；最迟会在这台 Mac 下次重新启动时生效。\n\n这项操作通常由“系统设置”中的开关完成，但该开关在当前 macOS 版本中无法正常工作。"
+          }
+        }
+      }
+    },
+    "iSCSI/NVMe/TCP Initiator will add its filesystem extension to the list macOS keeps of enabled extensions, at\n\n~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist\n\nand then restart the system service that reads it. Nothing else on that list is changed.\n\nRestarting that service disconnects everything mounted through it, in every account on this Mac — this app's volumes, and on this version of macOS also FAT and exFAT drives. Nothing like that is mounted right now; if something is by the time you confirm, the restart is skipped and you will be told what is in the way.\n\nThis is normally done by the switch in System Settings, but that switch does not work on this version of macOS.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iSCSI/NVMe/TCP Initiator 将把自身的文件系统扩展加入 macOS 的已启用扩展列表，文件位于：\n\n~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist\n\n随后将重启负责读取此列表的系统服务。列表中的其他项目不会改变。\n\n重启该服务会断开这台 Mac 上所有账户通过它挂载的卷，包括本应用的卷，以及当前 macOS 版本中的 FAT 和 exFAT 磁盘。目前没有此类卷处于挂载状态；如果确认时发现有卷正在使用，将跳过重启，并告知阻碍原因。\n\n这项操作通常由“系统设置”中的开关完成，但该开关在当前 macOS 版本中无法正常工作。"
+          }
+        }
+      }
+    },
+    "iSCSI/NVMe/TCP Initiator…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开 iSCSI/NVMe/TCP Initiator…"
+          }
+        }
+      }
+    },
+    "in-place (atomic replace failed: %@)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原位写入（原子替换失败：%1$@）"
+          }
+        }
+      }
+    },
+    "iqn.2026-08.com.example:disk0": {
+      "shouldTranslate": false
+    },
+    "iscsictl on the command line": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命令行中的 iscsictl"
+          }
+        }
+      }
+    },
+    "lsregister not present at the expected path": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预期位置没有 lsregister"
+          }
+        }
+      }
+    },
+    "macOS %@ has a bug that leaves the File System Extensions switch stuck off for third-party extensions, so it has to be enabled another way.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS %1$@ 存在问题，第三方文件系统扩展的开关无法开启，需要采用其他方式启用。"
+          }
+        }
+      }
+    },
+    "macOS 26.x fallback": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 26.x 兼容方式"
+          }
+        }
+      }
+    },
+    "macOS has not registered the extension inside this app yet. This usually resolves itself a moment after the app is moved or launched; if it does not, registering explicitly fixes it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 尚未注册此应用内的扩展。移动或启动应用后通常稍等即可；若仍未完成，可点击“注册”。"
+          }
+        }
+      }
+    },
+    "macOS is waiting for you to allow the background service in System Settings.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在系统设置中允许此后台服务运行。"
+          }
+        }
+      }
+    },
+    "macOS needs your permission to run the filesystem extension. Turn on “iSCSI/NVMe/TCP Initiator” under File System Extensions.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 需要你的许可才能运行文件系统扩展。请在“文件系统扩展”中开启“iSCSI/NVMe/TCP Initiator”。"
+          }
+        }
+      }
+    },
+    "macOS started the background service from %@ again instead of this copy. Remove or clean up that copy, then quit and reopen this app.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 再次从 %1$@ 启动了后台服务。请移除或清理该副本，再退出并重新打开当前应用。"
+          }
+        }
+      }
+    },
+    "macOS still does not list the extension after re-registering. Quitting and reopening the app usually settles it; if not, drag the app out of Applications and back in. (tried: %@)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新注册后，macOS 仍未列出此扩展。请先退出并重新打开应用；若仍无效，将应用移出“应用程序”文件夹后再移回。（已尝试：%1$@）"
+          }
+        }
+      }
+    },
+    "macOS's list of extensions leaves it out, and a local test mount failed: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 的扩展列表中没有此模块，本机测试挂载也失败了：%1$@"
+          }
+        }
+      }
+    },
+    "namespace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命名空间"
+          }
+        }
+      }
+    },
+    "namespaces": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命名空间"
+          }
+        }
+      }
+    },
+    "nas.local": {
+      "shouldTranslate": false
+    },
+    "no enabledModules.plist at that path — refusing to invent one, since writing a fresh file would drop Apple's own modules from the enabled set": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "指定位置没有 enabledModules.plist。为避免遗漏 Apple 的系统模块，不会新建此文件。"
+          }
+        }
+      }
+    },
+    "not installed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未安装"
+          }
+        }
+      }
+    },
+    "not registered — FSKit does not know this module exists": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未注册：FSKit 尚未识别此模块"
+          }
+        }
+      }
+    },
+    "not removed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未移除"
+          }
+        }
+      }
+    },
+    "not run": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未执行"
+          }
+        }
+      }
+    },
+    "nothing else is removed while a volume is in use.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卷仍在使用中，已停止后续移除操作。"
+          }
+        }
+      }
+    },
+    "nothing left behind": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未留下其他文件"
+          }
+        }
+      }
+    },
+    "nothing was attached": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有已挂载的卷"
+          }
+        }
+      }
+    },
+    "nqn.2011-06.com.truenas:uuid:…:disk0": {
+      "shouldTranslate": false
+    },
+    "only this copy is registered": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅当前副本已注册"
+          }
+        }
+      }
+    },
+    "optional": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选填"
+          }
+        }
+      }
+    },
+    "query failed: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查询失败：%1$@"
+          }
+        }
+      }
+    },
+    "read failed: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "读取失败：%1$@"
+          }
+        }
+      }
+    },
+    "recovered %lld×": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已恢复连接 %1$lld 次"
+          }
+        }
+      }
+    },
+    "registered and ENABLED": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已注册并启用"
+          }
+        }
+      }
+    },
+    "registered, DISABLED — this is the gate": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已注册但未启用，需要先允许此扩展运行"
+          }
+        }
+      }
+    },
+    "removed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已移除"
+          }
+        }
+      }
+    },
+    "removed %lld duplicate registration(s)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已移除 %1$lld 条重复注册信息"
+          }
+        }
+      }
+    },
+    "removed; %lld other accounts' saved targets were kept": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已移除，已保留其他 %1$lld 个账户保存的目标"
+          }
+        }
+      }
+    },
+    "removed; another account's saved targets were kept": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已移除，已保留另一个账户保存的目标"
+          }
+        }
+      }
+    },
+    "running %@ (%@), pid %d": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行 %1$@（构建 %2$@），进程 ID：%3$d"
+          }
+        }
+      }
+    },
+    "running %@ but this app is %@ — needs re-registering": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务版本为 %1$@，应用版本为 %2$@，需要重新注册"
+          }
+        }
+      }
+    },
+    "running %@, pid %d": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行 %1$@，进程 ID：%2$d"
+          }
+        }
+      }
+    },
+    "running from %@. A LaunchDaemon has to be reachable before anyone logs in, and it runs as root from wherever this app lives — so the app needs to be in /Applications, which only an administrator can change, rather than in your home folder.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前运行位置为 %1$@。后台服务需要在用户登录前可用，并以 root 权限运行，因此应用应放在仅管理员可修改的 /Applications 中。"
+          }
+        }
+      }
+    },
+    "running from a temporary read-only copy (App Translocation). Move it to Applications and reopen — a daemon registered from here would point at a path that disappears.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前正从临时只读副本运行（App Translocation）。请移至“应用程序”后重新打开，否则后台服务将指向可能消失的路径。"
+          }
+        }
+      }
+    },
+    "running from another copy of the app at %@ — needs reinstalling from this one": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务正在从另一个应用副本 %1$@ 运行，需要从当前副本重新安装"
+          }
+        }
+      }
+    },
+    "still attached: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仍有连接：%1$@"
+          }
+        }
+      }
+    },
+    "still in use: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仍在使用：%1$@"
+          }
+        }
+      }
+    },
+    "the LaunchDaemon plist is missing from the app bundle (packaging bug)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用包缺少 LaunchDaemon 配置文件，请重新安装完整应用"
+          }
+        }
+      }
+    },
+    "the app's code signature is not valid for this. Reinstall by dragging from the DMG.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用的代码签名无效，无法执行此操作。请从磁盘映像重新安装。"
+          }
+        }
+      }
+    },
+    "the background service belongs to another copy of the app at %@; it needs reinstalling from this one.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务属于另一个应用副本 %1$@，需要从当前副本重新安装。"
+          }
+        }
+      }
+    },
+    "the background service is approved but not running — most often because it belongs to a copy of the app that no longer exists. Reinstall it from this copy.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务已获批准但未运行，通常是因为它指向的应用副本已不存在。请从当前副本重新安装。"
+          }
+        }
+      }
+    },
+    "the background service is kept until it has deleted the saved passwords. Try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在已保存的密码删除之前，将保留后台服务。请重试。"
+          }
+        }
+      }
+    },
+    "the background service is version %@ but this app is %@; it needs reinstalling.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务版本为 %1$@，当前应用版本为 %2$@，需要重新安装后台服务。"
+          }
+        }
+      }
+    },
+    "the daemon does not implement the protocol": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务不支持此通信协议"
+          }
+        }
+      }
+    },
+    "the daemon is not running": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务未运行"
+          }
+        }
+      }
+    },
+    "the daemon replied with nothing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务未返回任何内容"
+          }
+        }
+      }
+    },
+    "the daemon sent a reply this version cannot read (%@). This usually means the app and the background service are different versions; the Setup screen can reinstall it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务返回了当前版本无法读取的响应（%1$@）。这通常表示应用与后台服务的版本不一致；可在“初始设置”页面重新安装后台服务。"
+          }
+        }
+      }
+    },
+    "the daemon stopped mid-call": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务在请求过程中中断"
+          }
+        }
+      }
+    },
+    "the extension is not registered yet — that step has to pass first": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扩展尚未注册，请先完成注册"
+          }
+        }
+      }
+    },
+    "the system still reports it as registered (status %lld)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统仍显示服务已注册（状态 %1$lld）"
+          }
+        }
+      }
+    },
+    "the volume serving the LUN": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提供 LUN 文件的卷"
+          }
+        }
+      }
+    },
+    "this copy of the app is incomplete — its background service is missing. Reinstall from the disk image.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前应用缺少后台服务，文件不完整。请从磁盘映像重新安装。"
+          }
+        }
+      }
+    },
+    "umount did not run": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能运行 umount"
+          }
+        }
+      }
+    },
+    "unregistered": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已取消注册"
+          }
+        }
+      }
+    },
+    "unregistering before re-registering (the executable changed)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在注销旧服务，以注册更新后的程序"
+          }
+        }
+      }
+    },
+    "waiting for approval in System Settings": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待在系统设置中批准"
+          }
+        }
+      }
+    },
+    "was not enabled": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未启用"
+          }
+        }
+      }
+    },
+    "was not set": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未设置"
+          }
+        }
+      }
+    },
+    "write reported success but the entry is not there on re-read": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入操作报告成功，但重新读取后未找到对应条目"
+          }
+        }
+      }
+    },
+    "wrote, but could not read the file back to confirm": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已写入，但无法重新读取文件以确认结果"
+          }
+        }
+      }
+    },
+    "“%@” is connected but not formatted": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%1$@”已连接，尚未格式化"
+          }
+        }
+      }
+    },
+    "“%@” is connected, but nothing mounted": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%1$@”已连接，但没有挂载任何卷"
+          }
+        }
+      }
+    },
+    "“%@” is in use": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%1$@”正在使用中"
+          }
+        }
+      }
+    },
+    "“%@” is in use and was not ejected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%1$@”正在使用中，无法推出"
+          }
+        }
+      }
+    },
+    "“%@” is not an address the target can be reached at.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法通过“%1$@”访问存储目标。"
+          }
+        }
+      }
+    },
+    "⚠ If the target loses power, this volume can be corrupted. Takes effect the next time this target is attached.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "⚠ 目标设备断电可能导致此卷损坏。下次挂载此目标时生效。"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

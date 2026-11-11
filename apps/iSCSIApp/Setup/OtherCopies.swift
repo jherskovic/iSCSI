@@ -15,13 +15,12 @@ import AppKit
 import Foundation
 import iSCSIKit
 
-private let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework"
-    + "/Frameworks/LaunchServices.framework/Support/lsregister"
+private let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 @MainActor
 final class OtherCopies: SetupStep {
     let id = "other-copies"
-    let title = "Only this copy registered"
+    let title = String(localized: "Only this copy registered")
     private(set) var state: StepState = .checking
     private var others: [RegisteredCopy] = []
 
@@ -58,12 +57,12 @@ final class OtherCopies: SetupStep {
         let gone = others.filter { !$0.exists }
         let home = NSHomeDirectory()
         let note = gone.isEmpty ? nil : RegisteredCopies.goneNote(gone, home: home)
-        let pending = dump == nil ? " (the full LaunchServices scan is still running)" : ""
+        let pending = dump == nil ? String(localized: " (the full LaunchServices scan is still running)") : ""
         if !present.isEmpty {
             state = .actionable([RegisteredCopies.summary(present, home: home), note]
                 .compactMap { $0 }.joined(separator: " "))
         } else {
-            state = .satisfied((note ?? "only this copy is registered") + pending)
+            state = .satisfied((note ?? String(localized: "only this copy is registered")) + pending)
         }
     }
 
@@ -99,15 +98,14 @@ final class OtherCopies: SetupStep {
 
     var actionLabel: String? {
         guard case .actionable = state else { return nil }
-        return "Clean up"
+        return String(localized: "Clean up")
     }
 
-    var consentTitle: String? { "Remove the other copies' registrations?" }
+    var consentTitle: String? { String(localized: "Remove the other copies' registrations?") }
 
     var consentPrompt: String? {
         guard case .actionable = state else { return nil }
-        return "This removes macOS's registration of the copies listed above so only "
-            + "this one is used. It does not delete any files."
+        return String(localized: "This removes macOS's registration of the copies listed above so only this one is used. It does not delete any files.")
     }
 
     /// Unregister every other copy, then ask LaunchServices again rather than

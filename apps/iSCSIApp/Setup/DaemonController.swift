@@ -37,18 +37,18 @@ enum DaemonState: Equatable {
 
     var summary: String {
         switch self {
-        case .checking:                return "checking…"
-        case .notRegistered:           return "not installed"
-        case .requiresApproval:        return "waiting for approval in System Settings"
-        case .registeredNotResponding: return "approved, but not answering — the daemon is not running"
-        case .running(let info):       return "running \(info.version) (\(info.build)), pid \(info.pid)"
+        case .checking:                return String(localized: "checking…")
+        case .notRegistered:           return String(localized: "not installed")
+        case .requiresApproval:        return String(localized: "waiting for approval in System Settings")
+        case .registeredNotResponding: return String(localized: "approved, but not answering — the daemon is not running")
+        case .running(let info):       return String(localized: "running \(info.version) (\(info.build)), pid \(info.pid)")
         case .versionMismatch(let d, let a):
-            return "running \(d) but this app is \(a) — needs re-registering"
+            return String(localized: "running \(d) but this app is \(a) — needs re-registering")
         case .otherCopy(let path):
-            return "running from another copy of the app at \(path) — needs reinstalling from this one"
+            return String(localized: "running from another copy of the app at \(path) — needs reinstalling from this one")
         case .notFound:
-            return "the LaunchDaemon plist is missing from the app bundle (packaging bug)"
-        case .failed(let why):         return "failed: \(why)"
+            return String(localized: "the LaunchDaemon plist is missing from the app bundle (packaging bug)")
+        case .failed(let why):         return String(localized: "failed: \(why)")
         }
     }
 
@@ -155,9 +155,7 @@ final class DaemonController: ObservableObject {
                        ? .running(info)
                        : .versionMismatch(daemon: versionLabel(info.version, info.build),
                                           app: versionLabel(appVersion, appBuild)),
-                       "daemonInfo: version=\(info.version) build=\(info.build) "
-                       + "pid=\(info.pid) app=\(versionLabel(appVersion, appBuild)) "
-                       + "relaxedAuth=\(info.authorizationRelaxed)")
+                       "daemonInfo: version=\(info.version) build=\(info.build) pid=\(info.pid) app=\(versionLabel(appVersion, appBuild)) relaxedAuth=\(info.authorizationRelaxed)")
         } catch {
             transition(to: .registeredNotResponding,
                        "daemonInfo failed: \(Self.describe(error))")
@@ -191,7 +189,7 @@ final class DaemonController: ObservableObject {
             } catch let error as NSError where error.code == kSMErrorAlreadyRegistered {
                 // The state we wanted, reached earlier. Not a failure.
                 Self.log.log("register(): already registered")
-                detail = "already registered"
+                detail = String(localized: "already registered")
                 await settle()
                 return
             } catch let error as NSError {
@@ -253,7 +251,7 @@ final class DaemonController: ObservableObject {
     /// yields a registration pointing at a daemon that never comes back.
     func reregister() async {
         state = .checking
-        detail = "unregistering before re-registering (the executable changed)"
+        detail = String(localized: "unregistering before re-registering (the executable changed)")
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             service.unregister { error in
                 if let error = error as NSError?, error.code != kSMErrorJobNotFound {
@@ -270,9 +268,7 @@ final class DaemonController: ObservableObject {
         // back means launchd resolved the job to that copy again; offering
         // Reinstall once more would be a loop that explains nothing.
         if case .otherCopy(let path) = state {
-            transition(to: .failed("macOS started the background service from \(path) again "
-                                   + "instead of this copy. Remove or clean up that copy, "
-                                   + "then quit and reopen this app."),
+            transition(to: .failed(String(localized: "macOS started the background service from \(path) again instead of this copy. Remove or clean up that copy, then quit and reopen this app.")),
                        "reregister: daemon still reports bundlePath=\(path)")
         }
     }
@@ -303,8 +299,7 @@ final class DaemonController: ObservableObject {
         case kSMErrorLaunchDeniedByUser:
             return .requiresApproval
         case kSMErrorInvalidSignature:
-            return .failed("the app's code signature is not valid for this. "
-                           + "Reinstall by dragging from the DMG.")
+            return .failed(String(localized: "the app's code signature is not valid for this. Reinstall by dragging from the DMG."))
         case kSMErrorJobPlistNotFound, kSMErrorInvalidPlist:
             return .notFound
         default:
@@ -350,7 +345,7 @@ enum DaemonConnection {
                 } else if let data {
                     finish(Result { try JSONDecoder().decode(DaemonInfo.self, from: data) })
                 } else {
-                    finish(.failure(Unreachable(reason: "the daemon replied with nothing")))
+                    finish(.failure(Unreachable(reason: String(localized: "the daemon replied with nothing"))))
                 }
             }
         }
@@ -386,17 +381,17 @@ enum DaemonConnection {
                 }
 
                 connection.invalidationHandler = {
-                    finish(.failure(Unreachable(reason: "the daemon is not running")))
+                    finish(.failure(Unreachable(reason: String(localized: "the daemon is not running"))))
                 }
                 connection.interruptionHandler = {
-                    finish(.failure(Unreachable(reason: "the daemon stopped mid-call")))
+                    finish(.failure(Unreachable(reason: String(localized: "the daemon stopped mid-call"))))
                 }
                 connection.resume()
 
                 guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
                     finish(.failure(error))
                 }) as? ISCSIDaemonProtocol else {
-                    finish(.failure(Unreachable(reason: "the daemon does not implement the protocol")))
+                    finish(.failure(Unreachable(reason: String(localized: "the daemon does not implement the protocol"))))
                     return
                 }
                 body(proxy, finish)
@@ -429,14 +424,14 @@ struct DaemonPanelView: View {
                     // Debug builds only. Each of these stops the daemon under
                     // whatever is attached, with none of the consent Setup's
                     // Reinstall and Remove ask for.
-                    Button("Register") { Task { await daemon.register() } }
-                    Button("Re-register") { Task { await daemon.reregister() } }
-                    Button("Unregister") { Task { await daemon.unregister() } }
+                    Button(String(localized: "Register")) { Task { await daemon.register() } }
+                    Button(String(localized: "Re-register")) { Task { await daemon.reregister() } }
+                    Button(String(localized: "Unregister")) { Task { await daemon.unregister() } }
                     #endif
                     Spacer()
                     // Only offered when it is the actual next step.
                     if daemon.state == .requiresApproval {
-                        Button("Open Login Items…") { daemon.openLoginItemsSettings() }
+                        Button(String(localized: "Open Login Items…")) { daemon.openLoginItemsSettings() }
                             .buttonStyle(.borderedProminent)
                     }
                 }
@@ -451,8 +446,7 @@ struct DaemonPanelView: View {
                 }
 
                 if case .running(let info) = daemon.state, info.authorizationRelaxed {
-                    Text("This daemon was built with DEBUG and accepts XPC connections "
-                         + "from any process. Never ship it.")
+                    Text(String(localized: "This daemon was built with DEBUG and accepts XPC connections from any process. Never ship it."))
                         .font(.caption)
                         .foregroundStyle(.red)
                 }

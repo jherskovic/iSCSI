@@ -25,17 +25,15 @@ private let autoAttachLog = Logger(subsystem: "me.herko.iSCSIInitiator.app", cat
 
 @MainActor
 final class AutoAttacher: AutoAttachHost {
-    static let inUseMessage = "In use by another session on this Mac."
-    static let inUseSuggestion = "Attaching it from two accounts at once would corrupt it. "
-        + "Eject it in the other account, then attach it here."
-    static let stillAttachingMessage = "Still trying to attach after 5 minutes."
-    static let stillAttachingSuggestion = "It will appear by itself if the target answers. "
-        + "Otherwise check the target and press Attach."
-    static let setupMessage = "Setup is not finished."
-    static let setupSuggestion = "Open the Setup screen to see what is missing."
+    static let inUseMessage = String(localized: "In use by another session on this Mac.")
+    static let inUseSuggestion = String(localized: "Attaching it from two accounts at once would corrupt it. Eject it in the other account, then attach it here.")
+    static let stillAttachingMessage = String(localized: "Still trying to attach after 5 minutes.")
+    static let stillAttachingSuggestion = String(localized: "It will appear by itself if the target answers. Otherwise check the target and press Attach.")
+    static let setupMessage = String(localized: "Setup is not finished.")
+    static let setupSuggestion = String(localized: "Open the Setup screen to see what is missing.")
 
     static func failureTitle(_ name: String) -> String {
-        "Could not attach “\(name)” at login"
+        String(localized: "Could not attach “\(name)” at login")
     }
 
     private unowned let model: AppModel
@@ -132,7 +130,7 @@ final class AutoAttacher: AutoAttachHost {
     func beginActivity() {
         activity = ProcessInfo.processInfo.beginActivity(
             options: .userInitiatedAllowingIdleSystemSleep,
-            reason: "Attaching storage at login")
+            reason: String(localized: "Attaching storage at login"))
     }
 
     func endActivity() {

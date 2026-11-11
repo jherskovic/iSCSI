@@ -20,7 +20,7 @@ struct MenuBarContent: View {
             }
 
             if model.rows.isEmpty {
-                Text(model.isReady ? "No targets yet" : "Setup is not finished")
+                Text(model.isReady ? String(localized: "No targets yet") : String(localized: "Setup is not finished"))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 12).padding(.vertical, 8)
             } else {
@@ -32,7 +32,7 @@ struct MenuBarContent: View {
             Divider()
 
             if !model.attachments.attachments.isEmpty {
-                menuButton("Detach All", systemImage: "eject") {
+                menuButton(String(localized: "Detach All"), systemImage: "eject") {
                     // Labelled with an eject icon and reachable only
                     // deliberately: the click is the consent, and the
                     // confirmation alert lives in a window that may not even
@@ -40,7 +40,7 @@ struct MenuBarContent: View {
                     Task { await model.detachAll() }
                 }
             }
-            menuButton("iSCSI/NVMe/TCP Initiator…", systemImage: "macwindow") {
+            menuButton(String(localized: "iSCSI/NVMe/TCP Initiator…"), systemImage: "macwindow") {
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
             }
@@ -48,7 +48,7 @@ struct MenuBarContent: View {
             // and the window item, which put the least-used command in the
             // popover ahead of the two most-used ones.
             CheckForUpdatesButton(updates: model.updates)
-            menuButton("Quit", systemImage: "power") { NSApp.terminate(nil) }
+            menuButton(String(localized: "Quit"), systemImage: "power") { NSApp.terminate(nil) }
         }
         .padding(.vertical, 6)
         .frame(width: 300)
@@ -66,8 +66,8 @@ struct MenuBarContent: View {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Finish setting up").fontWeight(.medium)
-                    Text("A few permissions are still needed")
+                    Text(String(localized: "Finish setting up")).fontWeight(.medium)
+                    Text(String(localized: "A few permissions are still needed"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -116,11 +116,11 @@ private struct MenuRow: View {
             if row.isBusy {
                 ProgressView().controlSize(.small)
             } else if row.isAttached {
-                Button("Show") { model.reveal(row) }.buttonStyle(.link)
-                Button("Eject") { Task { await model.detach(row.target, ejectingMounted: true) } }
+                Button(String(localized: "Show")) { model.reveal(row) }.buttonStyle(.link)
+                Button(String(localized: "Eject")) { Task { await model.detach(row.target, ejectingMounted: true) } }
                     .buttonStyle(.borderless)
             } else {
-                Button("Attach") { Task { await model.attach(row.target) } }
+                Button(String(localized: "Attach")) { Task { await model.attach(row.target) } }
                     .buttonStyle(.borderless)
                     .disabled(!model.isReady)
             }

@@ -56,7 +56,7 @@ final class FSKitAttachProbe {
     nonisolated private static func probe() -> FSKitMountProbe.Outcome {
         let point = FileManager.default.temporaryDirectory
             .appendingPathComponent("fskit-probe-\(UUID().uuidString)").path
-        guard mkdir(point, 0o700) == 0 else { return .failed("could not create \(point)") }
+        guard mkdir(point, 0o700) == 0 else { return .failed(String(localized: "could not create \(point)")) }
         // rmdir, never a recursive remove: if the unmount failed, the volume's
         // own file is in there.
         defer { rmdir(point) }
@@ -82,7 +82,7 @@ final class FSKitAttachProbe {
         do { try process.run() } catch { return (-1, error.localizedDescription) }
         guard finished.wait(timeout: .now() + 20) == .success else {
             process.terminate()
-            return (-1, "\((path as NSString).lastPathComponent) did not finish within 20 s")
+            return (-1, String(localized: "\((path as NSString).lastPathComponent) did not finish within 20 s"))
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))
@@ -94,7 +94,7 @@ final class FSKitAttachProbe {
 @MainActor
 final class ModuleRegistration: SetupStep {
     let id = "module-registered"
-    let title = "Filesystem extension registered"
+    let title = String(localized: "Filesystem extension registered")
     private(set) var state: StepState = .checking
     private let probe: FSKitAttachProbe
 
@@ -111,20 +111,15 @@ final class ModuleRegistration: SetupStep {
             switch await probe.outcome() {
             case .mounts, .disabled:
                 state = .satisfied(
-                    "\(FSKitEnablement.moduleBundleID) — macOS's list of extensions leaves "
-                    + "it out, but FSKit loads it (checked with a local test mount)")
+                    String(localized: "\(FSKitEnablement.moduleBundleID) — macOS's list of extensions leaves it out, but FSKit loads it (checked with a local test mount)"))
             case .notFound:
                 state = .actionable(
-                    "macOS has not registered the extension inside this app yet. "
-                    + "This usually resolves itself a moment after the app is "
-                    + "moved or launched; if it does not, registering explicitly "
-                    + "fixes it.")
+                    String(localized: "macOS has not registered the extension inside this app yet. This usually resolves itself a moment after the app is moved or launched; if it does not, registering explicitly fixes it."))
             case .failed(let why):
-                state = .blocked("macOS's list of extensions leaves it out, and a local "
-                                 + "test mount failed: \(why)")
+                state = .blocked(String(localized: "macOS's list of extensions leaves it out, and a local test mount failed: \(why)"))
             }
         } catch {
-            state = .blocked("could not ask FSKit: \(error.localizedDescription)")
+            state = .blocked(String(localized: "could not ask FSKit: \(error.localizedDescription)"))
         }
     }
 
@@ -133,7 +128,7 @@ final class ModuleRegistration: SetupStep {
     /// re-registers the module — which invalidates the entry just written.
     var actionLabel: String? {
         guard case .actionable = state else { return nil }
-        return "Register"
+        return String(localized: "Register")
     }
 
     /// Re-register the *app* with LaunchServices, not the appex with pluginkit.
@@ -154,8 +149,7 @@ final class ModuleRegistration: SetupStep {
         probe.invalidate()
         var attempted: [String] = []
 
-        let lsregister = "/System/Library/Frameworks/CoreServices.framework"
-            + "/Frameworks/LaunchServices.framework/Support/lsregister"
+        let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         if FileManager.default.isExecutableFile(atPath: lsregister) {
             // Off the main actor: on a loaded machine lsregister runs for
             // minutes — measured past 2.5 on a VM just after boot (2026-10-04)
@@ -165,7 +159,7 @@ final class ModuleRegistration: SetupStep {
                 Self.run(lsregister, ["-f", "-R", "-trusted", bundlePath])
             }.value)
         } else {
-            attempted.append("lsregister not present at the expected path")
+            attempted.append(String(localized: "lsregister not present at the expected path"))
         }
 
         // Remove any other bundle claiming to provide this module. More than
@@ -175,7 +169,7 @@ final class ModuleRegistration: SetupStep {
         // They accumulate from old builds and from disk images left mounted.
         let pruned = await Task.detached { FSKitRegistrationAudit.pruneDuplicates() }.value
         if !pruned.isEmpty {
-            attempted.append("removed \(pruned.count) duplicate registration(s)")
+            attempted.append(String(localized: "removed \(pruned.count) duplicate registration(s)"))
         }
 
         // Registration propagates asynchronously; checking immediately reports
@@ -188,10 +182,7 @@ final class ModuleRegistration: SetupStep {
         // exactly how the pluginkit-only version of this looked.
         if !state.isSatisfied {
             state = .blocked(
-                "macOS still does not list the extension after re-registering. "
-                + "Quitting and reopening the app usually settles it; if not, "
-                + "drag the app out of Applications and back in. "
-                + "(tried: \(attempted.joined(separator: "; ")))")
+                String(localized: "macOS still does not list the extension after re-registering. Quitting and reopening the app usually settles it; if not, drag the app out of Applications and back in. (tried: \(attempted.joined(separator: "; ")))"))
         }
     }
 
@@ -202,9 +193,9 @@ final class ModuleRegistration: SetupStep {
         do {
             try process.run()
             process.waitUntilExit()
-            return "\((path as NSString).lastPathComponent) exited \(process.terminationStatus)"
+            return String(localized: "\((path as NSString).lastPathComponent) exited \(process.terminationStatus)")
         } catch {
-            return "\((path as NSString).lastPathComponent) failed: \(error.localizedDescription)"
+            return String(localized: "\((path as NSString).lastPathComponent) failed: \(error.localizedDescription)")
         }
     }
 }
@@ -214,7 +205,7 @@ final class ModuleRegistration: SetupStep {
 @MainActor
 final class ModuleEnablement: SetupStep {
     let id = "module-enabled"
-    let title = "Filesystem extension enabled"
+    let title = String(localized: "Filesystem extension enabled")
     private(set) var state: StepState = .checking
     private let probe: FSKitAttachProbe
 
@@ -258,22 +249,19 @@ final class ModuleEnablement: SetupStep {
                 // Off FSKit's list: a local test mount says what the list cannot.
                 switch await probe.outcome() {
                 case .mounts:
-                    enabled("enabled (checked with a local test mount; macOS's "
-                            + "list of extensions leaves it out)")
+                    enabled(String(localized: "enabled (checked with a local test mount; macOS's list of extensions leaves it out)"))
                 case .disabled:
                     state = notEnabled()
                 case .notFound:
-                    state = .blocked("the extension is not registered yet — "
-                                     + "that step has to pass first")
+                    state = .blocked(String(localized: "the extension is not registered yet — that step has to pass first"))
                 case .failed(let why):
-                    state = .blocked("could not tell whether it is enabled: a local test "
-                                     + "mount failed: \(why)")
+                    state = .blocked(String(localized: "could not tell whether it is enabled: a local test mount failed: \(why)"))
                 }
                 return
             }
-            if mine.isEnabled { enabled("enabled") } else { state = notEnabled() }
+            if mine.isEnabled { enabled(String(localized: "enabled")) } else { state = notEnabled() }
         } catch {
-            state = .blocked("could not ask FSKit: \(error.localizedDescription)")
+            state = .blocked(String(localized: "could not ask FSKit: \(error.localizedDescription)"))
         }
     }
 
@@ -290,54 +278,39 @@ final class ModuleEnablement: SetupStep {
     private func notEnabled() -> StepState {
         if Self.switchWorks {
             return .actionable(
-                "macOS needs your permission to run the filesystem "
-                + "extension. Turn on “iSCSI/NVMe/TCP Initiator” under File System "
-                + "Extensions.")
+                String(localized: "macOS needs your permission to run the filesystem extension. Turn on “iSCSI/NVMe/TCP Initiator” under File System Extensions."))
         }
         inTheWay = FSKitRestart.mountsItWouldDisconnect(AttachmentManager.mountTable())
         if !inTheWay.isEmpty {
             let what = inTheWay.map(FSKitRestart.describe).joined(separator: "; ")
             if waitingForMacRestart {
                 return .blocked(
-                    "It is on macOS's list of enabled extensions, and turns on the next "
-                    + "time the system service that reads the list restarts — at the latest "
-                    + "when this Mac restarts. Turning it on now would restart that service and "
-                    + "disconnect what is mounted through it, in every account: \(what). "
-                    + "To turn it on without restarting the Mac, detach those, then "
-                    + "choose Re-check.")
+                    String(localized: "It is on macOS's list of enabled extensions, and turns on the next time the system service that reads the list restarts — at the latest when this Mac restarts. Turning it on now would restart that service and disconnect what is mounted through it, in every account: \(what). To turn it on without restarting the Mac, detach those, then choose Re-check."))
             }
             return .actionable(
-                "Turning it on means restarting a system service, which would disconnect "
-                + "what is mounted through it on this Mac, in every account: \(what). "
-                + "Detach those, then choose Re-check — or choose Enable at Next Restart "
-                + "and restart this Mac.")
+                String(localized: "Turning it on means restarting a system service, which would disconnect what is mounted through it on this Mac, in every account: \(what). Detach those, then choose Re-check — or choose Enable at Next Restart and restart this Mac."))
         }
         if let lastRestartFailure {
             return .actionable(
-                "It is on macOS's list, but the system service that reads the list could "
-                + "not be restarted: \(lastRestartFailure). Choose Enable to try again, "
-                + "or restart this Mac.")
+                String(localized: "It is on macOS's list, but the system service that reads the list could not be restarted: \(lastRestartFailure). Choose Enable to try again, or restart this Mac."))
         }
         return .actionable(
-            "macOS \(ProcessInfo.processInfo.operatingSystemVersionString) "
-            + "has a bug that leaves the File System Extensions switch "
-            + "stuck off for third-party extensions, so it has to be "
-            + "enabled another way.")
+            String(localized: "macOS \(ProcessInfo.processInfo.operatingSystemVersionString) has a bug that leaves the File System Extensions switch stuck off for third-party extensions, so it has to be enabled another way."))
     }
 
     var actionLabel: String? {
         guard !state.isSatisfied else { return nil }
-        if Self.switchWorks { return "Open System Settings" }
-        if inTheWay.isEmpty { return "Enable" }
-        return waitingForMacRestart ? nil : "Enable at Next Restart"
+        if Self.switchWorks { return String(localized: "Open System Settings") }
+        if inTheWay.isEmpty { return String(localized: "Enable") }
+        return waitingForMacRestart ? nil : String(localized: "Enable at Next Restart")
     }
 
-    var consentTitle: String? { "Enable the filesystem extension?" }
+    var consentTitle: String? { String(localized: "Enable the filesystem extension?") }
 
     var consentPrompt: String? {
         guard !state.isSatisfied, !Self.switchWorks else { return nil }
         if !inTheWay.isEmpty {
-            return """
+            return String(localized: """
                 iSCSI/NVMe/TCP Initiator will add its filesystem extension to the list macOS \
                 keeps of enabled extensions, at
 
@@ -350,9 +323,9 @@ final class ModuleEnablement: SetupStep {
 
                 This is normally done by the switch in System Settings, but that \
                 switch does not work on this version of macOS.
-                """
+                """)
         }
-        return """
+        return String(localized: """
             iSCSI/NVMe/TCP Initiator will add its filesystem extension to the list macOS \
             keeps of enabled extensions, at
 
@@ -369,7 +342,7 @@ final class ModuleEnablement: SetupStep {
 
             This is normally done by the switch in System Settings, but that \
             switch does not work on this version of macOS.
-            """
+            """)
     }
 
     func perform() async {
@@ -383,7 +356,7 @@ final class ModuleEnablement: SetupStep {
         lastRestartFailure = nil
         let report = await Task.detached { FSKitEnablement.enableModule() }.value
         guard report.succeeded else {
-            state = .blocked("could not enable it: \(report.failure ?? "unknown"). "
+            state = .blocked(String(localized: "could not enable it: \(report.failure ?? "unknown"). ")
                              + report.transcript)
             return
         }
