@@ -90,7 +90,11 @@ final class Uninstaller: ObservableObject {
             Step(label: String(localized: "Remove the background service"), outcome: .pending),
             Step(label: String(localized: "Turn off the filesystem extension"), outcome: .pending),
             Step(label: String(localized: "Remove the iscsictl link"), outcome: .pending),
-            Step(label: String(localized: "Clean up"), outcome: .pending),
+            // Its own key: Setup's "Clean up" button removes registrations,
+            // and one shared key gave this step that button's translation.
+            Step(label: String(localized: "uninstall.step.cleanUp", defaultValue: "Clean up",
+                               comment: "Uninstall step that deletes the app's cache folder"),
+                 outcome: .pending),
         ]
 
         await step(0) { try await self.detachEverything() }

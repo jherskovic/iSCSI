@@ -67,7 +67,10 @@ struct UninstallView: View {
                   systemImage: "key")
             Label(String(localized: "The background service is unregistered and the filesystem extension is turned off. An iscsictl link is removed if this app added one, which needs an administrator's password."),
                   systemImage: "gearshape")
-            Label(String(localized: "**Nothing on the storage device itself is changed.** Your data stays where it is."), systemImage: "externaldrive")
+            // One literal, so it is a LocalizedStringKey: only that form gets
+            // its Markdown rendered, and a String showed the asterisks.
+            Label("**Nothing on the storage device itself is changed.** Your data stays where it is.",
+                  systemImage: "externaldrive")
                 .foregroundStyle(.primary)
             Text(String(localized: "The app itself goes last: when everything else is removed, a button moves it to the Trash and quits."))
                 .font(.callout).foregroundStyle(.secondary)
