@@ -4012,6 +4012,23 @@
         }
       }
     },
+    "uninstall.step.cleanUp": {
+      "comment": "Uninstall step that deletes the app's cache folder",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clean up"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理缓存"
+          }
+        }
+      }
+    },
     "unregistered": {
       "localizations": {
         "zh-Hans": {
