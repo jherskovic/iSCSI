@@ -177,6 +177,16 @@
         }
       }
     },
+    "%lld other copies are registered: %@. macOS can run the background service from any of them instead of this one; if one is on a disk image, the image can't be ejected and attaching stops working once it is gone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另有 %1$lld 个应用副本已注册：%2$@。macOS 可能从其中任一副本运行后台服务，而不是当前副本。如果某个副本位于磁盘映像中，将无法推出该映像；副本消失后，磁盘挂载功能将无法使用。"
+          }
+        }
+      }
+    },
     "(not resolved)": {
       "localizations": {
         "zh-Hans": {
@@ -343,6 +353,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "此 Mac 上的另一个账户已挂载此磁盘。"
+          }
+        }
+      }
+    },
+    "Another copy is registered at %@. macOS can run the background service from it instead of this one; if it is on a disk image, the image can't be ejected and attaching stops working once it is gone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另一个应用副本已在 %1$@ 注册。macOS 可能从该副本运行后台服务，而不是当前副本。如果它位于磁盘映像中，将无法推出该映像；副本消失后，磁盘挂载功能将无法使用。"
           }
         }
       }
@@ -3542,6 +3562,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "重新注册后，macOS 仍未列出此扩展。请先退出并重新打开应用；若仍无效，将应用移出“应用程序”文件夹后再移回。（已尝试：%1$@）"
+          }
+        }
+      }
+    },
+    "macOS still has a record of %@, which no longer exists — usually an ejected disk image. Nothing uses it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 仍保留 %1$@ 的注册记录，但该副本已不存在，通常是已推出的磁盘映像。目前没有任何服务使用它。"
+          }
+        }
+      }
+    },
+    "macOS still has records of %lld copies that no longer exist — usually ejected disk images: %@. Nothing uses them.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 仍保留 %1$lld 个已不存在副本的注册记录，通常是已推出的磁盘映像：%2$@。目前没有任何服务使用这些副本。"
           }
         }
       }

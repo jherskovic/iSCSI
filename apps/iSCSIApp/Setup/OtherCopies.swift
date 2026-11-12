@@ -56,10 +56,10 @@ final class OtherCopies: SetupStep {
         let present = others.filter(\.exists)
         let gone = others.filter { !$0.exists }
         let home = NSHomeDirectory()
-        let note = gone.isEmpty ? nil : RegisteredCopies.goneNote(gone, home: home)
+        let note = gone.isEmpty ? nil : LocalizedRegisteredCopies.goneNote(gone, home: home)
         let pending = dump == nil ? String(localized: " (the full LaunchServices scan is still running)") : ""
         if !present.isEmpty {
-            state = .actionable([RegisteredCopies.summary(present, home: home), note]
+            state = .actionable([LocalizedRegisteredCopies.summary(present, home: home), note]
                 .compactMap { $0 }.joined(separator: " "))
         } else {
             state = .satisfied((note ?? String(localized: "only this copy is registered")) + pending)
@@ -135,6 +135,32 @@ final class OtherCopies: SetupStep {
             // Nothing to do here: the re-check after this reports the copy as
             // still registered, which is the honest answer.
         }
+    }
+}
+
+/// Keep the shared registration rules language-neutral; localize their display
+/// text here, where the app's string catalog and language preference are available.
+enum LocalizedRegisteredCopies {
+    static func summary(_ copies: [RegisteredCopy], home: String) -> String {
+        let listed = paths(copies, home: home)
+        if copies.count == 1 {
+            return String(localized: "Another copy is registered at \(listed). macOS can run the background service from it instead of this one; if it is on a disk image, the image can't be ejected and attaching stops working once it is gone.")
+        }
+        return String(localized: "\(copies.count) other copies are registered: \(listed). macOS can run the background service from any of them instead of this one; if one is on a disk image, the image can't be ejected and attaching stops working once it is gone.")
+    }
+
+    static func goneNote(_ copies: [RegisteredCopy], home: String) -> String {
+        let listed = paths(copies, home: home)
+        if copies.count == 1 {
+            return String(localized: "macOS still has a record of \(listed), which no longer exists — usually an ejected disk image. Nothing uses it.")
+        }
+        return String(localized: "macOS still has records of \(copies.count) copies that no longer exist — usually ejected disk images: \(listed). Nothing uses them.")
+    }
+
+    private static func paths(_ copies: [RegisteredCopy], home: String) -> String {
+        copies.map { copy in
+            copy.path.hasPrefix(home + "/") ? "~" + copy.path.dropFirst(home.count) : copy.path
+        }.joined(separator: "; ")
     }
 }
 
